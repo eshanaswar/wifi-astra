@@ -41,8 +41,23 @@
 
 run_b6() {
     set -uo pipefail
+
+    local iface="${WIFI_INTERFACE:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) iface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Finalize local variables
+    local interface="${iface:-${WIFI_INTERFACE:-wlan0}}"
+    local evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/b6"
+    local evidence_prefix="${evidence_dir}/b6"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools and connectivity"
@@ -50,20 +65,15 @@ run_b6() {
 
     check_module_dependencies "B6" || return 1
     
-    if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
-        disable_monitor_mode
-        sleep 3
-    fi
-
-    # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
-    if [[ -z "${WIFI_INTERFACE:-}" ]]; then
+    if [[ -z "$interface" ]]; then
         configure_network || return 1
+        interface="$WIFI_INTERFACE"
     fi
 
-    local iface="${WIFI_INTERFACE}"
-    log_success "Using interface: ${iface}"
+    log_success "Using interface: ${interface}"
 
     #--- Step 2: Capture DHCP traffic ---
     log_step 2 $total_steps "Capturing DHCP exchange"
@@ -75,23 +85,21 @@ run_b6() {
 
     # Start DHCP capture
     local bpf_filter="udp port 67 or udp port 68"
-    log_cmd "${TOOL_PATHS[tcpdump]} -i ${iface} -w ${capture_file} '${bpf_filter}'"
+    log_cmd "${TOOL_PATHS[tcpdump]} -i ${interface} -w ${capture_file} '${bpf_filter}'"
 
-    ${TOOL_PATHS[tcpdump]} -i "$iface" -w "$capture_file" "$bpf_filter" &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "b6_tcpdump" "${TOOL_PATHS[tcpdump]}" -i "$interface" -w "$capture_file" "$bpf_filter"
 
     # Force a DHCP renewal to capture the exchange
     log_info "Forcing DHCP renewal to capture full exchange..."
 
     if command -v dhclient &>/dev/null; then
-        dhclient -r "$iface" 2>/dev/null || true
+        run_fg dhclient -r "$interface" 2>/dev/null || true
         sleep 2
-        dhclient "$iface" 2>/dev/null || true
+        run_fg dhclient "$interface" 2>/dev/null || true
     elif command -v dhcpcd &>/dev/null; then
-        dhcpcd -k "$iface" 2>/dev/null || true
+        run_fg dhcpcd -k "$interface" 2>/dev/null || true
         sleep 2
-        dhcpcd "$iface" 2>/dev/null || true
+        run_fg dhcpcd "$interface" 2>/dev/null || true
     else
         log_warn "No DHCP client tool found — relying on passive capture"
     fi
@@ -106,16 +114,21 @@ run_b6() {
     sleep 30
     stop_countdown
 
+    stop_process "b6_tcpdump"
     
     validate_pcap "$capture_file" "DHCP exchange capture"
 
     check_abort || return 1
 
     # Update IP after DHCP renewal
-    MY_IP=$(run_tool ip -4 addr show "$iface" 2>/dev/null | awk '/inet/{print $2}' | head -1)
-    GATEWAY_IP=$(run_tool ip route show dev "$iface" 2>/dev/null | awk '/default/{print $3}' | head -1)
+    local my_ip gateway_ip
+    my_ip=$(run_tool ip -4 addr show "$interface" 2>/dev/null | awk '/inet/{print $2}' | head -1 | cut -d/ -f1)
+    gateway_ip=$(run_tool ip route show dev "$interface" 2>/dev/null | awk '/default/{print $3}' | head -1)
 
-    log_success "Post-DHCP: IP=${MY_IP}, Gateway=${GATEWAY_IP}"
+    MY_IP="$my_ip"
+    GATEWAY_IP="$gateway_ip"
+
+    log_success "Post-DHCP: IP=${my_ip}, Gateway=${gateway_ip}"
 
     #--- Step 3: Parse DHCP options ---
     log_step 3 $total_steps "Parsing DHCP options"

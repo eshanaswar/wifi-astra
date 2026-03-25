@@ -63,119 +63,50 @@ spawn_bg() {
         return 127
     fi
 
-    # Ensure SESSION_DIR is set; fallback to $TMP_DIR/wifi-astra/default if not
-    local base_dir="${SESSION_DIR:-$TMP_DIR/wifi-astra/default}"
-    local pid_dir="${base_dir}/.pids"
-    mkdir -p "$pid_dir"
-    local pid_file="${pid_dir}/${name}.pid"
-
-    log_info "Spawning background job '$name' ($tool_name): $path $*"
+    log_info "Requesting background job '$name' ($tool_name) from assessment engine..."
     
-    if [[ -n "$log_file" ]]; then
-        mkdir -p "$(dirname "$log_file")"
-        "$path" "$@" >> "$log_file" 2>&1 &
-    else
-        "$path" "$@" > /dev/null 2>&1 &
+    # Build JSON request
+    # Note: we need to handle arguments as a JSON array
+    local args_json="[]"
+    if [[ $# -gt 0 ]]; then
+        args_json=$(printf '%s\n' "$@" | run_tool jq -R . | run_tool jq -s . -c)
     fi
-    
-    local pid=$!
-    echo "$pid" > "$pid_file"
-    log_debug "Background job '$name' started with PID $pid. PID file: $pid_file"
-    
-    return 0
-}
 
-# Run a command as the non-root human user (drops privileges)
-# Usage: run_as_user <command> [args...]
-run_as_user() {
-    local cmd="$1"
-    shift
-    
-    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
-        sudo -u "$SUDO_USER" "$cmd" "$@"
+    local req_json=$(run_tool jq -n \
+        --arg id "$name" \
+        --arg cmd "$path" \
+        --argjson args "$args_json" \
+        --arg log "$log_file" \
+        '{id: $id, command: $cmd, args: $args, log_file: $log}')
+
+    if run_engine_api POST "/v1/process/start" "$req_json" >/dev/null; then
+        log_debug "Background job '$name' started by assessment engine."
+        return 0
     else
-        "$cmd" "$@"
+        log_error "Failed to start background job '$name' via assessment engine."
+        return 1
     fi
 }
 
 # Systematic cleanup of background processes
-# Iterates through .pid files in SESSION_DIR/.pids
+# Now handled by engine daemon, but keeping as a no-op for compatibility
 cleanup_processes() {
-    local base_dir="${SESSION_DIR:-$TMP_DIR/wifi-astra/default}"
-    local pid_dir="${base_dir}/.pids"
-    
-    if [[ ! -d "$pid_dir" ]]; then
-        return 0
-    fi
-
-    log_debug "Cleaning up background processes in $pid_dir"
-    
-    # Use nullglob to avoid literal *.pid if no files match
-    shopt -s nullglob
-    local pid_files=("$pid_dir"/*.pid)
-    shopt -u nullglob
-
-    if [[ ${#pid_files[@]} -eq 0 ]]; then
-        return 0
-    fi
-
-    for pid_file in "${pid_files[@]}"; do
-        if [[ ! -f "$pid_file" ]]; then continue; fi
-        
-        local pid
-        pid=$(cat "$pid_file" 2>/dev/null)
-        local name
-        name=$(basename "$pid_file" .pid)
-
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            log_debug "Sending SIGTERM to $name (PID: $pid)"
-            kill -TERM "$pid" 2>/dev/null
-            
-            # Wait for process to exit (max 5s)
-            local count=0
-            while kill -0 "$pid" 2>/dev/null && [[ $count -lt 50 ]]; do
-                sleep 0.1
-                ((count++))
-            done
-
-            if kill -0 "$pid" 2>/dev/null; then
-                log_warn "$name (PID: $pid) did not exit after SIGTERM, sending SIGKILL"
-                kill -9 "$pid" 2>/dev/null
-            fi
-        fi
-        rm -f "$pid_file"
-    done
+    log_debug "Cleanup requested (handled by engine daemon)"
+    return 0
 }
 
 # Stop a specific background process by name
 # Usage: stop_process <name> [signal]
 stop_process() {
     local name="$1"
-    local signal="${2:-TERM}"
-    local base_dir="${SESSION_DIR:-$TMP_DIR/wifi-astra/default}"
-    local pid_file="${base_dir}/.pids/${name}.pid"
-
-    if [[ -f "$pid_file" ]]; then
-        local pid
-        pid=$(cat "$pid_file" 2>/dev/null)
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            log_debug "Stopping background process '$name' (PID: $pid) with SIG$signal"
-            kill -"$signal" "$pid" 2>/dev/null
-            
-            # Wait up to 5s for process to exit
-            local count=0
-            while kill -0 "$pid" 2>/dev/null && [[ $count -lt 50 ]]; do
-                sleep 0.1
-                ((count++))
-            done
-            
-            if kill -0 "$pid" 2>/dev/null; then
-                log_warn "Process '$name' (PID: $pid) did not exit after SIG$signal, sending SIGKILL"
-                kill -9 "$pid" 2>/dev/null
-            fi
-        fi
-        rm -f "$pid_file"
+    # Note: engine API currently doesn't support specific signals via stop endpoint
+    # it always tries TERM then KILL.
+    
+    log_debug "Stopping background process '$name' via assessment engine"
+    if run_engine_api POST "/v1/process/stop?id=${name}" >/dev/null; then
+        return 0
     else
-        log_debug "No PID file found for background process '$name' at $pid_file"
+        log_debug "No process found with ID '$name' in assessment engine."
+        return 1
     fi
 }

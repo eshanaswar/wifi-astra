@@ -34,20 +34,38 @@
 #===============================================================================
 
 run_a3() {
+    set -uo pipefail
+    
+    local mon_iface="${MONITOR_INTERFACE:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    local passive_time=60
+    local deauth_used="${DEAUTH_FOR_HIDDEN:-false}"
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) mon_iface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            --passive-time) passive_time="$2"; shift 2 ;;
+            --use-deauth) deauth_used="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/a3"
+    local evidence_prefix="${evidence_dir}/a3"
 
     #--- Step 1: Load data from assessment engine, identify hidden networks ---
     log_step 1 $total_steps "Loading scan data and identifying hidden networks"
     update_tc_progress 1 $total_steps "Loading data"
 
-    if [[ ! -f "${SESSION_DB_FILE:-}" ]]; then
-        log_error "Session database not found. Run A1 first."
+    if [[ -z "${ENGINE_SOCKET:-}" || ! -S "$ENGINE_SOCKET" ]]; then
+        log_error "Assessment Engine not running. Run A1 first."
         return 1
     fi
 
     local hidden_networks
-    hidden_networks=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-hidden 2>/dev/null)
+    hidden_networks=$(run_engine_api GET "/v1/networks/hidden")
     local hidden_count
     hidden_count=$(echo "$hidden_networks" | run_tool jq 'length')
 
@@ -86,7 +104,7 @@ run_a3() {
     enable_monitor_mode || return 1
 
     #--- Step 3: Passive capture for probe responses ---
-    log_step 3 $total_steps "Passive capture for probe request/response frames (60s)"
+    log_step 3 $total_steps "Capturing probe responses (${passive_time}s)"
     update_tc_progress 3 $total_steps "Passive capture"
 
     check_abort || return 1
@@ -96,21 +114,19 @@ run_a3() {
 
     # Target the channels of hidden networks
     local target_channels
-    local target_channels=$(echo "$hidden_networks" | run_tool jq -r '.[].channel' | sort -un | paste -sd',' -)
+    target_channels=$(echo "$hidden_networks" | run_tool jq -r '.[].channel' | sort -un | paste -sd',' -)
 
-    log_cmd "${TOOL_PATHS[airodump-ng]} ${MONITOR_INTERFACE} --channel ${target_channels} --write ${capture_file} --output-format pcap"
-
-    ${TOOL_PATHS[airodump-ng]} "$MONITOR_INTERFACE" \
+    # Run airodump-ng via assessment engine process supervisor
+    spawn_bg "a3_capture" "airodump-ng" \
+        "$mon_iface" \
         --channel "$target_channels" \
         --write "$capture_file" \
-        --output-format pcap \
-        &>/dev/null &
-    local capture_pid=$!
-    register_cleanup "kill -SIGINT $capture_pid 2>/dev/null || true; wait $capture_pid 2>/dev/null || true"
+        --output-format pcap
 
-    start_countdown 60 "Passively capturing probe responses"
-    sleep 60
+    start_countdown "$passive_time" "Passively capturing probe responses"
+    sleep "$passive_time"
     stop_countdown
+    stop_process "a3_capture"
 
     
     check_abort || return 1
@@ -141,16 +157,16 @@ run_a3() {
                 log_result "FINDING" "Hidden SSID revealed (passive): ${ssid} (BSSID: ${ta})"
                 
                 # Sync with Assessment Engine
-                if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+                if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
                     # Get existing network info if possible
                     local net_info
-                    net_info=$(echo "$hidden_networks" | run_tool jq -c --arg bssid "$ta" '.[] | select(.bssid == $bssid)')
+                    net_info=$(echo "$hidden_networks" | run_tool jq -c --arg bssid "$ta" ".[] | select(.bssid == \"$ta\")")
                     
                     # Build updated JSON
                     local updated_json
                     updated_json=$(echo "$net_info" | run_tool jq --arg ssid "$ssid" '.ssid = $ssid')
                     
-                    run_tool astra-engine --db "$SESSION_DB_FILE" ingest network --json "$updated_json"
+                    run_engine_api POST "/v1/ingest/network" "$updated_json" >/dev/null
                 fi
             fi
         done <<< "$probe_results"
@@ -248,16 +264,16 @@ run_a3() {
                             log_result "FINDING" "Hidden SSID revealed (deauth): ${ssid} (BSSID: ${ta})"
                             
                             # Sync with Assessment Engine
-                            if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+                            if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
                                 # Get existing network info if possible
                                 local net_info
-                                net_info=$(echo "$hidden_networks" | run_tool jq -c --arg bssid "$ta" '.[] | select(.bssid == $bssid)')
+                                net_info=$(echo "$hidden_networks" | run_tool jq -c --arg bssid "$ta" ".[] | select(.bssid == \"$ta\")")
                                 
                                 # Build updated JSON
                                 local updated_json
                                 updated_json=$(echo "$net_info" | run_tool jq --arg ssid "$ssid" '.ssid = $ssid')
                                 
-                                run_tool astra-engine --db "$SESSION_DB_FILE" ingest network --json "$updated_json"
+                                run_engine_api POST "/v1/ingest/network" "$updated_json" >/dev/null
                             fi
                         fi
                     fi

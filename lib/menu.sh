@@ -371,8 +371,26 @@ execute_test_case() {
         done
         
         if [[ $f_found -eq 1 ]] && declare -f "$func_name" &>/dev/null; then
-            # Run the module
-            "$func_name"
+            # Build explicit arguments for the module
+            local module_args=(
+                --interface "${MONITOR_INTERFACE:-${WIFI_INTERFACE:-}}"
+                --monitor-interface "${MONITOR_INTERFACE:-}"
+                --managed-interface "${WIFI_INTERFACE:-}"
+                --target-ssid "${GUEST_SSID:-}"
+                --target-bssid "${GUEST_BSSID:-}"
+                --target-channel "${GUEST_CHANNEL:-}"
+                --gateway-ip "${GATEWAY_IP:-}"
+                --my-ip "${MY_IP:-}"
+                --evidence-dir "$SESSION_EVIDENCE_DIR"
+                --results-dir "$SESSION_RESULTS_DIR"
+                --logs-dir "$SESSION_LOG_DIR"
+            )
+            
+            # Add specific timeouts if defined
+            [[ -n "${AIRODUMP_SCAN_TIME:-}" ]] && module_args+=(--timeout "$AIRODUMP_SCAN_TIME")
+            
+            # Run the module with explicit arguments
+            "$func_name" "${module_args[@]}"
             exit $?
         else
             log_error "Function ${func_name} not found."
@@ -382,15 +400,16 @@ execute_test_case() {
     exit_code=$?
     
     # Reload session state to pick up any changes made in the subshell (SSIDs, results, etc.)
-    if [[ -f "$SESSION_DB_FILE" ]]; then
+    if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
         # Load TC Statuses
         for _tc in "${TC_ORDER[@]}"; do
-            TC_STATUS["$_tc"]=$(./astra-engine --db "$SESSION_DB_FILE" state get-status --tc "$_tc" 2>/dev/null || echo "not_run")
+            TC_STATUS["$_tc"]=$(run_engine_api GET "/v1/status/get?tc=${_tc}" || echo "not_run")
         done
         # Load Config variables
         for var_name in "${SESSION_VARS[@]}"; do
             local key=$(echo "$var_name" | tr '[:upper:]' '[:lower:]')
-            local val=$(./astra-engine --db "$SESSION_DB_FILE" state get-config --key "$key" 2>/dev/null)
+            local val
+            val=$(run_engine_api GET "/v1/config/get?key=${key}" || echo "")
             printf -v "$var_name" "%s" "$val"
         done
     fi

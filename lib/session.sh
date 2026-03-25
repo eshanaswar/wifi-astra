@@ -8,6 +8,71 @@
 
 set -uo pipefail
 
+export ENGINE_SOCKET=""
+
+#--- Engine Daemon Lifecycle ---
+start_engine_daemon() {
+    [[ -z "${SESSION_DIR:-}" ]] && return 1
+    ENGINE_SOCKET="${SESSION_DIR}/engine.sock"
+    
+    log_info "Starting Assessment Engine daemon..."
+    # Start the daemon in the background
+    run_tool astra-engine --db "$SESSION_DB_FILE" serve --socket "$ENGINE_SOCKET" > "${SESSION_LOG_DIR}/engine.log" 2>&1 &
+    local engine_pid=$!
+    
+    # Register for cleanup
+    register_cleanup "stop_engine_daemon"
+    
+    # Wait for socket to be ready
+    local timeout=10
+    while [[ $timeout -gt 0 ]]; do
+        if [[ -S "$ENGINE_SOCKET" ]]; then
+            log_success "Assessment Engine ready."
+            return 0
+        fi
+        sleep 0.5
+        ((timeout--))
+    done
+    
+    log_error "Assessment Engine failed to start within 5 seconds."
+    return 1
+}
+
+stop_engine_daemon() {
+    if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
+        log_info "Stopping Assessment Engine daemon..."
+        run_engine_api POST "/v1/shutdown" >/dev/null 2>&1 || true
+        # Wait a moment for it to exit
+        sleep 1
+        rm -f "$ENGINE_SOCKET"
+    fi
+}
+
+#--- Wrapper for Engine API calls ---
+run_engine_api() {
+    local method="$1" # GET or POST
+    local endpoint="$2"
+    shift 2
+    
+    if [[ -z "${ENGINE_SOCKET:-}" || ! -S "$ENGINE_SOCKET" ]]; then
+        # Fallback to CLI if daemon not running (migration period)
+        # But we want to avoid this as much as possible
+        return 1
+    fi
+    
+    if [[ "$method" == "GET" ]]; then
+        curl --unix-socket "$ENGINE_SOCKET" -s -X GET "http://localhost${endpoint}"
+    else
+        # POST with data
+        local data="${1:-}"
+        if [[ -n "$data" ]]; then
+            curl --unix-socket "$ENGINE_SOCKET" -s -X POST -H "Content-Type: application/json" -d "$data" "http://localhost${endpoint}"
+        else
+            curl --unix-socket "$ENGINE_SOCKET" -s -X POST "http://localhost${endpoint}"
+        fi
+    fi
+}
+
 #--- Initialize a new session ---
 init_new_session() {
     # Ask for a session name
@@ -34,16 +99,19 @@ init_new_session() {
     mkdir -p "$SESSION_DIR" "$SESSION_LOG_DIR" "$SESSION_EVIDENCE_DIR" "$SESSION_REPORT_DIR" "$SESSION_RESULTS_DIR"
     mkdir -p "${SESSION_DIR}/.pids"
     
-    # Initialize SQLite database via Go engine
+    # Start engine daemon
+    start_engine_daemon || return 1
+
+    # Initialize SQLite database via Go engine API
     log_info "Initializing session database..."
-    ./astra-engine --db "$SESSION_DB_FILE" state set-config --key "session_id" --value "$SESSION_ID"
-    ./astra-engine --db "$SESSION_DB_FILE" state set-config --key "session_name" --value "$SESSION_NAME"
-    ./astra-engine --db "$SESSION_DB_FILE" state set-config --key "created_at" --value "$(date -Iseconds)"
+    run_engine_api POST "/v1/config/set?key=session_id&value=${SESSION_ID}" >/dev/null
+    run_engine_api POST "/v1/config/set?key=session_name&value=${SESSION_NAME}" >/dev/null
+    run_engine_api POST "/v1/config/set?key=created_at&value=$(date -Iseconds)" >/dev/null
 
     # Initialize all TC statuses in DB
     for _tc in "${TC_ORDER[@]}"; do
         TC_STATUS["$_tc"]="not_run"
-        ./astra-engine --db "$SESSION_DB_FILE" state update-status --tc "$_tc" --status "not_run"
+        run_engine_api POST "/v1/status/set?tc=${_tc}&status=not_run" >/dev/null
     done
     
     # Save initial state (also updates DB)
@@ -95,10 +163,10 @@ detect_previous_session() {
         local sname=""
         
         if [[ -f "$db_file" ]]; then
-            sname=$(./astra-engine --db "$db_file" state get-config --key "session_name" 2>/dev/null)
+            sname=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-config --key "session_name" 2>/dev/null)
             # Count statuses that are 'done'
             # For simplicity in this shell loop, we'll just use astra-engine to get all statuses and count
-            done_count=$(./astra-engine --db "$db_file" state get-dashboard | grep -c ":done" || echo "0")
+            done_count=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard | grep -c ":done" || echo "0")
         fi
         
         local display_name="${sname:-$sid}"
@@ -194,17 +262,21 @@ load_session() {
     
     # --- PRIMARY: Load from SQLite via Go Engine ---
     if [[ -n "${SESSION_DB_FILE:-}" && -f "$SESSION_DB_FILE" ]]; then
+        # Start engine daemon
+        start_engine_daemon || return 1
+        
         log_info "Loading state from database..."
         
         # Load TC Statuses
         for _tc in "${TC_ORDER[@]}"; do
-            TC_STATUS["$_tc"]=$(./astra-engine --db "$SESSION_DB_FILE" state get-status --tc "$_tc" 2>/dev/null || echo "not_run")
+            TC_STATUS["$_tc"]=$(run_engine_api GET "/v1/status/get?tc=${_tc}" || echo "not_run")
         done
         
         # Load Config variables
         for var_name in "${SESSION_VARS[@]}"; do
             local key=$(echo "$var_name" | tr '[:upper:]' '[:lower:]')
-            local val=$(./astra-engine --db "$SESSION_DB_FILE" state get-config --key "$key" 2>/dev/null)
+            local val
+            val=$(run_engine_api GET "/v1/config/get?key=${key}" || echo "")
             
             # Handle default values
             if [[ "$var_name" == "SESSION_NAME" && -z "$val" ]]; then
@@ -309,11 +381,11 @@ save_session_state() {
         status_map=$(echo "$status_map" | run_tool jq --arg tc "$_tc" --arg st "${TC_STATUS[$_tc]:-not_run}" '.[$tc] = $st')
     done
     
-    # 2. Sync to SQLite via Go Engine
-    if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
-        run_tool astra-engine --db "$SESSION_DB_FILE" state batch-set-config --json "$config_map" >/dev/null 2>&1
-        run_tool astra-engine --db "$SESSION_DB_FILE" state batch-update-status --json "$status_map" >/dev/null 2>&1
-        run_tool astra-engine --db "$SESSION_DB_FILE" state set-config --key "updated_at" --value "$(date '+%Y-%m-%d %H:%M:%S')" >/dev/null 2>&1
+    # 2. Sync to SQLite via Go Engine API
+    if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
+        run_engine_api POST "/v1/config/batch-set" "$config_map" >/dev/null 2>&1
+        run_engine_api POST "/v1/status/batch-set" "$status_map" >/dev/null 2>&1
+        run_engine_api POST "/v1/config/set?key=updated_at&value=$(date '+%Y-%m-%d %H:%M:%S')" >/dev/null 2>&1
     fi
 
     # 3. JSON Fallback (for existing report generator logic)
@@ -426,6 +498,14 @@ save_tc_result() {
     echo "$finalized_json" > "$result_file"
     TC_RESULTS_FILE["$tc_id"]="$result_file"
     _log_to_file "RESULT-SAVE" "Saved results for ${tc_id} to ${result_file}"
+    
+    # Update status to done
+    TC_STATUS["$tc_id"]="done"
+    
+    # Sync to Assessment Engine
+    if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
+        run_engine_api POST "/v1/status/set?tc=${tc_id}&status=done" >/dev/null 2>&1
+    fi
 }
 
 #--- Enrich a TC result file with standard metadata/evidence/confidence ---
@@ -636,8 +716,8 @@ manage_sessions() {
                 local sname=""
 
                 if [[ -f "$db_file" ]]; then
-                    sname=$(./astra-engine --db "$db_file" state get-config --key "session_name" 2>/dev/null)
-                    done_count=$(./astra-engine --db "$db_file" state get-dashboard | grep -c ":done" || echo "0")
+                    sname=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-config --key "session_name" 2>/dev/null)
+                    done_count=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard | grep -c ":done" || echo "0")
                 fi
 
                 local session_date

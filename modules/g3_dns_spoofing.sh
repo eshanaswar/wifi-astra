@@ -299,7 +299,7 @@ run_g3() {
                 --arg proto "$hash_type" \
                 '{tc_id: $tc, client_mac: $mac, target_host: $host, hash: $h, proto: $proto}')
             
-            run_tool astra-engine --db "$SESSION_DB_FILE" ingest credential --json "$cred_json" >/dev/null 2>&1
+            run_engine_api POST "/v1/ingest/credential" "$cred_json" >/dev/null 2>&1
         done < "$hashes_file"
     fi
 

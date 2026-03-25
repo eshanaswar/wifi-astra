@@ -42,8 +42,32 @@
 set -uo pipefail
 
 run_b10() {
+    set -uo pipefail
+
+    local interface=""
+    local monitor_interface=""
+    local gateway_ip=""
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --monitor-interface) monitor_interface="$2"; shift 2 ;;
+            --gateway) gateway_ip="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals if not provided
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    monitor_interface="${monitor_interface:-${MONITOR_INTERFACE:-}}"
+    gateway_ip="${gateway_ip:-${GATEWAY_IP:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+
     local total_steps=5
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/b10"
+    local evidence_prefix="${evidence_dir}/b10"
 
     #--- Step 1: Locate ${TOOL_PATHS[airsnitch]} and verify environment ---
     log_step 1 $total_steps "Checking for AirSnitch and network setup"
@@ -71,7 +95,7 @@ run_b10() {
         echo -e "${C_CYAN}│                                                                 │${C_RESET}"
         echo -e "${C_CYAN}│  To install:                                                     │${C_RESET}"
         echo -e "${C_CYAN}│    git clone https://github.com/vanhoefm/airsnitch.git           │${C_RESET}"
-        echo -e "${C_CYAN}│    cd ${TOOL_PATHS[airsnitch]} && make                                          │${C_RESET}"
+        echo -e "${C_CYAN}│    cd airsnitch && make                                          │${C_RESET}"
         echo -e "${C_CYAN}│  Then either add the build directory to PATH or set:             │${C_RESET}"
         echo -e "${C_CYAN}│    export AIRSNITCH_PATH=/path/to/airsnitch/airsnitch           │${C_RESET}"
         echo -e "${C_CYAN}│                                                                 │${C_RESET}"
@@ -79,7 +103,7 @@ run_b10() {
         echo -e "${C_CYAN}└─────────────────────────────────────────────────────────────────┘${C_RESET}"
         echo ""
 
-        mkdir -p "${SESSION_EVIDENCE_DIR}"
+        mkdir -p "${evidence_dir}"
         local out_file="${evidence_prefix}_airsnitch_output.txt"
         {
             echo "============================================================"
@@ -88,7 +112,7 @@ run_b10() {
             echo "  Status: SKIPPED — AirSnitch not installed"
             echo "============================================================"
             echo ""
-            echo "Install: git clone https://github.com/vanhoefm/airsnitch.git && cd ${TOOL_PATHS[airsnitch]} && make"
+            echo "Install: git clone https://github.com/vanhoefm/airsnitch.git && cd airsnitch && make"
             echo "Optional: export AIRSNITCH_PATH=/path/to/airsnitch/airsnitch"
         } > "$out_file"
 
@@ -121,31 +145,35 @@ run_b10() {
     log_success "Found AirSnitch: ${AIRSNITCH_CMD}"
 
     # Need managed interface (connected) and monitor interface
-    if [[ -z "${WIFI_INTERFACE:-}" ]]; then
+    if [[ -z "$interface" ]]; then
         configure_network || return 1
+        interface="$WIFI_INTERFACE"
     fi
 
-    local mon_iface="${MONITOR_INTERFACE:-}"
-    if [[ -z "$mon_iface" ]]; then
+    if [[ -z "$monitor_interface" ]]; then
         log_info "Monitor interface not set. AirSnitch may require a monitor-mode interface for injection."
-        get_or_request_param "mon_iface" "  Enter monitor interface (e.g. wlan0mon), or Enter to try with managed only"
+        get_or_request_param "monitor_interface" "  Enter monitor interface (e.g. wlan0mon), or Enter to try with managed only"
     fi
 
     #--- Step 2: Ensure we're connected (managed) and optionally have monitor ---
     log_step 2 $total_steps "Verifying interfaces"
     update_tc_progress 2 $total_steps "Interfaces"
 
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
-    local my_ip gateway_ip
-    my_ip=$(run_fg ip -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
-    gateway_ip="${GATEWAY_IP:-$(run_fg ip route show dev "$WIFI_INTERFACE" 2>/dev/null | awk '/default/{print $3}' | head -1)}"
+    local my_ip
+    my_ip=$(run_fg ip -4 addr show "$interface" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+    
+    if [[ -z "$gateway_ip" ]]; then
+        gateway_ip=$(run_fg ip route show dev "$interface" 2>/dev/null | awk '/default/{print $3}' | head -1)
+    fi
 
     if [[ -z "$my_ip" ]]; then
-        log_error "No IP on ${WIFI_INTERFACE}. Connect to the target WiFi first."
+        log_error "No IP on ${interface}. Connect to the target WiFi first."
         return 1
     fi
-    log_success "Connected: ${WIFI_INTERFACE} IP=${my_ip}, Gateway=${gateway_ip}"
+    log_success "Connected: ${interface} IP=${my_ip}, Gateway=${gateway_ip}"
 
     #--- Step 3: Run AirSnitch ---
     log_step 3 $total_steps "Running AirSnitch"
@@ -153,15 +181,15 @@ run_b10() {
 
     check_abort || return 1
 
-    mkdir -p "${SESSION_EVIDENCE_DIR}"
+    mkdir -p "${evidence_dir}"
     local out_file="${evidence_prefix}_airsnitch_output.txt"
-    local run_iface="${mon_iface:-$WIFI_INTERFACE}"
+    local run_iface="${monitor_interface:-$interface}"
 
     {
         echo "============================================================"
         echo "  B10: AirSnitch — Client Isolation Bypass"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Managed interface: ${WIFI_INTERFACE}"
+        echo "  Managed interface: ${interface}"
         echo "  Monitor/attack interface: ${run_iface}"
         echo "  Gateway: ${gateway_ip}"
         echo "============================================================"

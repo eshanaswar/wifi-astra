@@ -37,20 +37,34 @@
 #===============================================================================
 
 run_a2() {
+    set -uo pipefail
+    
+    local target_ssid="${GUEST_SSID:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --target-ssid) target_ssid="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
     local total_steps=5
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/a2"
+    local evidence_prefix="${evidence_dir}/a2"
 
     #--- Step 1: Load scan data from assessment engine ---
     log_step 1 $total_steps "Loading scan data from assessment engine"
     update_tc_progress 1 $total_steps "Loading data"
 
-    if [[ ! -f "${SESSION_DB_FILE:-}" ]]; then
-        log_error "Session database not found. Run A1 first."
+    if [[ -z "${ENGINE_SOCKET:-}" || ! -S "$ENGINE_SOCKET" ]]; then
+        log_error "Assessment Engine not running. Run A1 first."
         return 1
     fi
 
     local networks_json
-    networks_json=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list 2>/dev/null)
+    networks_json=$(run_engine_api GET "/v1/networks")
 
     if [[ -z "$networks_json" || "$networks_json" == "null" || "$networks_json" == "[]" ]]; then
         log_error "No network data found in database. Run A1 first."
@@ -60,10 +74,9 @@ run_a2() {
     local network_count
     network_count=$(echo "$networks_json" | run_tool jq length)
 
-    # Use internal variables if available, otherwise fallback to config in DB
-    local target_ssid="${GUEST_SSID:-}"
+    # Use arguments if provided, otherwise fallback to config in DB
     if [[ -z "$target_ssid" ]]; then
-        target_ssid=$(run_tool astra-engine --db "$SESSION_DB_FILE" state get-config --key guest_ssid 2>/dev/null)
+        target_ssid=$(run_engine_api GET "/v1/config/get?key=guest_ssid")
     fi
 
     log_success "Loaded ${network_count} networks from assessment engine"
@@ -150,7 +163,7 @@ run_a2() {
             --arg encryption "$encryption" \
             '.[$key] = (.[$key] // []) + [{ssid: $ssid, bssid: $bssid, channel: $channel, encryption: $encryption}]')
 
-    done < <(echo "$a1_data" | run_tool jq -c '.networks[]')
+    done < <(echo "$networks_json" | run_tool jq -c '.[]')
 
     # Analyze AP groups
     {
@@ -255,12 +268,12 @@ run_a2() {
         [[ -z "$vendor" ]] && vendor="Unknown (manual lookup needed)"
 
         local ap_count_for_oui
-        local ap_count_for_oui=$(echo "$a1_data" | run_tool jq -r '.networks[].bssid' | grep -ic "^${oui}" || true)
+        local ap_count_for_oui=$(echo "$networks_json" | run_tool jq -r '.[].bssid' | grep -ic "^${oui}" || true)
 
         echo "  ${oui} → ${vendor} (${ap_count_for_oui} APs)" >> "$correlation_file"
         oui_results+="${oui}=${vendor}\n"
 
-    done < <(echo "$a1_data" | run_tool jq -r '.networks[].bssid' | cut -d: -f1-3 | sort -u)
+    done < <(echo "$networks_json" | run_tool jq -r '.[].bssid' | cut -d: -f1-3 | sort -u)
 
     log_info "OUI vendor lookup complete"
 

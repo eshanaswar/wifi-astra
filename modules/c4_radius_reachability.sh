@@ -32,10 +32,31 @@
 #    - targets_scanned[]: list of IPs tested
 #===============================================================================
 
+set -uo pipefail
+
 run_c4() {
     set -uo pipefail
+
+    local interface=""
+    local nac_ip=""
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --nac-ip) nac_ip="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals if not provided
+    interface="${interface:-${WIFI_INTERFACE:-wlan0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/c4"
+    local evidence_prefix="${evidence_dir}/c4"
 
     #--- Step 1: Verify tools and prerequisites ---
     log_step 1 $total_steps "Verifying tools and network state"
@@ -44,19 +65,20 @@ run_c4() {
     check_module_dependencies "C4" || return 1
     
     # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
-    if [[ -z "${WIFI_INTERFACE:-}" ]]; then
-        configure_network || return 1
-    fi
-    local iface="${WIFI_INTERFACE:-wlan0}"
     local gateway_ip="${GATEWAY_IP:-}"
+
+    if [[ -z "$gateway_ip" ]]; then
+        gateway_ip=$(run_fg --quiet ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
+    fi
 
     if [[ -z "$gateway_ip" ]]; then
         log_error "Gateway IP not found. Cannot determine network context."
         return 1
     fi
-    log_success "Using interface: ${iface}, Gateway: ${gateway_ip}"
+    log_success "Using interface: ${interface}, Gateway: ${gateway_ip}"
 
     #--- Step 2: Configure scan targets ---
     log_step 2 $total_steps "Configuring scan targets"
@@ -68,10 +90,15 @@ run_c4() {
     echo -e "  known internal NAC IP addresses."
     echo ""
     
-    get_or_request_param "nac_target" "  Do you know the IP of the corporate RADIUS/NAC server? (IP or Enter to skip)"
+    if [[ -z "$nac_ip" ]]; then
+        stty echo 2>/dev/null
+        read -t 0.1 -n 10000 discard 2>/dev/null || true
+        printf "  Do you know the IP of the corporate RADIUS/NAC server? (IP or Enter to skip): "
+        read nac_ip
+    fi
     
     local scan_targets="$gateway_ip"
-    [[ -n "$nac_target" ]] && scan_targets="${gateway_ip} ${nac_target}"
+    [[ -n "$nac_ip" ]] && scan_targets="${gateway_ip} ${nac_ip}"
 
     local scan_base="${evidence_prefix}_radius_scan"
 
@@ -83,7 +110,7 @@ run_c4() {
 
     # Typical ports: 1812 (auth), 1813 (acct), 1645 (old auth), 1646 (old acct), 3799 (CoA)
     log_info "Scanning UDP ports 1812, 1813, 1645, 1646, 3799..."
-    run_fg "${TOOL_PATHS[nmap]}" -sU -p 1812,1813,1645,1646,3799 --max-retries 1 -T4 $scan_targets -oA "${scan_base}"
+    run_fg nmap -sU -p 1812,1813,1645,1646,3799 --max-retries 1 -T4 $scan_targets -oA "${scan_base}"
 
     #--- Step 4: Scan NAC Admin Ports (TCP) ---
     log_step 4 $total_steps "Scanning NAC Admin Ports (TCP)"
@@ -92,7 +119,7 @@ run_c4() {
     check_abort || return 1
 
     log_info "Scanning TCP ports 80, 443, 8443, 4443..."
-    run_fg "${TOOL_PATHS[nmap]}" -sT -p 80,443,8443,4443 --max-retries 1 -T4 $scan_targets -oA "${scan_base}_tcp"
+    run_fg nmap -sT -p 80,443,8443,4443 --max-retries 1 -T4 $scan_targets -oA "${scan_base}_tcp"
 
     #--- Step 5: Analyze results ---
     log_step 5 $total_steps "Analyzing scan results"
@@ -140,8 +167,8 @@ run_c4() {
     update_tc_progress 6 $total_steps "Saving"
 
     local result_json
-    evidence_register_file "${scan_base}.nmap"
-    evidence_register_file "${scan_base}_tcp.nmap"
+    evidence_register_file "${nmap_file}"
+    evidence_register_file "${nmap_tcp_file}"
 
     result_json=$(run_fg jq -n \
         --arg status "$status" \

@@ -286,7 +286,7 @@ CAPLET
                 --arg proto "http-stripped" \
                 '{tc_id: $tc, client_mac: $mac, target_host: $host, username: $u, password: $p, proto: $proto}')
             
-            run_tool astra-engine --db "$SESSION_DB_FILE" ingest credential --json "$cred_json" >/dev/null 2>&1
+            run_engine_api POST "/v1/ingest/credential" "$cred_json" >/dev/null 2>&1
         done < "$creds_file"
     fi
 

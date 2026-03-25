@@ -146,6 +146,7 @@ ensure_user_ownership() {
     user_group=$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")
     chown "${SUDO_USER}:${user_group}" "$file_path" 2>/dev/null || true
 }
+export -f ensure_user_ownership
 
 #--- Finalize evidence permissions ---
 # Ensures all generated evidence files are readable by the user who invoked sudo.
@@ -163,4 +164,5 @@ finalize_evidence_permissions() {
     chmod -R 700 "$SESSION_DIR" 2>/dev/null || true
     find "$SESSION_DIR" -type f -exec chmod 600 {} + 2>/dev/null || true
 }
+export -f finalize_evidence_permissions
 

@@ -34,9 +34,27 @@
 set -uo pipefail
 
 run_b8() {
+    set -uo pipefail
+
+    local iface="${WIFI_INTERFACE:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    local timeout=60
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) iface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Finalize local variables
+    local interface="${iface:-${WIFI_INTERFACE:-wlan0}}"
+    local evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
     local tc_id="B8"
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/b8"
+    local evidence_prefix="${evidence_dir}/b8"
 
     #--- Step 1: Verify tools and prerequisites ---
     log_step 1 $total_steps "Verifying tools and network state"
@@ -45,19 +63,20 @@ run_b8() {
     check_module_dependencies "$tc_id" || return 1
     
     # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
-    if [[ -z "${WIFI_INTERFACE:-}" ]]; then
+    if [[ -z "$interface" ]]; then
         configure_network || return 1
+        interface="${WIFI_INTERFACE:-wlan0}"
     fi
-    local iface="${WIFI_INTERFACE:-wlan0}"
-    log_success "Using interface: ${iface}"
+    log_success "Using interface: ${interface}"
 
     #--- Step 2: Configure capture parameters ---
     log_step 2 $total_steps "Configuring capture parameters"
     update_tc_progress 2 $total_steps "Configuring"
 
-    local capture_time=60
+    local capture_time="$timeout"
     local pcap_file="${evidence_prefix}_bcast.pcap"
     local analysis_file="${evidence_prefix}_bcast_analysis.txt"
 
@@ -70,14 +89,14 @@ run_b8() {
 
     check_abort || return 1
 
-    log_info "Monitoring for SSDP, LLMNR, mDNS, and NetBIOS on ${iface}..."
+    log_info "Monitoring for SSDP, LLMNR, mDNS, and NetBIOS on ${interface}..."
     # Filter for common broadcast/multicast noisy UDP protocols
     local bcast_filter="udp port 1900 or udp port 5355 or udp port 5353 or udp port 137 or udp port 138"
-    log_cmd "${TOOL_PATHS[tcpdump]} -i ${iface} -nn '${bcast_filter}' -w ${pcap_file}"
+    log_cmd "${TOOL_PATHS[tcpdump]} -i ${interface} -nn '${bcast_filter}' -w ${pcap_file}"
 
     # Run tcpdump
     start_countdown "$capture_time" "Analyzing broadcast/multicast leaks"
-    timeout "$capture_time" "${TOOL_PATHS[tcpdump]}" -i "$iface" -nn -w "$pcap_file" udp port 1900 or udp port 5355 or udp port 5353 or udp port 137 or udp port 138 >/dev/null 2>&1 || true
+    timeout "$capture_time" "${TOOL_PATHS[tcpdump]}" -i "$interface" -nn -w "$pcap_file" udp port 1900 or udp port 5355 or udp port 5353 or udp port 137 or udp port 138 >/dev/null 2>&1 || true
     stop_countdown
     
     check_abort || return 1

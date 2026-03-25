@@ -39,7 +39,7 @@
 #  RESULT JSON FIELDS:
 #    - dns_server: IP of DNS server assigned to guest
 #    - internal_resolves: bool — can resolve internal names?
-#    - resolved_hostnames[]: array of {hostname, run_tool ip, type}
+#    - resolved_hostnames[]: array of {hostname, ip, type}
 #    - zone_transfer_possible: bool
 #    - dns_is_internal: bool — is DNS server on RFC1918?
 #===============================================================================
@@ -47,8 +47,29 @@
 set -uo pipefail
 
 run_c1() {
+    set -uo pipefail
+
+    local interface=""
+    local dns_server=""
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --dns-server) dns_server="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals if not provided
+    interface="${interface:-${WIFI_INTERFACE:-wlan0}}"
+    dns_server="${dns_server:-${DNS_SERVER:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/c1"
+    local evidence_prefix="${evidence_dir}/c1"
 
     #--- Step 1: Verify tools and get DNS config ---
     log_step 1 $total_steps "Identifying DNS configuration"
@@ -57,6 +78,7 @@ run_c1() {
     check_module_dependencies "C1" || return 1
 
     # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
@@ -65,33 +87,43 @@ run_c1() {
     fi
 
     # Get DNS server - prefer value gathered during pre-flight (internal DNS)
-    if [[ -z "${DNS_SERVER:-}" ]]; then
-        DNS_SERVER=$(resolvectl status "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | grep "DNS Servers:" | awk '{print $NF}' | head -1)
-        [[ -z "$DNS_SERVER" ]] && DNS_SERVER=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null | head -1 | awk '{print $2}')
+    if [[ -z "$dns_server" ]]; then
+        dns_server=$(run_fg resolvectl status "$interface" 2>/dev/null | grep "DNS Servers:" | awk '{print $NF}' | head -1)
+        [[ -z "$dns_server" ]] && dns_server=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null | head -1 | awk '{print $2}')
     else
         echo ""
-        echo -e "  Current DNS Server: ${C_BOLD}${DNS_SERVER}${C_RESET}"
-        get_or_request_param "_change_dns" "  Change DNS server for this test? [y/N]"
+        echo -e "  Current DNS Server: ${C_BOLD}${dns_server}${C_RESET}"
+        local _change_dns=""
+        stty echo 2>/dev/null
+        read -t 0.1 -n 10000 discard 2>/dev/null || true
+        printf "  Change DNS server for this test? [y/N]: "
+        read _change_dns
         if [[ "${_change_dns,,}" == "y" ]]; then
-            get_or_request_param "DNS_SERVER" "  Enter INTERNAL DNS server IP"
+            printf "  Enter INTERNAL DNS server IP: "
+            read dns_server
         fi
     fi
 
-    if [[ -z "$DNS_SERVER" ]]; then
+    if [[ -z "$dns_server" ]]; then
         log_error "Could not identify DNS server."
-        get_or_request_param "DNS_SERVER" "  Enter INTERNAL DNS server IP for the target network"
-        DNS_SERVER=$(echo "$DNS_SERVER" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -1)
-        [[ -z "$DNS_SERVER" ]] && return 1
+        printf "  Enter INTERNAL DNS server IP for the target network: "
+        read dns_server
+        dns_server=$(echo "$dns_server" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -1)
+        [[ -z "$dns_server" ]] && return 1
     fi
 
-    # Clean up DNS_SERVER (remove trailing spaces, multiple IPs, etc.)
-    DNS_SERVER=$(echo "$DNS_SERVER" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -1)
+    # Clean up dns_server (remove trailing spaces, multiple IPs, etc.)
+    dns_server=$(echo "$dns_server" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -1)
 
-    # Validate that DNS_SERVER looks like an IPv4 address
-    if [[ ! "$DNS_SERVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        log_error "DNS server '${DNS_SERVER}' does not look like a valid IPv4 address."
+    # Validate that dns_server looks like an IPv4 address
+    if [[ ! "$dns_server" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log_error "DNS server '${dns_server}' does not look like a valid IPv4 address."
         return 1
     fi
+    
+    # Update global for other modules if needed
+    DNS_SERVER="$dns_server"
+    export DNS_SERVER
 
     local dns_config_file="${evidence_prefix}_dns_config.txt"
     {
@@ -100,27 +132,27 @@ run_c1() {
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "============================================================"
         echo ""
-        echo "DNS Server: ${DNS_SERVER}"
-        echo "Interface: ${WIFI_INTERFACE:-unknown}"
+        echo "DNS Server: ${dns_server}"
+        echo "Interface: ${interface}"
         echo "Our IP: ${MY_IP:-unknown}"
         echo ""
         echo "--- /etc/resolv.conf ---"
         cat /etc/resolv.conf 2>/dev/null
         echo ""
         echo "--- resolvectl status ---"
-        resolvectl status "${WIFI_INTERFACE:-wlan0}" 2>/dev/null || echo "resolvectl not available"
+        run_fg resolvectl status "$interface" 2>/dev/null || echo "resolvectl not available"
     } > "$dns_config_file"
 
     # Check if DNS is internal
     local dns_is_internal="false"
-    if echo "$DNS_SERVER" | grep -qP '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)'; then
+    if echo "$dns_server" | grep -qP '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)'; then
         dns_is_internal="true"
-        log_result "FINDING" "DNS server ${DNS_SERVER} is on an RFC1918 (private) address — internal DNS exposed to target WiFi"
+        log_result "FINDING" "DNS server ${dns_server} is on an RFC1918 (private) address — internal DNS exposed to target WiFi"
     else
-        log_info "DNS server ${DNS_SERVER} appears to be a public DNS"
+        log_info "DNS server ${dns_server} appears to be a public DNS"
     fi
 
-    log_success "DNS Server: ${DNS_SERVER} (Internal: ${dns_is_internal})"
+    log_success "DNS Server: ${dns_server} (Internal: ${dns_is_internal})"
 
     #--- Step 2: Test common internal hostname patterns ---
     log_step 2 $total_steps "Testing resolution of common internal hostnames"
@@ -146,7 +178,7 @@ run_c1() {
     {
         echo "============================================================"
         echo "  C1: Internal Hostname Resolution Test"
-        echo "  DNS Server: ${DNS_SERVER}"
+        echo "  DNS Server: ${dns_server}"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "============================================================"
         echo ""
@@ -157,7 +189,8 @@ run_c1() {
     # Prompt user for known internal domains
     local custom_domains=()
     local custom_domain_input=""
-    get_or_request_param "custom_domain_input" "  [?] Do you know any internal domains to test? (comma-separated, leave blank to skip)"
+    printf "  [?] Do you know any internal domains to test? (comma-separated, leave blank to skip): "
+    read custom_domain_input
     if [[ -n "$custom_domain_input" ]]; then
         local old_ifs="$IFS"
         IFS=','
@@ -178,7 +211,7 @@ run_c1() {
 
     # Method 1: Reverse DNS on the DNS server itself
     local rdns
-    rdns=$(run_fg --quiet dig "@$DNS_SERVER" -x "$DNS_SERVER" +short +time=1 +tries=1 2>&1 | head -1)
+    rdns=$(run_fg --quiet dig "@$dns_server" -x "$dns_server" +short +time=1 +tries=1 2>&1 | head -1)
     [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]] && printf "%s\n" "$rdns" >>"$TC_TOOL_OUTPUT_FILE" 2>/dev/null || true
     if [[ "$rdns" == ";;"* ]]; then rdns=""; fi
     if [[ -n "$rdns" ]]; then
@@ -189,7 +222,7 @@ run_c1() {
     # Method 2: SOA query
     if [[ -z "$internal_domain" ]]; then
         local soa
-        soa=$(run_fg --quiet dig "@$DNS_SERVER" . SOA +short +time=1 +tries=1 2>&1 | head -1)
+        soa=$(run_fg --quiet dig "@$dns_server" . SOA +short +time=1 +tries=1 2>&1 | head -1)
         [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]] && printf "%s\n" "$soa" >>"$TC_TOOL_OUTPUT_FILE" 2>/dev/null || true
         if [[ "$soa" == ";;"* ]]; then soa=""; fi
         log_debug "SOA query result: ${soa}"
@@ -220,7 +253,7 @@ run_c1() {
 
         # First try bare hostname
         local result
-        result=$(run_fg --quiet dig "@$DNS_SERVER" "$hostname" A +short +time=1 +tries=1 2>&1 | head -1)
+        result=$(run_fg --quiet dig "@$dns_server" "$hostname" A +short +time=1 +tries=1 2>&1 | head -1)
         [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]] && printf "%s\n" "$result" >>"$TC_TOOL_OUTPUT_FILE" 2>/dev/null || true
 
         if [[ "$result" == ";;"* ]]; then
@@ -252,7 +285,7 @@ run_c1() {
         for suffix in "${domain_suffixes[@]}"; do
             local fqdn="${hostname}${suffix}"
 
-            result=$(run_fg --quiet dig "@$DNS_SERVER" "$fqdn" A +short +time=1 +tries=1 2>&1 | head -1)
+            result=$(run_fg --quiet dig "@$dns_server" "$fqdn" A +short +time=1 +tries=1 2>&1 | head -1)
             [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]] && printf "%s\n" "$result" >>"$TC_TOOL_OUTPUT_FILE" 2>/dev/null || true
 
             if [[ "$result" == ";;"* ]]; then
@@ -303,7 +336,7 @@ run_c1() {
     {
         echo "============================================================"
         echo "  C1: DNS Zone Transfer Attempts"
-        echo "  DNS Server: ${DNS_SERVER}"
+        echo "  DNS Server: ${dns_server}"
         echo "============================================================"
         echo ""
     } > "$zone_file"
@@ -320,9 +353,9 @@ run_c1() {
     domains_to_try+=("." "local" "internal" "corp")
 
     for domain in "${domains_to_try[@]}"; do
-        log_cmd "${TOOL_PATHS[dig]} @${DNS_SERVER} ${domain} AXFR"
+        log_cmd "dig @${dns_server} ${domain} AXFR"
         local axfr_result
-        axfr_result=$(run_fg --quiet dig "@${DNS_SERVER}" "$domain" AXFR +time=2 +tries=1 2>&1 || true)
+        axfr_result=$(run_fg --quiet dig "@${dns_server}" "$domain" AXFR +time=2 +tries=1 2>&1 || true)
         [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]] && printf "%s\n" "$axfr_result" >>"$TC_TOOL_OUTPUT_FILE" 2>/dev/null || true
 
         echo "--- Zone Transfer: ${domain} ---" >> "$zone_file"
@@ -365,7 +398,7 @@ run_c1() {
     {
         echo "============================================================"
         echo "  C1: Reverse DNS Results"
-        echo "  DNS Server: ${DNS_SERVER}"
+        echo "  DNS Server: ${dns_server}"
         echo "============================================================"
         echo ""
     } > "$reverse_file"
@@ -383,7 +416,7 @@ run_c1() {
         for octet in 1 2 3 5 10 20 50 100 200 254; do
             local test_ip="${range}.${octet}"
             local ptr_result
-            ptr_result=$(run_fg --quiet dig "@$DNS_SERVER" -x "$test_ip" +short +time=1 +tries=1 2>&1 | head -1)
+            ptr_result=$(run_fg --quiet dig "@$dns_server" -x "$test_ip" +short +time=1 +tries=1 2>&1 | head -1)
             [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]] && printf "%s\n" "$ptr_result" >>"$TC_TOOL_OUTPUT_FILE" 2>/dev/null || true
 
             if [[ "$ptr_result" == ";;"* ]]; then
@@ -414,9 +447,9 @@ run_c1() {
     check_abort || return 1
 
     local dns_version
-    dns_version=$(run_fg --quiet dig "@$DNS_SERVER" version.bind TXT CH +short +time=1 +tries=1 2>&1 | head -1)
+    dns_version=$(run_fg --quiet dig "@$dns_server" version.bind TXT CH +short +time=1 +tries=1 2>&1 | head -1)
     local dns_hostname
-    dns_hostname=$(run_fg --quiet dig "@$DNS_SERVER" hostname.bind TXT CH +short +time=1 +tries=1 2>&1 | head -1)
+    dns_hostname=$(run_fg --quiet dig "@$dns_server" hostname.bind TXT CH +short +time=1 +tries=1 2>&1 | head -1)
     
     if [[ "$dns_version" == ";;"* ]]; then dns_version=""; fi
     if [[ "$dns_hostname" == ";;"* ]]; then dns_hostname=""; fi
@@ -457,7 +490,7 @@ run_c1() {
 
     if [[ "$public_dns_blocked" != "no" ]]; then
         public_dns_blocked="yes"
-        log_info "Public DNS appears blocked — target clients forced to use ${DNS_SERVER}"
+        log_info "Public DNS appears blocked — target clients forced to use ${dns_server}"
     fi
 
     #--- Step 7: Save results ---
@@ -473,27 +506,27 @@ run_c1() {
 
     if [[ "$internal_resolves" == "true" || "$zone_transfer_possible" == "true" ]]; then
         result_status="FINDING"
-        result_summary="Target WiFi DNS server (${DNS_SERVER}) resolves internal hostnames. ${total_resolved} internal name(s) discovered. "
+        result_summary="Target WiFi DNS server (${dns_server}) resolves internal hostnames. ${total_resolved} internal name(s) discovered. "
         [[ "$zone_transfer_possible" == "true" ]] && result_summary+="CRITICAL: DNS zone transfer is possible — entire internal DNS database exposed. "
         [[ "$dns_is_internal" == "true" ]] && result_summary+="DNS server is on internal (RFC1918) network. "
         recommendations="1) Provide a separate DNS server for target WiFi that only resolves external names. 2) Use split-horizon DNS to prevent internal name resolution from target VLAN. 3) Disable zone transfers (allow only to secondary DNS servers). 4) Block DNS (UDP/TCP 53) to internal DNS from target VLAN and redirect to a dedicated target DNS resolver. 5) Hide DNS version information."
     else
-        result_summary="Target WiFi DNS server (${DNS_SERVER}) does not resolve internal hostnames. DNS segregation is properly configured."
+        result_summary="Target WiFi DNS server (${dns_server}) does not resolve internal hostnames. DNS segregation is properly configured."
         recommendations="No action needed. DNS isolation is effective."
     fi
 
-    evidence_register_file "$(basename "$dns_config_file")"
-    evidence_register_file "$(basename "$resolution_file")"
-    evidence_register_file "$(basename "$zone_file")"
-    evidence_register_file "$(basename "$reverse_file")"
+    evidence_register_file "$dns_config_file"
+    evidence_register_file "$resolution_file"
+    evidence_register_file "$zone_file"
+    evidence_register_file "$reverse_file"
 
     local result_json
     result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
-        --arg details "DNS: ${DNS_SERVER}, Internal resolves: ${internal_resolves}, Zone xfer: ${zone_transfer_possible}, Entries: ${total_resolved}" \
+        --arg details "DNS: ${dns_server}, Internal resolves: ${internal_resolves}, Zone xfer: ${zone_transfer_possible}, Entries: ${total_resolved}" \
         --arg recommendations "$recommendations" \
-        --arg dns_server "$DNS_SERVER" \
+        --arg dns_server "$dns_server" \
         --arg internal_resolves "$internal_resolves" \
         --arg zone_transfer_possible "$zone_transfer_possible" \
         --arg dns_is_internal "$dns_is_internal" \
@@ -532,7 +565,7 @@ run_c1() {
     else
         log_result "SECURE" "Internal DNS resolution not possible from target WiFi"
     fi
-    log_result "INFO" "DNS server: ${DNS_SERVER} (Internal: ${dns_is_internal}, Public DNS blocked: ${public_dns_blocked})"
+    log_result "INFO" "DNS server: ${dns_server} (Internal: ${dns_is_internal}, Public DNS blocked: ${public_dns_blocked})"
 
     return 0
 }

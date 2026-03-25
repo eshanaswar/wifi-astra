@@ -47,9 +47,26 @@
 
 run_b3() {
     set -uo pipefail
+
+    local iface="${WIFI_INTERFACE:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    local timeout="${CDP_CAPTURE_TIME:-120}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) iface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Finalize local variables
+    local interface="${iface:-${WIFI_INTERFACE:-wlan0}}"
+    local evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
     local tc_id="B3"
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/b3"
+    local evidence_prefix="${evidence_dir}/b3"
 
     #--- Step 1: Verify tools and connectivity ---
     log_step 1 $total_steps "Verifying tools and connectivity"
@@ -59,24 +76,18 @@ run_b3() {
     check_module_dependencies "$tc_id" || return 1
     
     # Ensure we're connected (not in monitor mode)
-    if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
-        log_info "Disabling monitor mode for connected testing..."
-        disable_monitor_mode
-        sleep 3
-    fi
-
-    # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
-    if [[ -z "${WIFI_INTERFACE:-}" ]]; then
+    if [[ -z "$interface" ]]; then
         configure_network || return 1
+        interface="$WIFI_INTERFACE"
     fi
 
-    local iface="${WIFI_INTERFACE}"
-    log_success "Using interface: ${iface}"
+    log_success "Using interface: ${interface}"
 
     #--- Step 2: Capture CDP and LLDP frames ---
-    log_step 2 $total_steps "Capturing CDP/LLDP frames (${CDP_CAPTURE_TIME}s)"
+    log_step 2 $total_steps "Capturing CDP/LLDP frames (${timeout}s)"
     update_tc_progress 2 $total_steps "Capturing"
 
     check_abort || return 1
@@ -87,28 +98,29 @@ run_b3() {
     # Simplified BPF: capture CDP multicast + LLDP multicast
     local bpf_filter="(ether dst 01:00:0c:cc:cc:cc) or (ether proto 0x88cc) or (ether dst 01:80:c2:00:00:0e)"
 
-    log_cmd "${TOOL_PATHS[tcpdump]} -i ${iface} -w ${capture_file} '${bpf_filter}' (timeout: ${CDP_CAPTURE_TIME}s)"
+    log_cmd "${TOOL_PATHS[tcpdump]} -i ${interface} -w ${capture_file} '${bpf_filter}' (timeout: ${timeout}s)"
 
     # CDP is sent every 60s by default; LLDP every 30s
     # We capture for the configured time (default 120s) to catch at least 2 cycles
-    ${TOOL_PATHS[tcpdump]} -i "$iface" -w "$capture_file" "$bpf_filter" &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "b3_tcpdump" "${TOOL_PATHS[tcpdump]}" -i "$interface" -w "$capture_file" "$bpf_filter"
 
-    start_countdown "$CDP_CAPTURE_TIME" "Capturing CDP/LLDP frames (CDP interval: 60s, LLDP interval: 30s)"
-    sleep "$CDP_CAPTURE_TIME"
+    start_countdown "$timeout" "Capturing CDP/LLDP frames (CDP interval: 60s, LLDP interval: 30s)"
+    sleep "$timeout"
     stop_countdown
+
+    stop_process "b3_tcpdump"
 
     check_abort || return 1
 
     # Validate capture file
-    if ! validate_pcap "$capture_file" "CDP/LLDP frame capture (${CDP_CAPTURE_TIME}s listen)"; then
+    if ! validate_pcap "$capture_file" "CDP/LLDP frame capture (${timeout}s listen)"; then
         local result_json
         result_json=$(run_fg jq -n \
+            --arg timeout "$timeout" \
             '{
                 status: "SECURE",
                 summary: "No CDP or LLDP frames captured on target WiFi. The network does not leak infrastructure discovery protocol data to target clients.",
-                details: "Captured for '"${CDP_CAPTURE_TIME}"' seconds. Zero CDP/LLDP frames detected.",
+                details: "Captured for \($timeout) seconds. Zero CDP/LLDP frames detected.",
                 recommendations: "No action needed. CDP/LLDP is properly filtered on target-facing ports.",
                 cdp_frames_captured: 0,
                 lldp_frames_captured: 0,

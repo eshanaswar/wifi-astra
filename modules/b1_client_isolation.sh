@@ -42,8 +42,25 @@
 #===============================================================================
 
 run_b1() {
-    local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/b1"
+    set -uo pipefail
+
+    local iface="${WIFI_INTERFACE:-}"
+    local target_ssid="${GUEST_SSID:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) iface="$2"; shift 2 ;;
+            --target-ssid) target_ssid="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    local total_steps=5
+    local evidence_prefix="${evidence_dir}/b1"
+
 
     #--- Step 1: Verify connectivity and tools ---
     log_step 1 $total_steps "Verifying target WiFi connectivity and tools"
@@ -61,15 +78,15 @@ run_b1() {
     # Get current IP
     MY_IP=$(run_tool ip -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
     if [[ -z "$MY_IP" ]]; then
-        log_error "No IP address on ${WIFI_INTERFACE}. Are you connected to the target WiFi?"
+        log_error "No IP address on ${iface}. Are you connected to the target WiFi?"
         echo ""
         echo -e "${C_YELLOW}  Please connect to the target WiFi network first.${C_RESET}"
-        echo -e "${C_YELLOW}  SSID to connect to: ${GUEST_SSID:-<set during A1>}${C_RESET}"
+        echo -e "${C_YELLOW}  SSID to connect to: ${target_ssid:-<set during A1>}${C_RESET}"
         echo ""
         get_or_request_param "_wait" "  Press Enter after connecting (or Q to quit)"
         [[ "${_wait^^}" == "Q" ]] && return 1
 
-        MY_IP=$(run_tool ip -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+        MY_IP=$(run_tool ip -4 addr show "$iface" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
         if [[ -z "$MY_IP" ]]; then
             log_error "Still no IP. Cannot proceed."
             return 1
@@ -78,20 +95,20 @@ run_b1() {
 
     # Verify WiFi link status and SSID
     local link_info current_ssid
-    local link_info=$(iw dev "$WIFI_INTERFACE" link 2>/dev/null || true)
+    local link_info=$(iw dev "$iface" link 2>/dev/null || true)
     if echo "$link_info" | grep -q "Not connected"; then
         echo ""
-        log_warn "Wireless interface ${WIFI_INTERFACE} is not associated with any AP."
+        log_warn "Wireless interface ${iface} is not associated with any AP."
         echo -e "${C_YELLOW}  Please connect to the target WiFi network first.${C_RESET}"
-        echo -e "${C_YELLOW}  SSID to connect to: ${GUEST_SSID:-<set during A1>}${C_RESET}"
+        echo -e "${C_YELLOW}  SSID to connect to: ${target_ssid:-<set during A1>}${C_RESET}"
         echo ""
         get_or_request_param "_wait2" "  Press Enter after connecting (or Q to quit)"
         [[ "${_wait2^^}" == "Q" ]] && return 1
     else
         local current_ssid=$(echo "$link_info" | sed -n 's/.*SSID: //p' | xargs)
-        if [[ -n "${GUEST_SSID:-}" && -n "$current_ssid" && "$current_ssid" != "$GUEST_SSID" ]]; then
+        if [[ -n "$target_ssid" && -n "$current_ssid" && "$current_ssid" != "$target_ssid" ]]; then
             echo ""
-            log_warn "You appear to be connected to SSID '${current_ssid}', not '${GUEST_SSID}'."
+            log_warn "You appear to be connected to SSID '${current_ssid}', not '${target_ssid}'."
             get_or_request_param "_cont" "  Continue B1 on current network? [y/N]"
             if [[ "${_cont,,}" != "y" ]]; then
                 return 1
@@ -99,16 +116,16 @@ run_b1() {
         fi
     fi
 
-    local subnet
-    subnet=$(echo "$MY_IP" | sed 's|\([0-9]*\.[0-9]*\.[0-9]*\.\).*|\10/24|')
     # Get CIDR from interface
     local cidr
-    cidr=$(run_tool ip -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | head -1)
+    cidr=$(run_tool ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{print $2}' | head -1)
 
-    GATEWAY_IP=$(run_tool ip route show dev "$WIFI_INTERFACE" 2>/dev/null | awk '/default/{print $3}' | head -1)
-    MY_MAC=$(run_tool ip link show "$WIFI_INTERFACE" 2>/dev/null | awk '/ether/{print $2}')
+    local gateway_ip
+    gateway_ip=$(run_tool ip route show dev "$iface" 2>/dev/null | awk '/default/{print $3}' | head -1)
+    local my_mac
+    my_mac=$(run_tool ip link show "$iface" 2>/dev/null | awk '/ether/{print $2}')
 
-    log_success "Connected: IP=${MY_IP}, Gateway=${GATEWAY_IP}, MAC=${MY_MAC}"
+    log_success "Connected: IP=${MY_IP}, Gateway=${gateway_ip}, MAC=${my_mac}"
 
     # Prompt for additional test requirements
     echo ""
@@ -174,7 +191,7 @@ run_b1() {
     log_info "Testing isolation against ${client_count} target(s)"
 
     #--- Step 2.5: Sync with Assessment Engine ---
-    if [[ $client_count -gt 0 && -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+    if [[ $client_count -gt 0 && -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
         log_info "Syncing discovered clients with assessment engine..."
         local clients_json_array
         clients_json_array=$( (
@@ -191,7 +208,7 @@ run_b1() {
                 local hostname
                 hostname=$(getent hosts "$client_ip" | awk '{print $2}' | head -1 || echo "")
                 
-                run_tool jq -n \
+                run_fg jq -n \
                     --arg mac "${client_mac:-00:00:00:00:00:00}" \
                     --arg ip "$client_ip" \
                     --arg host "$hostname" \
@@ -203,7 +220,7 @@ run_b1() {
         ) | tr -d '\n' )
 
         if [[ "$clients_json_array" != "[]" ]]; then
-            run_tool astra-engine --db "$SESSION_DB_FILE" ingest batch-clients --json "$clients_json_array"
+            run_engine_api POST "/v1/ingest/batch-clients" "$clients_json_array" >/dev/null
         fi
     fi
 

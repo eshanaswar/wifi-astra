@@ -51,8 +51,30 @@
 set -uo pipefail
 
 run_c2() {
+    set -uo pipefail
+
+    local interface=""
+    local masscan_rate="${MASSCAN_RATE:-1000}"
+    local nmap_timing="${NMAP_TIMING:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --rate) masscan_rate="$2"; shift 2 ;;
+            --timing) nmap_timing="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals if not provided
+    interface="${interface:-${WIFI_INTERFACE:-wlan0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+
     local total_steps=8
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/c2"
+    local evidence_prefix="${evidence_dir}/c2"
 
     #--- Step 1: Verify tools and connectivity ---
     log_step 1 $total_steps "Verifying tools and connectivity"
@@ -67,6 +89,7 @@ run_c2() {
     fi
 
     # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
@@ -74,19 +97,22 @@ run_c2() {
         sleep 3
     fi
 
-    if [[ -z "${MY_IP:-}" ]]; then
-        MY_IP=$(run_fg --quiet ip -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | head -1)
+    local my_ip="${MY_IP:-}"
+    if [[ -z "$my_ip" ]]; then
+        my_ip=$(run_fg --quiet ip -4 addr show "$interface" 2>/dev/null | awk '/inet/{print $2}' | head -1)
     fi
-    if [[ -z "${GATEWAY_IP:-}" ]]; then
-        GATEWAY_IP=$(run_fg --quiet ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
+    
+    local gateway_ip="${GATEWAY_IP:-}"
+    if [[ -z "$gateway_ip" ]]; then
+        gateway_ip=$(run_fg --quiet ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
     fi
 
     local our_subnet
-    our_subnet=$(echo "${MY_IP%%/*}" | cut -d. -f1-3).0/24
+    our_subnet=$(echo "${my_ip%%/*}" | cut -d. -f1-3).0/24
     local our_subnet_base
-    our_subnet_base=$(echo "${MY_IP%%/*}" | cut -d. -f1-3)
+    our_subnet_base=$(echo "${my_ip%%/*}" | cut -d. -f1-3)
 
-    log_success "Our network: ${MY_IP} on ${our_subnet}"
+    log_success "Our network: ${my_ip} on ${our_subnet}"
     log_info "Hosts on ${our_subnet} will be noted but excluded from 'bypass' count"
 
     #--- Warning banner & subnet targeting ---
@@ -108,7 +134,10 @@ run_c2() {
     local -a user_subnets=()
     local subnet_input=""
     while true; do
-        get_or_request_param "subnet_input" "  Enter target subnet CIDR (or Enter to finish)"
+        stty echo 2>/dev/null
+        read -t 0.1 -n 10000 discard 2>/dev/null || true
+        printf "  Enter target subnet CIDR (or Enter to finish): "
+        read subnet_input
         [[ -z "$subnet_input" ]] && break
         # Basic validation: must contain /
         if [[ "$subnet_input" == *"/"* ]]; then
@@ -134,7 +163,11 @@ run_c2() {
     fi
 
     echo ""
-    get_or_request_param "confirm_scan" "  Proceed with scan? [Y/n]"
+    local confirm_scan=""
+    stty echo 2>/dev/null
+    read -t 0.1 -n 10000 discard 2>/dev/null || true
+    printf "  Proceed with scan? [Y/n]: "
+    read confirm_scan
     [[ "${confirm_scan,,}" == "n" ]] && return 1
 
     #--- Steps 2+: Scan target ranges ---
@@ -164,15 +197,15 @@ run_c2() {
         local mass_file="${evidence_prefix}_scan_${range_label}.txt"
 
         if [[ "$has_masscan" == "true" ]]; then
-            log_cmd "masscan ${target_range} --ports 22,80,443,445,3389,8080 --rate ${MASSCAN_RATE} --exclude ${our_subnet}"
-            start_spinner "Scanning ${target_range} with masscan (rate: ${MASSCAN_RATE} pps)"
+            log_cmd "masscan ${target_range} --ports 22,80,443,445,3389,8080 --rate ${masscan_rate} --exclude ${our_subnet}"
+            start_spinner "Scanning ${target_range} with masscan (rate: ${masscan_rate} pps)"
 
             local exclude_arg=""
             [[ -n "${our_subnet}" ]] && exclude_arg="--exclude ${our_subnet}"
 
             run_fg --quiet masscan "$target_range" \
                 --ports 22,80,443,445,3389,8080 \
-                --rate "$MASSCAN_RATE" \
+                --rate "$masscan_rate" \
                 $exclude_arg \
                 -oL "$mass_file" \
                 -oX "${mass_file%.txt}.xml" \
@@ -281,8 +314,8 @@ run_c2() {
         local ip_list
         ip_list=$(echo "$outside_ips" | paste -sd' ' -)
 
-        log_cmd "nmap -sT -sV --top-ports 100 ${NMAP_TIMING} ${ip_list}"
-        run_fg nmap -sT -sV --top-ports 100 $NMAP_TIMING $ip_list -oA "${port_scan_file%.nmap}"
+        log_cmd "nmap -sT -sV --top-ports 100 ${nmap_timing} ${ip_list}"
+        run_fg nmap -sT -sV --top-ports 100 $nmap_timing $ip_list -oA "${port_scan_file%.nmap}"
 
         # Parse nmap results
         local current_host=""
@@ -399,9 +432,9 @@ run_c2() {
     ranges_str_jq=$(printf '%s,' "${ranges_scanned[@]}")
     ranges_str_jq=${ranges_str_jq%,}
 
-    evidence_register_file "$(basename "$live_hosts_file")"
-    evidence_register_file "$(basename "$port_scan_file")"
-    evidence_register_file "$(basename "$netbios_file")"
+    evidence_register_file "$live_hosts_file"
+    evidence_register_file "$port_scan_file"
+    evidence_register_file "$netbios_file"
 
     local result_json
     result_json=$(run_fg jq -n \

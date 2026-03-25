@@ -37,10 +37,29 @@
 #    - egress_policy: string (permissive/moderate/restrictive)
 #===============================================================================
 
+set -uo pipefail
+
 run_c5() {
     set -uo pipefail
+
+    local interface=""
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals if not provided
+    interface="${interface:-${WIFI_INTERFACE:-wlan0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/c5"
+    local evidence_prefix="${evidence_dir}/c5"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools and connectivity"
@@ -48,6 +67,7 @@ run_c5() {
 
     check_module_dependencies "C5" || return 1
     
+    WIFI_INTERFACE="$interface"
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
         disable_monitor_mode
         sleep 3
@@ -55,13 +75,12 @@ run_c5() {
     ensure_managed_mode || return 1
 
     # Verify we have internet connectivity
-    if ! ping -c 1 -W 3 8.8.8.8 &>/dev/null; then
+    if ! run_fg ping -c 1 -W 3 8.8.8.8 &>/dev/null; then
         log_error "No outbound connectivity. Connect to target WiFi first."
         return 1
     fi
     log_success "Outbound connectivity confirmed"
 
-    local iface="${WIFI_INTERFACE:-wlan0}"
     local findings_file="${evidence_prefix}_findings.txt"
     local egress_file="${evidence_prefix}_egress_scan.txt"
     local protocol_file="${evidence_prefix}_protocol_tests.txt"
@@ -70,7 +89,7 @@ run_c5() {
         echo "============================================================"
         echo "  C5: Egress Filtering Assessment"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Interface: ${iface}"
+        echo "  Interface: ${interface}"
         echo "============================================================"
         echo ""
     } > "$findings_file"
@@ -149,7 +168,7 @@ run_c5() {
             else
                 # Fallback: nmap single port
                 local nmap_result
-                nmap_result=$(timeout 10 run_fg "${TOOL_PATHS[nmap]}" -Pn -p "$port" --max-retries 1 -T4 "$scan_target" 2>&1 | grep "^${port}/" || true)
+                nmap_result=$(timeout 10 run_fg nmap -Pn -p "$port" --max-retries 1 -T4 "$scan_target" 2>&1 | grep "^${port}/" || true)
                 if [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]]; then
                     {
                         echo "============================================================"
@@ -169,12 +188,12 @@ run_c5() {
             # UDP test
             if [[ "$port" == "53" ]]; then
                 # Special DNS test
-                if timeout 5 run_fg "${TOOL_PATHS[dig]}" +short +timeout=3 @"$scan_target" example.com A &>/dev/null; then
+                if timeout 5 run_fg dig +short +timeout=3 @"$scan_target" example.com A &>/dev/null; then
                     port_status="open"
                 fi
             else
                 local nmap_result
-                nmap_result=$(timeout 15 run_fg "${TOOL_PATHS[nmap]}" -Pn -sU -p "$port" --max-retries 1 "$scan_target" 2>&1 | grep "^${port}/" || true)
+                nmap_result=$(timeout 15 run_fg nmap -Pn -sU -p "$port" --max-retries 1 "$scan_target" 2>&1 | grep "^${port}/" || true)
                 if [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]]; then
                     {
                         echo "============================================================"
@@ -234,7 +253,7 @@ run_c5() {
 
     # Test ICMP
     local icmp_allowed="false"
-    if ping -c 2 -W 3 8.8.8.8 &>/dev/null; then
+    if run_fg ping -c 2 -W 3 8.8.8.8 &>/dev/null; then
         icmp_allowed="true"
     fi
     echo "ICMP Echo: $(if [[ "$icmp_allowed" == "true" ]]; then echo "ALLOWED"; else echo "BLOCKED"; fi)" >> "$protocol_file"
@@ -242,7 +261,7 @@ run_c5() {
     # Test DNS over HTTPS (DoH)
     local doh_allowed="false"
     local doh_response
-    doh_response=$(timeout 10 run_fg "${TOOL_PATHS[curl]}" -s -o /dev/null -w "%{http_code}" \
+    doh_response=$(timeout 10 run_fg curl -s -o /dev/null -w "%{http_code}" \
         "https://dns.google/resolve?name=example.com&type=A" 2>/dev/null) || true
     if [[ "$doh_response" == "200" ]]; then
         doh_allowed="true"
@@ -261,14 +280,14 @@ run_c5() {
 
     # Test HTTPS on non-standard port (tunnel indicator)
     local https_alt="false"
-    if timeout 5 run_fg "${TOOL_PATHS[curl]}" -s -o /dev/null -w "%{http_code}" "https://www.google.com:443" &>/dev/null; then
+    if timeout 5 run_fg curl -s -o /dev/null -w "%{http_code}" "https://www.google.com:443" &>/dev/null; then
         https_alt="true"
     fi
     echo "HTTPS (443): $(if [[ "$https_alt" == "true" ]]; then echo "ALLOWED"; else echo "BLOCKED"; fi)" >> "$protocol_file"
 
     # Test if we can use alternate DNS
     local alt_dns="false"
-    if timeout 5 run_fg "${TOOL_PATHS[dig]}" +short +timeout=3 @1.1.1.1 example.com A &>/dev/null; then
+    if timeout 5 run_fg dig +short +timeout=3 @1.1.1.1 example.com A &>/dev/null; then
         alt_dns="true"
     fi
     echo "Alternate DNS (1.1.1.1): $(if [[ "$alt_dns" == "true" ]]; then echo "ALLOWED"; else echo "BLOCKED"; fi)" >> "$protocol_file"
@@ -279,7 +298,7 @@ run_c5() {
 
     check_abort || return 1
 
-    run_fg "${TOOL_PATHS[nmap]}" -Pn --top-ports 100 -T4 --max-retries 1 -oA "${evidence_prefix}_top100" "${scan_target}"
+    run_fg nmap -Pn --top-ports 100 -T4 --max-retries 1 -oA "${evidence_prefix}_top100" "${scan_target}"
 
     # Parse additional open ports from nmap
     if [[ -f "${evidence_prefix}_top100.nmap" ]]; then
@@ -357,9 +376,9 @@ run_c5() {
     fi
 
     local result_json
-    evidence_register_file "c5_egress_scan.txt"
-    evidence_register_file "c5_protocol_tests.txt"
-    evidence_register_file "c5_findings.txt"
+    evidence_register_file "$egress_file"
+    evidence_register_file "$protocol_file"
+    evidence_register_file "$findings_file"
 
     result_json=$(run_fg jq -n \
         --arg status "$result_status" \

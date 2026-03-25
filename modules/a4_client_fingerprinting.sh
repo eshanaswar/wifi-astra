@@ -37,7 +37,8 @@ set -uo pipefail
 # --- OUI Vendor lookup ---
 _oui_lookup() {
     local mac="$1"
-    python3 "${SCRIPT_DIR}/utils/parsers/oui_lookup.py" "$mac" 2>/dev/null || echo "Unknown"
+    local script_dir="${2:-${SCRIPT_DIR:-.}}"
+    python3 "${script_dir}/utils/parsers/oui_lookup.py" "$mac" 2>/dev/null || echo "Unknown"
 }
 
 # --- OS fingerprint from probe patterns ---
@@ -64,8 +65,33 @@ _guess_os() {
 }
 
 run_a4() {
+    set -uo pipefail
+
+    local interface="${MONITOR_INTERFACE:-${WIFI_INTERFACE:-}}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    local timeout=120
+    local engine_socket="${ENGINE_SOCKET:-}"
+    local script_dir="${SCRIPT_DIR:-.}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            --engine-socket) engine_socket="$2"; shift 2 ;;
+            --script-dir) script_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks
+    interface="${interface:-${MONITOR_INTERFACE:-${WIFI_INTERFACE:-wlan0}}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-./evidence}}"
+    engine_socket="${engine_socket:-${ENGINE_SOCKET:-}}"
+    script_dir="${script_dir:-${SCRIPT_DIR:-.}}"
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/a4"
+    local evidence_prefix="${evidence_dir}/a4"
     local tc_id="A4"
 
     #--- Step 1: Verify tools ---
@@ -85,19 +111,20 @@ run_a4() {
         "Fingerprints OS/device type from 802.11 capabilities." \
         "Maps saved WiFi networks per device." \
         "Tracks signal strength for proximity estimation." \
-        "Duration: ~120 seconds of passive monitoring."
+        "Duration: ~${timeout} seconds of passive monitoring."
 
     #--- Step 2: Enable monitor mode ---
     log_step 2 $total_steps "Enabling monitor mode"
     update_tc_progress 2 $total_steps "Monitor mode"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
     check_abort || return 1
 
     #--- Step 3: Channel hopping capture ---
-    log_step 3 $total_steps "Capturing client probe requests (120s, all channels)"
+    log_step 3 $total_steps "Capturing client probe requests (${timeout}s, all channels)"
     update_tc_progress 3 $total_steps "Probe capture"
 
     local cap_file="${evidence_prefix}_capture.pcap"
@@ -109,24 +136,22 @@ run_a4() {
         "type mgt subtype probe-req or type mgt subtype probe-resp or type mgt subtype assoc-req"
 
     # Channel hop in background
-    (
-        local channels=(1 6 11 2 3 4 5 7 8 9 10 12 13 36 40 44 48 52 56 60 64 149 153 157 161 165)
+    spawn_bg "a4_hopper" "bash" -c "
+        channels=(1 6 11 2 3 4 5 7 8 9 10 12 13 36 40 44 48 52 56 60 64 149 153 157 161 165)
         while true; do
-            for ch in "${channels[@]}"; do
-                run_fg --quiet "iw" dev "$mon_iface" set channel "$ch" 2>/dev/null || true
+            for ch in \"\${channels[@]}\"; do
+                iw dev $mon_iface set channel \"\$ch\" 2>/dev/null || true
                 sleep 4
             done
         done
-    ) &
-    local hop_pid=$!
-    register_cleanup "kill -TERM $hop_pid 2>/dev/null || true; wait $hop_pid 2>/dev/null || true"
+    "
 
-    start_countdown 120 "Scanning all channels for client probes"
-    sleep 120
+    start_countdown "$timeout" "Scanning all channels for client probes"
+    sleep "$timeout"
     stop_countdown
 
     # Stop hopping and capture
-    kill -TERM $hop_pid 2>/dev/null; wait $hop_pid 2>/dev/null
+    stop_process "a4_hopper"
     stop_process "a4_capture"
 
     if [[ ! -f "$cap_file" ]] || [[ ! -s "$cap_file" ]]; then
@@ -191,7 +216,7 @@ run_a4() {
                 
                 # Get vendor (OUI lookup)
                 local vendor
-                vendor=$(run_as_user python3 "${SCRIPT_DIR}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
+                vendor=$(run_as_user python3 "${script_dir}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
                 vendor_counts["$vendor"]=$(( ${vendor_counts["$vendor"]:-0} + 1 ))
                 
                 # Initialize profile data
@@ -238,7 +263,7 @@ run_a4() {
             local ssids="${client_ssid_map[$client_mac]%,}"
             local os_guess="${client_os_map[$client_mac]}"
             local signal="${client_signal_map[$client_mac]}"
-            local vendor=$(run_as_user python3 "${SCRIPT_DIR}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
+            local vendor=$(run_as_user python3 "${script_dir}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
             
             local ssid_count=$(echo "$ssids" | tr ',' '\n' | grep -c . || echo "0")
             
@@ -280,7 +305,7 @@ run_a4() {
                 local os_guess="${client_os_map[$client_mac]}"
                 local signal="${client_signal_map[$client_mac]}"
                 local vendor
-                vendor=$(run_as_user python3 "${SCRIPT_DIR}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
+                vendor=$(run_as_user python3 "${script_dir}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
                 
                 # Convert comma SSIDs to JSON array
                 local probe_json
@@ -298,8 +323,8 @@ run_a4() {
             echo "]"
         ) | tr -d '\n' )
 
-        if [[ -n "${SESSION_DB_FILE:-}" && "$clients_json_array" != "[]" ]]; then
-            run_tool astra-engine --db "$SESSION_DB_FILE" ingest batch-clients --json "$clients_json_array"
+        if [[ -n "$engine_socket" && -S "$engine_socket" && "$clients_json_array" != "[]" ]]; then
+            run_engine_api POST "/v1/ingest/batch-clients" "$clients_json_array" >/dev/null
         fi
 
         # Build vendor summary

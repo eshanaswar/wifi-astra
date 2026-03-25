@@ -47,8 +47,32 @@ set -uo pipefail
 #===============================================================================
 
 run_b2() {
+    set -uo pipefail
+
+    local interface="${WIFI_INTERFACE:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    local gateway_ip="${GATEWAY_IP:-}"
+    local my_ip="${MY_IP:-}"
+    local nmap_timing="${NMAP_TIMING:-}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            --gateway) gateway_ip="$2"; shift 2 ;;
+            --my-ip) my_ip="$2"; shift 2 ;;
+            --nmap-timing) nmap_timing="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks
+    interface="${interface:-${WIFI_INTERFACE:-wlan0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-./evidence}}"
+    nmap_timing="${nmap_timing:-${NMAP_TIMING:-}}"
+    
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/b2"
+    local evidence_prefix="${evidence_dir}/b2"
 
     #--- Step 1: Verify connectivity ---
     log_step 1 $total_steps "Verifying target WiFi connectivity"
@@ -59,29 +83,33 @@ run_b2() {
     fi
 
     # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
     # Ensure we're connected
-    if [[ -z "${MY_IP:-}" ]]; then
-        MY_IP=$(run_fg --quiet ip -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+    if [[ -z "$my_ip" ]]; then
+        my_ip=$(run_fg --quiet ip -4 addr show "$interface" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
     fi
-    if [[ -z "${GATEWAY_IP:-}" ]]; then
-        GATEWAY_IP=$(run_fg --quiet ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
+    
+    if [[ -z "$gateway_ip" ]]; then
+        gateway_ip=$(run_fg --quiet ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
     fi
 
-    if [[ -z "$MY_IP" || -z "$GATEWAY_IP" ]]; then
-        log_error "Not connected to network. IP=${MY_IP:-none}, GW=${GATEWAY_IP:-none}"
+    if [[ -z "$my_ip" || -z "$gateway_ip" ]]; then
+        log_error "Not connected to network. IP=${my_ip:-none}, GW=${gateway_ip:-none}"
         return 1
     fi
 
-    log_success "Connected: IP=${MY_IP}, Gateway=${GATEWAY_IP}"
+    GATEWAY_IP="$gateway_ip"
+    MY_IP="$my_ip"
+    log_success "Connected: IP=${my_ip}, Gateway=${gateway_ip}"
 
     # Determine subnet
     local subnet_base
-    subnet_base=$(echo "$GATEWAY_IP" | cut -d. -f1-3)
+    subnet_base=$(echo "$gateway_ip" | cut -d. -f1-3)
 
     #--- Step 2: Scan gateway for management ports ---
-    log_step 2 $total_steps "Scanning gateway (${GATEWAY_IP}) for management services"
+    log_step 2 $total_steps "Scanning gateway (${gateway_ip}) for management services"
     update_tc_progress 2 $total_steps "Gateway scan"
 
     check_abort || return 1
@@ -89,7 +117,7 @@ run_b2() {
     local gw_scan_file="${evidence_prefix}_gateway_scan.nmap"
     local mgmt_ports="22,23,80,161,162,443,830,8080,8443,8888,4343,5998,9090,3389,4786"
 
-    run_with_spinner "Scanning gateway for management ports" "${TOOL_PATHS[nmap]}" -sT -sV -Pn -p "$mgmt_ports" $NMAP_TIMING "$GATEWAY_IP" -oA "${gw_scan_file%.nmap}"
+    run_with_spinner "Scanning gateway for management ports" "${TOOL_PATHS[nmap]}" -sT -sV -Pn -p "$mgmt_ports" $nmap_timing "$gateway_ip" -oA "${gw_scan_file%.nmap}"
 
     # Parse open ports
     local gw_open_ports
@@ -100,7 +128,7 @@ run_b2() {
 
     if [[ -n "$gw_open_ports" ]]; then
         gateway_mgmt_exposed="true"
-        log_result "FINDING" "Gateway (${GATEWAY_IP}) has management ports accessible from target WiFi:"
+        log_result "FINDING" "Gateway (${gateway_ip}) has management ports accessible from target WiFi:"
 
         while IFS= read -r line; do
             local port protocol state service version
@@ -113,7 +141,7 @@ run_b2() {
             log_output "${port}/${protocol} — ${service} ${version}"
 
             exposed_services=$(echo "$exposed_services" | run_fg jq \
-                --arg ip "$GATEWAY_IP" \
+                --arg ip "$gateway_ip" \
                 --arg port "$port" \
                 --arg protocol "$protocol" \
                 --arg service "$service" \
@@ -122,7 +150,7 @@ run_b2() {
                 '. += [{ip: $ip, port: $port, protocol: $protocol, service: $service, version: $version, type: $type}]')
         done <<< "$gw_open_ports"
     else
-        log_result "SECURE" "No management ports accessible on gateway (${GATEWAY_IP})"
+        log_result "SECURE" "No management ports accessible on gateway (${gateway_ip})"
     fi
 
     #--- Step 3: Discover potential WLC/infrastructure IPs ---
@@ -143,7 +171,7 @@ run_b2() {
     # Remove gateway (already scanned) and our IP
     local unique_candidates=()
     for candidate in "${wlc_candidates[@]}"; do
-        if [[ "$candidate" != "$GATEWAY_IP" && "$candidate" != "${MY_IP%%/*}" ]]; then
+        if [[ "$candidate" != "$gateway_ip" && "$candidate" != "${my_ip%%/*}" ]]; then
             unique_candidates+=("$candidate")
         fi
     done
@@ -155,7 +183,7 @@ run_b2() {
     # WLC-specific ports: Cisco 5508/9800 common ports
     local wlc_ports="22,23,80,443,4343,5246,5247,8443,16113,161"
 
-    run_with_spinner "Scanning for WLC/infrastructure devices" "${TOOL_PATHS[nmap]}" -sT -sV -Pn -p "$wlc_ports" $NMAP_TIMING $wlc_targets -oA "${wlc_scan_file%.nmap}"
+    run_with_spinner "Scanning for WLC/infrastructure devices" "${TOOL_PATHS[nmap]}" -sT -sV -Pn -p "$wlc_ports" $nmap_timing $wlc_targets -oA "${wlc_scan_file%.nmap}"
 
     local wlc_identified="false"
 
@@ -209,7 +237,7 @@ run_b2() {
     web_targets=$(echo "$exposed_services" | run_fg jq -r '.[] | select(.service | test("http|ssl|https|web"; "i")) | "\(.ip):\(.port)"' | sort -u)
 
     # Also try common web ports on gateway
-    for web_url_combo in "${GATEWAY_IP}:80" "${GATEWAY_IP}:443" "${GATEWAY_IP}:8443" "${GATEWAY_IP}:8080" "${GATEWAY_IP}:4343"; do
+    for web_url_combo in "${gateway_ip}:80" "${gateway_ip}:443" "${gateway_ip}:8443" "${gateway_ip}:8080" "${gateway_ip}:4343"; do
         if ! echo "$web_targets" | grep -q "$web_url_combo"; then
             web_targets+=$'\n'"$web_url_combo"
         fi
@@ -287,7 +315,7 @@ run_b2() {
         "/arubaui/login"
     )
 
-    for target_ip in "$GATEWAY_IP" "${unique_candidates[@]}"; do
+    for target_ip in "$gateway_ip" "${unique_candidates[@]}"; do
         for path in "${cisco_paths[@]}" "${aruba_paths[@]}"; do
             for scheme in "https" "http"; do
                 local url="${scheme}://${target_ip}${path}"
@@ -327,16 +355,16 @@ run_b2() {
     if [[ -n "${TOOL_PATHS[snmpwalk]:-}" ]]; then
         for community in "public" "private"; do
             local snmp_result
-            snmp_result=$(run_fg --quiet snmpwalk -v2c -c "$community" "$GATEWAY_IP" system 2>/dev/null | head -5)
+            snmp_result=$(run_fg --quiet snmpwalk -v2c -c "$community" "$gateway_ip" system 2>/dev/null | head -5)
 
             if [[ -n "$snmp_result" ]]; then
                 log_result "FINDING" "SNMP accessible on gateway with community '${community}'"
-                echo "SNMP on ${GATEWAY_IP} community '${community}':" >> "$mgmt_file"
+                echo "SNMP on ${gateway_ip} community '${community}':" >> "$mgmt_file"
                 echo "$snmp_result" | sed 's/^/  /' >> "$mgmt_file"
                 echo "" >> "$mgmt_file"
 
                 exposed_services=$(echo "$exposed_services" | run_fg jq \
-                    --arg ip "$GATEWAY_IP" \
+                    --arg ip "$gateway_ip" \
                     --arg community "$community" \
                     '. += [{ip: $ip, port: "161", protocol: "udp", service: "snmp", version: ("community: " + $community), type: "gateway"}]')
             fi
@@ -381,7 +409,7 @@ run_b2() {
         --arg wlc_identified "$wlc_identified" \
         --argjson exposed_services "$exposed_services" \
         --argjson web_interfaces "$web_interfaces" \
-        --arg gateway_ip "$GATEWAY_IP" \
+        --arg gateway_ip "$gateway_ip" \
         '{
             status: $status,
             summary: $summary,

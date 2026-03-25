@@ -42,8 +42,33 @@
 set -uo pipefail
 
 run_e2() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/e2"
+    local evidence_prefix="${evidence_dir}/e2"
 
     #--- Step 1: Verify tools & dependencies ---
     log_step 1 $total_steps "Verifying tools & dependencies"
@@ -60,7 +85,7 @@ run_e2() {
     for fpath in \
         "/opt/fragattacks/fragattack.py" \
         "/usr/share/fragattacks/fragattack.py" \
-        "${SCRIPT_DIR}/tools/fragattacks/fragattack.py" \
+        "${SCRIPT_DIR:-}/tools/fragattacks/fragattack.py" \
         "/opt/fragattack/fragattack.py"; do
         if [[ -f "$fpath" ]]; then
             fragattack_script="$fpath"
@@ -74,7 +99,6 @@ run_e2() {
 
     if [[ "$has_fragattack" == "false" ]]; then
         log_warn "fragattacks tool not found. Will perform passive analysis only."
-        log_info "For full testing, install: git clone https://github.com/vanhoefm/fragattacks /opt/fragattacks"
     fi
 
     if [[ "$has_tshark" == "false" ]]; then
@@ -82,15 +106,18 @@ run_e2() {
         return 1
     fi
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
     #--- Warning banner ---
     echo ""
@@ -131,7 +158,7 @@ run_e2() {
         echo "============================================================"
         echo "  E2: FragAttacks Testing"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "  CVEs: CVE-2020-24586 to CVE-2020-26145"
         echo "============================================================"
         echo ""
@@ -148,11 +175,12 @@ run_e2() {
     log_step 2 $total_steps "Analyzing AP frame capabilities"
     update_tc_progress 2 $total_steps "AP analysis"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        run_fg "iw" dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$channel" ]]; then
+        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     {
@@ -164,8 +192,8 @@ run_e2() {
 
     # Capture beacons to check A-MSDU and fragmentation capabilities
     local beacon_pcap="$TMP_DIR/e2_beacons.pcap"
-    timeout 15 run_fg "tcpdump" -i "$mon_iface" -c 30 -w "$beacon_pcap" \
-        "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
+    timeout 15 run_fg tcpdump -i "$mon_iface" -c 30 -w "$beacon_pcap" \
+        "type mgt subtype beacon and ether src ${bssid}" \
         &>/dev/null || true
 
     if [[ -f "$beacon_pcap" && -s "$beacon_pcap" ]]; then
@@ -173,7 +201,7 @@ run_e2() {
         # Check HT/VHT capabilities for A-MSDU support
         local amsdu_support
         amsdu_support=$(run_as_user tshark -r "$beacon_pcap" \
-            -Y "wlan.bssid == ${GUEST_BSSID}" \
+            -Y "wlan.bssid == ${bssid}" \
             -T fields \
             -e wlan.ht.capabilities \
             -e wlan.ht.amsdumaxlength \
@@ -188,7 +216,7 @@ run_e2() {
         # Check for fragmentation threshold
         local frag_threshold
         frag_threshold=$(run_as_user tshark -r "$beacon_pcap" \
-            -Y "wlan.bssid == ${GUEST_BSSID}" \
+            -Y "wlan.bssid == ${bssid}" \
             -T fields \
             -e wlan.fixed.fragment \
             2>/dev/null | head -1 || true)
@@ -198,7 +226,7 @@ run_e2() {
         # Check for SPP A-MSDU (prevents CVE-2020-24588)
         local spp_amsdu
         spp_amsdu=$(run_as_user tshark -r "$beacon_pcap" \
-            -Y "wlan.bssid == ${GUEST_BSSID}" \
+            -Y "wlan.bssid == ${bssid}" \
             -T fields \
             -e wlan.rsn.capabilities \
             2>/dev/null | head -1 || true)
@@ -225,7 +253,7 @@ run_e2() {
     update_tc_progress 3 $total_steps "Frame capture"
 
     spawn_bg "e2_tcpdump" "tcpdump" -i "$mon_iface" -w "$capture_pcap" \
-        "ether src ${GUEST_BSSID} or ether dst ${GUEST_BSSID}" \
+        "ether src ${bssid} or ether dst ${bssid}" \
         &>/dev/null
 
     start_countdown 60 "Capturing frames for fragmentation analysis"
@@ -329,12 +357,6 @@ run_e2() {
                 echo "FINDING: FragAttack test '${test_cmd}' — VULNERABLE" >> "$findings_file"
             fi
         done
-    else
-        log_info "fragattacks tool not installed — using passive analysis only"
-        echo "" >> "$results_file"
-        echo "NOTE: For active testing, install fragattacks:" >> "$results_file"
-        echo "  git clone https://github.com/vanhoefm/fragattacks /opt/fragattacks" >> "$results_file"
-        echo "  cd /opt/fragattacks && pip install -r requirements.txt" >> "$results_file"
     fi
 
     #--- Step 6: Restore managed mode ---
@@ -371,7 +393,7 @@ run_e2() {
     else
         result_summary="No FragAttacks vulnerabilities confirmed through passive analysis. "
         result_summary+="Active testing with the fragattacks tool is recommended for complete assessment."
-        recommendations="Install fragattacks tool for comprehensive active testing. Keep firmware updated."
+        recommendations="Keep firmware updated."
     fi
 
     local result_json
@@ -380,7 +402,7 @@ run_e2() {
     evidence_register_file "$capture_pcap"
     evidence_register_file "$findings_file"
 
-    result_json=$(run_fg "jq" -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Design flaws: ${design_flaws_found}, Impl bugs: ${implementation_bugs_found}, A-MSDU: ${aggregation_vulnerable}, Frag cache: ${fragment_cache_vulnerable}, Mixed key: ${mixed_key_vulnerable}" \

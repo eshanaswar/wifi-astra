@@ -37,9 +37,26 @@
 
 run_b4() {
     set -uo pipefail
+
+    local iface="${WIFI_INTERFACE:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    local timeout="${MDNS_CAPTURE_TIME:-120}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) iface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            --timeout) timeout="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Finalize local variables
+    local interface="${iface:-${WIFI_INTERFACE:-wlan0}}"
+    local evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
     local tc_id="B4"
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/b4"
+    local evidence_prefix="${evidence_dir}/b4"
 
     #--- Step 1: Verify tools and connectivity ---
     log_step 1 $total_steps "Verifying tools and connectivity"
@@ -47,23 +64,18 @@ run_b4() {
 
     check_module_dependencies "$tc_id" || return 1
     
-    if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
-        disable_monitor_mode
-        sleep 3
-    fi
-
-    # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
-    if [[ -z "${WIFI_INTERFACE:-}" ]]; then
+    if [[ -z "$interface" ]]; then
         configure_network || return 1
+        interface="$WIFI_INTERFACE"
     fi
 
-    local iface="${WIFI_INTERFACE}"
-    log_success "Using interface: ${iface}"
+    log_success "Using interface: ${interface}"
 
     #--- Step 2: Capture mDNS traffic ---
-    log_step 2 $total_steps "Capturing mDNS/Bonjour traffic (${MDNS_CAPTURE_TIME}s)"
+    log_step 2 $total_steps "Capturing mDNS/Bonjour traffic (${timeout}s)"
     update_tc_progress 2 $total_steps "mDNS capture"
 
     check_abort || return 1
@@ -74,31 +86,24 @@ run_b4() {
     # SSDP: UDP port 1900, multicast 239.255.255.250
     local bpf_filter="(udp port 5353) or (udp port 1900)"
 
-    log_cmd "${TOOL_PATHS[tcpdump]} -i ${iface} -w ${capture_file} '${bpf_filter}' (timeout: ${MDNS_CAPTURE_TIME}s)"
+    log_cmd "${TOOL_PATHS[tcpdump]} -i ${interface} -w ${capture_file} '${bpf_filter}' (timeout: ${timeout}s)"
 
-    ${TOOL_PATHS[tcpdump]} -i "$iface" -w "$capture_file" "$bpf_filter" &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "b4_tcpdump" "${TOOL_PATHS[tcpdump]}" -i "$interface" -w "$capture_file" "$bpf_filter"
 
     # Also run avahi-browse in parallel if available
     local avahi_file="${evidence_prefix}_avahi_browse.txt"
-    local avahi_pid=""
     if command -v avahi-browse &>/dev/null; then
-        log_cmd "${TOOL_PATHS[avahi-browse]} -a -t -r -p (timeout: ${MDNS_CAPTURE_TIME}s)"
-        timeout "$MDNS_CAPTURE_TIME" ${TOOL_PATHS[avahi-browse]} -a -t -r -p > "$avahi_file" 2>/dev/null &
-        avahi_pid=$!
-        register_cleanup "kill -TERM $avahi_pid 2>/dev/null || true; sleep 0.5; kill -9 $avahi_pid 2>/dev/null || true; wait $avahi_pid 2>/dev/null || true"
+        log_cmd "${TOOL_PATHS[avahi-browse]} -a -t -r -p (timeout: ${timeout}s)"
+        spawn_bg "b4_avahi" "bash" -c "timeout $timeout ${TOOL_PATHS[avahi-browse]} -a -t -r -p > \"$avahi_file\" 2>/dev/null"
     fi
 
-    start_countdown "$MDNS_CAPTURE_TIME" "Capturing mDNS/Bonjour and SSDP announcements"
-    sleep "$MDNS_CAPTURE_TIME"
+    start_countdown "$timeout" "Capturing mDNS/Bonjour and SSDP announcements"
+    sleep "$timeout"
     stop_countdown
 
     # Stop captures
-    if [[ -n "$avahi_pid" ]]; then
-        kill -TERM "$avahi_pid" 2>/dev/null
-        wait "$avahi_pid" 2>/dev/null
-    fi
+    stop_process "b4_avahi"
+    stop_process "b4_tcpdump"
 
     validate_pcap "$capture_file" "mDNS/Bonjour and SSDP traffic capture"
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"wifi-astra/engine/internal/api"
 	"wifi-astra/engine/internal/db"
 	"wifi-astra/engine/internal/ingest"
 	"wifi-astra/engine/internal/state"
@@ -12,10 +13,31 @@ import (
 )
 
 var dbPath string
+var socketPath string
 
 func main() {
 	var rootCmd = &cobra.Command{Use: "astra-engine"}
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "sessions/session.db", "Path to SQLite database")
+
+	var serveCmd = &cobra.Command{
+		Use:   "serve",
+		Short: "Start the engine API server",
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.InitDB(dbPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			server := api.NewServer(database, socketPath)
+			fmt.Printf("Starting engine server on %s\n", socketPath)
+			if err := server.Start(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		},
+	}
+	serveCmd.Flags().StringVar(&socketPath, "socket", "/tmp/astra-engine.sock", "Path to UNIX domain socket")
+	rootCmd.AddCommand(serveCmd)
 
 	// --- State Commands ---
 	var stateCmd = &cobra.Command{Use: "state"}

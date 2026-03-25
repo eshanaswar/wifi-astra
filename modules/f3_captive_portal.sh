@@ -18,66 +18,62 @@
 #    Test for common captive portal bypass vulnerabilities in the 
 #    pre-authentication state (e.g., DNS/ICMP/HTTP leakage).
 #
-#  TOOLS: ping, ${TOOL_PATHS[dig]}, curl
+#  TOOLS: ping, dig, curl
 #  PHASE: 2B — Policy Validation
 #  DEPENDENCIES: None
-#
-#  EVIDENCE PRODUCED:
-#    - f3_preauth_results.txt      (summary of leakage tests)
-#
-#  RESULT JSON FIELDS:
-#    - icmp_bypass: bool
-#    - dns_external_bypass: bool
-#    - dns_txt_bypass: bool
 #===============================================================================
 
 run_f3() {
-    set -euo pipefail
-    local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/f3"
+    set -uo pipefail
+    
+    local interface=""
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    local is_captive_portal="${CAPTIVE_PORTAL:-unknown}"
+    local is_preauth="yes"
 
-    #--- Step 1: Verify tools and prerequisites ---
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --is-captive-portal) is_captive_portal="$2"; shift 2 ;;
+            --is-preauthenticated) is_preauth="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+    local evidence_prefix="${evidence_dir}/f3"
+
+    local total_steps=6
+
+    #--- Step 1: Verify tools and network state ---
     log_step 1 $total_steps "Verifying tools and network state"
     update_tc_progress 1 $total_steps "Checking"
 
-    if ! check_module_dependencies "F3"; then
-        return 1
-    fi
+    check_module_dependencies "F3" || return 1
 
     # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
-    if [[ -z "${WIFI_INTERFACE:-}" ]]; then
-        configure_network || return 1
-    fi
-    log_success "Using interface: ${WIFI_INTERFACE}"
+    log_success "Using interface: ${interface}"
 
     #--- Step 2: Confirm captive portal context ---
     log_step 2 $total_steps "Confirming captive portal context"
     update_tc_progress 2 $total_steps "Confirming"
 
-    if [[ "${CAPTIVE_PORTAL:-}" == "no" ]]; then
-        log_info "Skipping F3: Session state confirmed no captive portal is present."
-        save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1/Session context."}' "clean_run:1"
+    if [[ "$is_captive_portal" == "no" ]]; then
+        log_info "Skipping F3: No captive portal is present."
+        save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1/Session context."}' 1 0 0 1 1 1 0 1 1 1 0
         return 0
     fi
 
-    echo ""
-    echo -e "  This test MUST be run while in the pre-authenticated state"
-    echo -e "  (connected to WiFi but not yet logged into the portal)."
-    echo ""
-    
-    if [[ "${CAPTIVE_PORTAL:-}" != "yes" ]]; then
-        get_or_request_param "has_cp" "  Is there a captive portal in the environment? [y/N]"
-        if [[ "${has_cp,,}" != "y" ]]; then
-            log_info "Skipping F3: No captive portal present."
-            save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present","details":"User confirmed no portal."}' "clean_run:1"
-            return 0
-        fi
+    if [[ "$is_preauth" == "no" ]]; then
+        log_warn "Test may yield false positives if already authenticated."
     fi
-
-    get_or_request_param "preauth" "  Are you currently PRE-AUTHENTICATED? [Y/n]"
-    [[ "${preauth,,}" == "n" ]] && log_warn "Test may yield false positives if already authenticated."
 
     local txt_file="${evidence_prefix}_preauth_results.txt"
     > "$txt_file"
@@ -89,7 +85,6 @@ run_f3() {
     check_abort || return 1
 
     local icmp_bypass="false"
-    log_cmd "ping -c 3 -W 2 8.8.8.8"
     if ping -c 3 -W 2 8.8.8.8 &>/dev/null; then
         icmp_bypass="true"
         log_result "FINDING" "ICMP traffic leaks through portal before authentication!"
@@ -100,14 +95,13 @@ run_f3() {
     fi
 
     #--- Step 4: Test External DNS Leakage ---
-    log_step 4 $total_steps "Testing external DNS leakage (${TOOL_PATHS[dig]} @8.8.8.8)"
+    log_step 4 $total_steps "Testing external DNS leakage (dig @8.8.8.8)"
     update_tc_progress 4 $total_steps "DNS Test"
 
     check_abort || return 1
 
     local dns_ext_bypass="false"
-    log_cmd "${TOOL_PATHS[dig]} @8.8.8.8 google.com +short +time=2"
-    if ${TOOL_PATHS[dig]} @8.8.8.8 google.com +short +time=2 &>/dev/null; then
+    if dig @8.8.8.8 google.com +short +time=2 &>/dev/null; then
         dns_ext_bypass="true"
         log_result "FINDING" "External DNS queries leak through portal!"
         echo "DNS_EXT_LEAK: YES" >> "$txt_file"
@@ -123,8 +117,7 @@ run_f3() {
     check_abort || return 1
 
     local dns_txt_bypass="false"
-    log_cmd "${TOOL_PATHS[dig]} TXT google.com +short +time=2"
-    if ${TOOL_PATHS[dig]} TXT google.com +short +time=2 &>/dev/null; then
+    if dig TXT google.com +short +time=2 &>/dev/null; then
         dns_txt_bypass="true"
         log_info "DNS TXT records are resolvable (potential tunnel vector)."
         echo "DNS_TXT_LEAK: YES" >> "$txt_file"
@@ -144,16 +137,12 @@ run_f3() {
         summary="Pre-auth ACL bypass detected (ICMP/DNS leakage)."
     fi
 
-    local result_json
-    evidence_register_file "$txt_file"
-
-    result_json=$(run_fg --quiet jq -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$status" \
         --arg summary "$summary" \
         --arg icmp "$icmp_bypass" \
         --arg dns_ext "$dns_ext_bypass" \
         --arg dns_txt "$dns_txt_bypass" \
-        --arg txt "$(basename "$txt_file")" \
         '{
             status: $status,
             summary: $summary,
@@ -161,13 +150,10 @@ run_f3() {
             dns_external_bypass: ($dns_ext == "true"),
             dns_txt_bypass: ($dns_txt == "true"),
             recommendations: (if $status == "FINDING" then "Implement strict pre-auth ACLs to drop ALL traffic except DHCP and DNS to the portal itself." else "No action required." end)
-                    }')
+        }')
 
-    local has_tool_output=0
-    [[ -f "$txt_file" ]] && has_tool_output=1
+    evidence_register_file "$txt_file"
 
-    # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
-    save_tc_result "F3" "$result_json" 0 $has_tool_output 0 1 1 1 0 1 1 1 0
-    save_session_state
+    save_tc_result "F3" "$result_json" 0 1 0 1 1 1 0 1 1 1 0
     return 0
 }

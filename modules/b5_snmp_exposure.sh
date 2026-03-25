@@ -38,9 +38,27 @@
 
 run_b5() {
     set -uo pipefail
+
+    local iface="${WIFI_INTERFACE:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    local gateway="${GATEWAY_IP:-}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) iface="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            --gateway) gateway="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Finalize local variables
+    local interface="${iface:-${WIFI_INTERFACE:-wlan0}}"
+    local evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+    local gateway_ip="${gateway:-${GATEWAY_IP:-}}"
     local tc_id="B5"
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/b5"
+    local evidence_prefix="${evidence_dir}/b5"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools"
@@ -61,23 +79,20 @@ run_b5() {
     fi
 
     # Ensure monitor mode is globally disabled (we need to be connected)
+    WIFI_INTERFACE="$interface"
     ensure_managed_mode || return 1
 
-    if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
-        disable_monitor_mode
-        sleep 3
+    local my_ip="${MY_IP:-}"
+    if [[ -z "$my_ip" ]]; then
+        my_ip=$(run_fg --quiet ip -4 addr show "$interface" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
     fi
 
-    if [[ -z "${GATEWAY_IP:-}" ]]; then
-        GATEWAY_IP=$(run_fg --quiet ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
-    fi
-
-    if [[ -z "${MY_IP:-}" ]]; then
-        MY_IP=$(run_fg --quiet ip -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+    if [[ -z "$gateway_ip" ]]; then
+        gateway_ip=$(run_fg --quiet ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
     fi
 
     local subnet_base
-    subnet_base=$(echo "${GATEWAY_IP:-${MY_IP}}" | cut -d. -f1-3)
+    subnet_base=$(echo "${gateway_ip:-${my_ip}}" | cut -d. -f1-3)
     local scan_range="${subnet_base}.0/24"
 
     log_success "Scanning ${scan_range} for SNMP services"

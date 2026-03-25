@@ -35,57 +35,80 @@
 #===============================================================================
 
 run_a1() {
+    set -uo pipefail
+    
+    local interface=""
+    local scan_time="${AIRODUMP_SCAN_TIME:-60}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+    
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --timeout) scan_time="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals if not provided (for transition)
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=7
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/a1"
+    local evidence_prefix="${evidence_dir}/a1"
 
     #--- Step 1: Verify prerequisites ---
     log_step 1 $total_steps "Verifying required tools"
     update_tc_progress 1 $total_steps "Checking tools"
 
-        log_success "All required tools available"
+    check_module_dependencies "A1" || return 1
+    log_success "All required tools available"
 
     #--- Step 2: Select wireless interface ---
     log_step 2 $total_steps "Selecting wireless interface"
     update_tc_progress 2 $total_steps "Interface selection"
 
-    if [[ -z "${WIFI_INTERFACE:-}" ]]; then
+    if [[ -z "$interface" ]]; then
         configure_network || return 1
+        interface="$WIFI_INTERFACE"
     fi
-    log_success "Using interface: ${WIFI_INTERFACE}"
+    log_success "Using interface: ${interface}"
 
     #--- Step 3: Enable monitor mode ---
     log_step 3 $total_steps "Enabling monitor mode"
     update_tc_progress 3 $total_steps "Monitor mode"
 
+    # Note: enable_monitor_mode still uses globals internally for now,
+    # but we'll transition it later. For now, we ensure globals are set if needed.
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
-    log_success "Monitor mode active: ${MONITOR_INTERFACE}"
+    local mon_iface="$MONITOR_INTERFACE"
+    log_success "Monitor mode active: ${mon_iface}"
 
-    #--- Step 4: Run ${TOOL_PATHS[airodump-ng]} scan ---
-    log_step 4 $total_steps "Scanning for wireless networks (${AIRODUMP_SCAN_TIME}s)"
+    #--- Step 4: Run airodump-ng scan ---
+    log_step 4 $total_steps "Scanning for wireless networks (${scan_time}s)"
     update_tc_progress 4 $total_steps "Scanning WiFi"
 
     local airodump_prefix="${evidence_prefix}_airodump"
 
-    # Remove any previous output files (airodump appends -01 suffix)
+    # Remove any previous output files
     rm -f "${airodump_prefix}"* 2>/dev/null
 
-    log_cmd "${TOOL_PATHS[airodump-ng]} ${MONITOR_INTERFACE} --write ${airodump_prefix} --output-format csv,pcap --band abg"
-
-    # Run ${TOOL_PATHS[airodump-ng]} in the background with countdown
-    ${TOOL_PATHS[airodump-ng]} "$MONITOR_INTERFACE" \
+    # Spawn via assessment engine process supervisor
+    spawn_bg "a1_scan" "airodump-ng" \
+        "$mon_iface" \
         --write "$airodump_prefix" \
         --output-format csv,pcap \
-        --band abg \
-        &>/dev/null &
-    local airodump_pid=$!
-    register_cleanup "kill -SIGINT $airodump_pid 2>/dev/null || true; wait $airodump_pid 2>/dev/null || true"
+        --band abg
 
     # Countdown while scanning
-    start_countdown "$AIRODUMP_SCAN_TIME" "Scanning for wireless networks"
-    sleep "$AIRODUMP_SCAN_TIME"
+    start_countdown "$scan_time" "Scanning for wireless networks"
+    sleep "$scan_time"
     stop_countdown
 
     # Stop airodump
+    stop_process "a1_scan"
     
     check_abort || return 1
 
@@ -108,11 +131,11 @@ run_a1() {
     update_tc_progress 5 $total_steps "Ingesting"
     
     # Use the Go engine to ingest the airodump CSV into the session database
-    if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
-        log_info "Ingesting scan data into session database: $(basename "${SESSION_DB_FILE}")"
-        run_tool astra-engine --db "$SESSION_DB_FILE" ingest airodump --file "$csv_file"
+    if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
+        log_info "Ingesting scan data into assessment engine..."
+        run_engine_api POST "/v1/ingest/airodump?file=${csv_file}" >/dev/null
     else
-        log_warn "Assessment engine or DB not available; skipping ingestion."
+        log_warn "Assessment engine not available; skipping ingestion."
     fi
 
     #--- Step 6: Parse results for report ---
@@ -385,18 +408,18 @@ run_a1() {
             # Pre-save skipped status for F3 and F4 to update the menu
             save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1 context."}' "clean_run:1"
             save_tc_result "F4" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1 context."}' "clean_run:1"
-            TC_STATUS["F3"]="done"
-            TC_STATUS["F4"]="done"
         else
             CAPTIVE_PORTAL="yes"
             log_info "Captive portal: Yes"
-            # Reset F3 and F4 if they were previously skipped
-            if [[ "${TC_STATUS["F3"]}" == "done" ]]; then
-                TC_STATUS["F3"]="not_run"
+            # Reset F3 and F4 if they were previously skipped via engine API
+            local f3_status=$(run_engine_api GET "/v1/status/get?tc=F3" || echo "not_run")
+            if [[ "$f3_status" == "done" ]]; then
+                run_engine_api POST "/v1/status/set?tc=F3&status=not_run" >/dev/null
                 rm -f $(get_tc_result_file "F3") 2>/dev/null
             fi
-            if [[ "${TC_STATUS["F4"]}" == "done" ]]; then
-                TC_STATUS["F4"]="not_run"
+            local f4_status=$(run_engine_api GET "/v1/status/get?tc=F4" || echo "not_run")
+            if [[ "$f4_status" == "done" ]]; then
+                run_engine_api POST "/v1/status/set?tc=F4&status=not_run" >/dev/null
                 rm -f $(get_tc_result_file "F4") 2>/dev/null
             fi
         fi

