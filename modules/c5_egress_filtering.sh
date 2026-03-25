@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Egress Filtering Assessment"
+# CATEGORY="C"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="nmap"
+# DESC="Test which outbound ports and protocols are allowed from target WiFi"
+# REQS="managed_iface"
+# PCAP="no"
+# DECODE="none"
+
 #===============================================================================
 #  modules/c5_egress_filtering.sh
 #  C5: Egress Filtering Assessment
@@ -27,6 +38,7 @@
 #===============================================================================
 
 run_c5() {
+    set -uo pipefail
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/c5"
 
@@ -34,6 +46,7 @@ run_c5() {
     log_step 1 $total_steps "Verifying tools and connectivity"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "C5" || return 1
     
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
         disable_monitor_mode
@@ -132,16 +145,16 @@ run_c5() {
         if [[ "$proto" == "tcp" ]]; then
             # Quick TCP connect scan
             if timeout 5 bash -c "echo >/dev/tcp/${scan_target}/${port}" 2>/dev/null; then
-                local port_status="open"
+                port_status="open"
             else
-                # Fallback: ${TOOL_PATHS[nmap]} single port
+                # Fallback: nmap single port
                 local nmap_result
-                local nmap_result=$(timeout 10 ${TOOL_PATHS[nmap]} -Pn -p "$port" --max-retries 1 -T4 "$scan_target" 2>&1 | grep "^${port}/" || true)
+                nmap_result=$(timeout 10 run_fg "${TOOL_PATHS[nmap]}" -Pn -p "$port" --max-retries 1 -T4 "$scan_target" 2>&1 | grep "^${port}/" || true)
                 if [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]]; then
                     {
                         echo "============================================================"
                         echo "ts: $(date -Iseconds)"
-                        echo "cmd: timeout 10 ${TOOL_PATHS[nmap]} -Pn -p ${port} --max-retries 1 -T4 ${scan_target}"
+                        echo "cmd: timeout 10 nmap -Pn -p ${port} --max-retries 1 -T4 ${scan_target}"
                         echo "exit_code: $?"
                         echo "------------------------------------------------------------"
                         echo "$nmap_result"
@@ -149,24 +162,24 @@ run_c5() {
                     } >>"$TC_TOOL_OUTPUT_FILE" 2>/dev/null || true
                 fi
                 if echo "$nmap_result" | grep -q "open"; then
-                    local port_status="open"
+                    port_status="open"
                 fi
             fi
         elif [[ "$proto" == "udp" ]]; then
             # UDP test
             if [[ "$port" == "53" ]]; then
                 # Special DNS test
-                if timeout 5 ${TOOL_PATHS[dig]} +short +timeout=3 @"$scan_target" example.com A &>/dev/null; then
-                    local port_status="open"
+                if timeout 5 run_fg "${TOOL_PATHS[dig]}" +short +timeout=3 @"$scan_target" example.com A &>/dev/null; then
+                    port_status="open"
                 fi
             else
                 local nmap_result
-                local nmap_result=$(timeout 15 ${TOOL_PATHS[nmap]} -Pn -sU -p "$port" --max-retries 1 "$scan_target" 2>&1 | grep "^${port}/" || true)
+                nmap_result=$(timeout 15 run_fg "${TOOL_PATHS[nmap]}" -Pn -sU -p "$port" --max-retries 1 "$scan_target" 2>&1 | grep "^${port}/" || true)
                 if [[ -n "${TC_TOOL_OUTPUT_FILE:-}" ]]; then
                     {
                         echo "============================================================"
                         echo "ts: $(date -Iseconds)"
-                        echo "cmd: timeout 15 ${TOOL_PATHS[nmap]} -Pn -sU -p ${port} --max-retries 1 ${scan_target}"
+                        echo "cmd: timeout 15 nmap -Pn -sU -p ${port} --max-retries 1 ${scan_target}"
                         echo "exit_code: $?"
                         echo "------------------------------------------------------------"
                         echo "$nmap_result"
@@ -174,21 +187,21 @@ run_c5() {
                     } >>"$TC_TOOL_OUTPUT_FILE" 2>/dev/null || true
                 fi
                 if echo "$nmap_result" | grep -qE "open|open\|filtered"; then
-                    local port_status="open"
+                    port_status="open"
                 fi
             fi
         fi
 
         if [[ "$port_status" == "open" ]]; then
             ((total_open++))
-            local status_color="${C_RED}"
-            open_ports=$(echo "$open_ports" | ${TOOL_PATHS[jq]} --arg p "${port}/${proto}" '. += [$p]')
+            status_color="${C_RED}"
+            open_ports=$(echo "$open_ports" | run_fg jq --arg p "${port}/${proto}" '. += [$p]')
 
             if [[ "$risk" == "high" ]]; then
-                high_risk_open=$(echo "$high_risk_open" | ${TOOL_PATHS[jq]} --arg p "${port}/${proto} (${service})" '. += [$p]')
+                high_risk_open=$(echo "$high_risk_open" | run_fg jq --arg p "${port}/${proto} (${service})" '. += [$p]')
             fi
         else
-            blocked_ports=$(echo "$blocked_ports" | ${TOOL_PATHS[jq]} --arg p "${port}/${proto}" '. += [$p]')
+            blocked_ports=$(echo "$blocked_ports" | run_fg jq --arg p "${port}/${proto}" '. += [$p]')
         fi
 
         local risk_color="${C_GRAY}"
@@ -222,17 +235,17 @@ run_c5() {
     # Test ICMP
     local icmp_allowed="false"
     if ping -c 2 -W 3 8.8.8.8 &>/dev/null; then
-        local icmp_allowed="true"
+        icmp_allowed="true"
     fi
     echo "ICMP Echo: $(if [[ "$icmp_allowed" == "true" ]]; then echo "ALLOWED"; else echo "BLOCKED"; fi)" >> "$protocol_file"
 
     # Test DNS over HTTPS (DoH)
     local doh_allowed="false"
     local doh_response
-    local doh_response=$(timeout 10 ${TOOL_PATHS[curl]} -s -o /dev/null -w "%{http_code}" \
+    doh_response=$(timeout 10 run_fg "${TOOL_PATHS[curl]}" -s -o /dev/null -w "%{http_code}" \
         "https://dns.google/resolve?name=example.com&type=A" 2>/dev/null) || true
     if [[ "$doh_response" == "200" ]]; then
-        local doh_allowed="true"
+        doh_allowed="true"
     fi
     echo "DNS over HTTPS (DoH): $(if [[ "$doh_allowed" == "true" ]]; then echo "ALLOWED"; else echo "BLOCKED"; fi)" >> "$protocol_file"
 
@@ -242,21 +255,21 @@ run_c5() {
     # Test SSH tunnel capability
     local ssh_tunnel="false"
     if timeout 5 bash -c "echo >/dev/tcp/github.com/22" 2>/dev/null; then
-        local ssh_tunnel="true"
+        ssh_tunnel="true"
     fi
     echo "SSH (port 22): $(if [[ "$ssh_tunnel" == "true" ]]; then echo "ALLOWED — SSH tunneling possible"; else echo "BLOCKED"; fi)" >> "$protocol_file"
 
     # Test HTTPS on non-standard port (tunnel indicator)
     local https_alt="false"
-    if timeout 5 ${TOOL_PATHS[curl]} -s -o /dev/null -w "%{http_code}" "https://www.google.com:443" &>/dev/null; then
-        local https_alt="true"
+    if timeout 5 run_fg "${TOOL_PATHS[curl]}" -s -o /dev/null -w "%{http_code}" "https://www.google.com:443" &>/dev/null; then
+        https_alt="true"
     fi
     echo "HTTPS (443): $(if [[ "$https_alt" == "true" ]]; then echo "ALLOWED"; else echo "BLOCKED"; fi)" >> "$protocol_file"
 
     # Test if we can use alternate DNS
     local alt_dns="false"
-    if timeout 5 ${TOOL_PATHS[dig]} +short +timeout=3 @1.1.1.1 example.com A &>/dev/null; then
-        local alt_dns="true"
+    if timeout 5 run_fg "${TOOL_PATHS[dig]}" +short +timeout=3 @1.1.1.1 example.com A &>/dev/null; then
+        alt_dns="true"
     fi
     echo "Alternate DNS (1.1.1.1): $(if [[ "$alt_dns" == "true" ]]; then echo "ALLOWED"; else echo "BLOCKED"; fi)" >> "$protocol_file"
 
@@ -266,16 +279,12 @@ run_c5() {
 
     check_abort || return 1
 
-    log_cmd "${TOOL_PATHS[nmap]} -Pn --top-ports 100 -T4 --max-retries 1 -oA ${evidence_prefix}_top100 ${scan_target}"
+    run_fg "${TOOL_PATHS[nmap]}" -Pn --top-ports 100 -T4 --max-retries 1 -oA "${evidence_prefix}_top100" "${scan_target}"
 
-    timeout 120 ${TOOL_PATHS[nmap]} -Pn --top-ports 100 -T4 --max-retries 1 \
-        -oA "${evidence_prefix}_top100" \
-        "$scan_target" &>/dev/null || true
-
-    # Parse additional open ports from ${TOOL_PATHS[nmap]}
+    # Parse additional open ports from nmap
     if [[ -f "${evidence_prefix}_top100.nmap" ]]; then
         local nmap_open
-        local nmap_open=$(grep "^[0-9].*open" "${evidence_prefix}_top100.nmap" 2>/dev/null || true)
+        nmap_open=$(grep "^[0-9].*open" "${evidence_prefix}_top100.nmap" 2>/dev/null || true)
         if [[ -n "$nmap_open" ]]; then
             echo "" >> "$egress_file"
             echo "=== Extended Scan (top-100) ===" >> "$egress_file"
@@ -283,7 +292,7 @@ run_c5() {
 
             # Count additional opens not in our targeted scan
             local extended_open
-            local extended_open=$(echo "$nmap_open" | wc -l)
+            extended_open=$(echo "$nmap_open" | wc -l)
             log_info "Extended scan found ${extended_open} open ports in top-100"
         fi
     fi
@@ -293,15 +302,15 @@ run_c5() {
     update_tc_progress 5 $total_steps "Assessment"
 
     local high_risk_count
-    high_risk_count=$(echo "$high_risk_open" | ${TOOL_PATHS[jq]} 'length')
+    high_risk_count=$(echo "$high_risk_open" | run_fg jq 'length')
 
     local egress_policy="unknown"
     if [[ $total_open -le 3 ]]; then
-        local egress_policy="restrictive"
+        egress_policy="restrictive"
     elif [[ $total_open -le 8 ]]; then
-        local egress_policy="moderate"
+        egress_policy="moderate"
     else
-        local egress_policy="permissive"
+        egress_policy="permissive"
     fi
 
     echo "" >> "$findings_file"
@@ -312,7 +321,7 @@ run_c5() {
     if [[ $high_risk_count -gt 0 ]]; then
         echo "" >> "$findings_file"
         echo "High-risk open ports:" >> "$findings_file"
-        echo "$high_risk_open" | ${TOOL_PATHS[jq]} -r '.[]' | sed 's/^/  FINDING: /' >> "$findings_file"
+        echo "$high_risk_open" | run_fg jq -r '.[]' | sed 's/^/  FINDING: /' >> "$findings_file"
     fi
 
     if [[ "$ssh_tunnel" == "true" ]]; then
@@ -331,20 +340,20 @@ run_c5() {
     local recommendations=""
 
     if [[ "$egress_policy" == "permissive" || $high_risk_count -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="Egress filtering is ${egress_policy}. ${total_open}/${total_tested} tested ports are open outbound. "
-        result_summary+="${high_risk_count} high-risk port(s) open: $(echo "$high_risk_open" | ${TOOL_PATHS[jq]} -r 'join(", ")')."
-        local recommendations="1) Implement restrictive egress firewall — allow only ports 80/443 for target WiFi. "
+        result_status="FINDING"
+        result_summary="Egress filtering is ${egress_policy}. ${total_open}/${total_tested} tested ports are open outbound. "
+        result_summary+="${high_risk_count} high-risk port(s) open: $(echo "$high_risk_open" | run_fg jq -r 'join(", ")')."
+        recommendations="1) Implement restrictive egress firewall — allow only ports 80/443 for target WiFi. "
         recommendations+="2) Block SSH (22), RDP (3389), SMB (445), and database ports from target network. "
         recommendations+="3) Force DNS through a filtering proxy (block direct DNS to external servers). "
         recommendations+="4) Consider deploying a web proxy for target traffic with URL filtering. "
         recommendations+="5) Block VPN protocols (OpenVPN/1194, PPTP/1723, IPSec/500,4500) to prevent tunnel bypass."
     elif [[ "$egress_policy" == "moderate" ]]; then
-        local result_summary="Egress filtering is moderate. ${total_open}/${total_tested} ports open. Some non-essential ports are allowed but high-risk ports are mostly blocked."
-        local recommendations="Review remaining open ports and close any not required for target use."
+        result_summary="Egress filtering is moderate. ${total_open}/${total_tested} ports open. Some non-essential ports are allowed but high-risk ports are mostly blocked."
+        recommendations="Review remaining open ports and close any not required for target use."
     else
-        local result_summary="Egress filtering is restrictive. Only ${total_open}/${total_tested} tested ports are open outbound. Good security posture."
-        local recommendations="No immediate action needed. Continue monitoring egress rules."
+        result_summary="Egress filtering is restrictive. Only ${total_open}/${total_tested} tested ports are open outbound. Good security posture."
+        recommendations="No immediate action needed. Continue monitoring egress rules."
     fi
 
     local result_json
@@ -352,7 +361,7 @@ run_c5() {
     evidence_register_file "c5_protocol_tests.txt"
     evidence_register_file "c5_findings.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Policy: ${egress_policy}, Open: ${total_open}/${total_tested}, High-risk: ${high_risk_count}" \
@@ -384,25 +393,7 @@ run_c5() {
             alt_dns_allowed: ($alt_dns_allowed == "true"),
                     }')
 
-    save_tc_result "C5" "$result_json"
-
-    # Display summary
-    echo ""
-    echo -e "  ${C_BOLD}Egress Policy: ${C_RESET}$(
-        case "$egress_policy" in
-            permissive)  echo -e "${C_RED}PERMISSIVE${C_RESET}" ;;
-            moderate)    echo -e "${C_YELLOW}MODERATE${C_RESET}" ;;
-            restrictive) echo -e "${C_GREEN}RESTRICTIVE${C_RESET}" ;;
-        esac
-    ) (${total_open}/${total_tested} ports open)"
-
-    if [[ $high_risk_count -gt 0 ]]; then
-        log_result "FINDING" "${high_risk_count} high-risk port(s) open — data exfiltration / tunneling possible"
-    elif [[ "$egress_policy" == "permissive" ]]; then
-        log_result "FINDING" "Overly permissive egress — ${total_open} ports open outbound"
-    else
-        log_result "SECURE" "Egress filtering is ${egress_policy}"
-    fi
-
+    save_tc_result "C5" "$result_json" 0 1 0 1 1 1 0 1 1 1 1
+    save_session_state
     return 0
 }

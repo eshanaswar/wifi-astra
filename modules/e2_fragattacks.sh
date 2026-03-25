@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="FragAttacks Testing"
+# CATEGORY="E"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="tshark,fragattack"
+# DESC="Test 802.11 fragmentation/aggregation vulns (CVE-2020-24586+)"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/e2_fragattacks.sh
 #  E2: FragAttacks (Fragmentation & Aggregation Attacks)
@@ -28,14 +39,17 @@
 #    - total_vulns: int
 #===============================================================================
 
+set -uo pipefail
+
 run_e2() {
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/e2"
 
-    #--- Step 1: Verify tools ---
-    log_step 1 $total_steps "Verifying tools"
+    #--- Step 1: Verify tools & dependencies ---
+    log_step 1 $total_steps "Verifying tools & dependencies"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "E2" || return 1
     
     local has_fragattack=false
     local has_tshark=false
@@ -64,7 +78,7 @@ run_e2() {
     fi
 
     if [[ "$has_tshark" == "false" ]]; then
-        log_error "${TOOL_PATHS[tshark]} is required for frame analysis."
+        log_error "tshark is required for frame analysis."
         return 1
     fi
 
@@ -138,7 +152,7 @@ run_e2() {
     local mon_iface="${MONITOR_INTERFACE}"
 
     if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+        run_fg "iw" dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
     fi
 
     {
@@ -149,15 +163,16 @@ run_e2() {
     } > "$analysis_file"
 
     # Capture beacons to check A-MSDU and fragmentation capabilities
-    local beacon_pcap="/tmp/e2_beacons.pcap"
-    timeout 15 ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 30 -w "$beacon_pcap" \
+    local beacon_pcap="$TMP_DIR/e2_beacons.pcap"
+    timeout 15 run_fg "tcpdump" -i "$mon_iface" -c 30 -w "$beacon_pcap" \
         "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
         &>/dev/null || true
 
     if [[ -f "$beacon_pcap" && -s "$beacon_pcap" ]]; then
+        ensure_user_ownership "$beacon_pcap"
         # Check HT/VHT capabilities for A-MSDU support
         local amsdu_support
-        local amsdu_support=$(${TOOL_PATHS[tshark]} -r "$beacon_pcap" \
+        amsdu_support=$(run_as_user tshark -r "$beacon_pcap" \
             -Y "wlan.bssid == ${GUEST_BSSID}" \
             -T fields \
             -e wlan.ht.capabilities \
@@ -172,7 +187,7 @@ run_e2() {
 
         # Check for fragmentation threshold
         local frag_threshold
-        local frag_threshold=$(${TOOL_PATHS[tshark]} -r "$beacon_pcap" \
+        frag_threshold=$(run_as_user tshark -r "$beacon_pcap" \
             -Y "wlan.bssid == ${GUEST_BSSID}" \
             -T fields \
             -e wlan.fixed.fragment \
@@ -182,7 +197,7 @@ run_e2() {
 
         # Check for SPP A-MSDU (prevents CVE-2020-24588)
         local spp_amsdu
-        local spp_amsdu=$(${TOOL_PATHS[tshark]} -r "$beacon_pcap" \
+        spp_amsdu=$(run_as_user tshark -r "$beacon_pcap" \
             -Y "wlan.bssid == ${GUEST_BSSID}" \
             -T fields \
             -e wlan.rsn.capabilities \
@@ -191,7 +206,7 @@ run_e2() {
         echo "RSN Capabilities (SPP check): ${spp_amsdu:-unknown}" >> "$analysis_file"
 
         if [[ -z "$spp_amsdu" ]] || ! echo "$spp_amsdu" | grep -q "SPP"; then
-            local aggregation_vulnerable="true"
+            aggregation_vulnerable="true"
             ((design_flaws_found++))
             log_result "FINDING" "CVE-2020-24588: A-MSDU SPP not enforced — aggregation attack possible"
             echo "FINDING: CVE-2020-24588 — A-MSDU SPP not enforced" >> "$findings_file"
@@ -209,16 +224,15 @@ run_e2() {
     log_step 3 $total_steps "Capturing fragmented and aggregated frames (60s)"
     update_tc_progress 3 $total_steps "Frame capture"
 
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$capture_pcap" \
+    spawn_bg "e2_tcpdump" "tcpdump" -i "$mon_iface" -w "$capture_pcap" \
         "ether src ${GUEST_BSSID} or ether dst ${GUEST_BSSID}" \
-        &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+        &>/dev/null
 
     start_countdown 60 "Capturing frames for fragmentation analysis"
     sleep 60
     stop_countdown
 
+    stop_process "e2_tcpdump"
     
     validate_pcap "$capture_pcap" "Fragmentation analysis capture"
 
@@ -229,12 +243,13 @@ run_e2() {
     update_tc_progress 4 $total_steps "Pattern analysis"
 
     if [[ -f "$capture_pcap" && -s "$capture_pcap" ]]; then
+        ensure_user_ownership "$capture_pcap"
         # Check for fragmented frames
         local frag_count
-        local frag_count=$(${TOOL_PATHS[tshark]} -r "$capture_pcap" \
+        frag_count=$(run_as_user tshark -r "$capture_pcap" \
             -Y "wlan.fc.morefrag == 1" \
             2>/dev/null | wc -l) || true
-        local frag_count=${frag_count:-0}
+        frag_count=${frag_count:-0}
 
         echo "" >> "$results_file"
         echo "Fragmented frames captured: ${frag_count}" >> "$results_file"
@@ -244,7 +259,7 @@ run_e2() {
 
             # CVE-2020-24586: Fragment cache not cleared
             # Indicator: if AP sends fragmented data, the cache might persist
-            local fragment_cache_vulnerable="true"
+            fragment_cache_vulnerable="true"
             ((design_flaws_found++))
             echo "CVE-2020-24586: POTENTIALLY VULNERABLE — fragmentation in use, cache behavior needs active test" >> "$results_file"
             echo "FINDING: CVE-2020-24586 — Fragmentation active, fragment cache may not be cleared on reconnect" >> "$findings_file"
@@ -256,14 +271,14 @@ run_e2() {
         # CVE-2020-24587: Mixed key acceptance
         # Check if reassembled fragments use consistent encryption
         local mixed_key_indicator
-        local mixed_key_indicator=$(${TOOL_PATHS[tshark]} -r "$capture_pcap" \
+        mixed_key_indicator=$(run_as_user tshark -r "$capture_pcap" \
             -Y "wlan.fc.morefrag == 1 && wlan.fc.protected == 1" \
             -T fields \
             -e wlan.sa -e wlan.ccmp.extiv \
             2>/dev/null | sort -u | wc -l) || true
 
         if [[ ${mixed_key_indicator:-0} -gt 1 ]]; then
-            local mixed_key_vulnerable="true"
+            mixed_key_vulnerable="true"
             ((design_flaws_found++))
             echo "CVE-2020-24587: POTENTIALLY VULNERABLE — multiple key contexts in fragmented frames" >> "$results_file"
             echo "FINDING: CVE-2020-24587 — Mixed key contexts detected in fragmented frames" >> "$findings_file"
@@ -274,7 +289,7 @@ run_e2() {
 
         # Check for A-MSDU frames
         local amsdu_count
-        local amsdu_count=$(${TOOL_PATHS[tshark]} -r "$capture_pcap" \
+        amsdu_count=$(run_as_user tshark -r "$capture_pcap" \
             -Y "wlan.fc.order == 1" \
             2>/dev/null | wc -l) || true
 
@@ -300,7 +315,7 @@ run_e2() {
             log_cmd "python3 ${fragattack_script} ${mon_iface} ${test_cmd}"
 
             local test_output
-            local test_output=$(timeout 60 python3 "$fragattack_script" \
+            test_output=$(timeout 60 python3 "$fragattack_script" \
                 "$mon_iface" $test_cmd \
                 2>&1 || true)
 
@@ -333,39 +348,39 @@ run_e2() {
     log_step 7 $total_steps "Saving results"
     update_tc_progress 7 $total_steps "Saving"
 
-    local total_vulns=$((design_flaws_found + implementation_bugs_found))
+    total_vulns=$((design_flaws_found + implementation_bugs_found))
 
     local result_status="SECURE"
     local result_summary=""
     local recommendations=""
 
     if [[ $total_vulns -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="FragAttacks: ${total_vulns} potential vulnerability/ies found. "
+        result_status="FINDING"
+        result_summary="FragAttacks: ${total_vulns} potential vulnerability/ies found. "
         result_summary+="Design flaws: ${design_flaws_found} (affect all WiFi). "
         result_summary+="Implementation bugs: ${implementation_bugs_found}. "
         [[ "$aggregation_vulnerable" == "true" ]] && result_summary+="A-MSDU SPP not enforced. "
         [[ "$fragment_cache_vulnerable" == "true" ]] && result_summary+="Fragment cache behavior unverified. "
         [[ "$mixed_key_vulnerable" == "true" ]] && result_summary+="Mixed key context in fragments. "
-        local recommendations="1) Update AP firmware to the latest version with FragAttacks patches. "
+        recommendations="1) Update AP firmware to the latest version with FragAttacks patches. "
         recommendations+="2) Update ALL client devices (especially IoT) to patched firmware. "
         recommendations+="3) Enable SPP A-MSDU if supported by the AP/WLC. "
         recommendations+="4) Disable fragmentation if not needed (increase threshold to MTU). "
         recommendations+="5) Consider WPA3 with full security features. "
         recommendations+="6) Enforce HTTPS everywhere — FragAttacks require L2 proximity."
     else
-        local result_summary="No FragAttacks vulnerabilities confirmed through passive analysis. "
+        result_summary="No FragAttacks vulnerabilities confirmed through passive analysis. "
         result_summary+="Active testing with the fragattacks tool is recommended for complete assessment."
-        local recommendations="Install fragattacks tool for comprehensive active testing. Keep firmware updated."
+        recommendations="Install fragattacks tool for comprehensive active testing. Keep firmware updated."
     fi
 
     local result_json
-    evidence_register_file "e2_fragattack_results.txt"
-    evidence_register_file "e2_network_analysis.txt"
-    evidence_register_file "e2_capture.pcap"
-    evidence_register_file "e2_findings.txt"
+    evidence_register_file "$results_file"
+    evidence_register_file "$analysis_file"
+    evidence_register_file "$capture_pcap"
+    evidence_register_file "$findings_file"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_fg "jq" -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Design flaws: ${design_flaws_found}, Impl bugs: ${implementation_bugs_found}, A-MSDU: ${aggregation_vulnerable}, Frag cache: ${fragment_cache_vulnerable}, Mixed key: ${mixed_key_vulnerable}" \
@@ -386,10 +401,15 @@ run_e2() {
             aggregation_vulnerable: ($aggregation_vulnerable == "true"),
             fragment_cache_vulnerable: ($fragment_cache_vulnerable == "true"),
             mixed_key_vulnerable: ($mixed_key_vulnerable == "true"),
-            total_vulns: $total_vulns,
-                    }')
+            total_vulns: $total_vulns
+        }')
 
-    save_tc_result "E2" "$result_json"
+    local has_tool_output=1
+    local has_primary=0
+    [[ -f "$capture_pcap" && -s "$capture_pcap" ]] && has_primary=1
+    
+    save_tc_result "E2" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 0
+    save_session_state
 
     echo ""
     if [[ $total_vulns -gt 0 ]]; then

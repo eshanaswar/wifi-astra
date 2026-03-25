@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="SNMP Exposure"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="nmap,onesixtyone,snmpwalk"
+# DESC="Probe for SNMP services with default/common communities"
+# REQS="managed_iface,gateway_ip"
+# PCAP="no"
+# DECODE="none"
+
 #===============================================================================
 #  modules/b5_snmp_exposure.sh
 #  B5: SNMP Exposure
@@ -15,13 +26,13 @@
 #
 #  EVIDENCE PRODUCED:
 #    - b5_snmp_sweep.txt           (${TOOL_PATHS[onesixtyone]} sweep results)
-#    - b5_snmp_walk_<${TOOL_PATHS[ip]}>.txt       (full SNMP walk per device)
+#    - b5_snmp_walk_<run_tool ip>.txt       (full SNMP walk per device)
 #    - b5_snmp_findings.txt        (summary of findings)
 #
 #  RESULT JSON FIELDS:
 #    - snmp_hosts_found: count of devices with SNMP accessible
 #    - communities_found[]: working community strings
-#    - device_info[]: array of {${TOOL_PATHS[ip]}, community, sysDescr, sysName, sysLocation}
+#    - device_info[]: array of {run_tool ip, community, sysDescr, sysName, sysLocation}
 #    - sensitive_data_exposed: bool (routing tables, ARP, etc.)
 #===============================================================================
 
@@ -55,11 +66,11 @@ run_b5() {
     fi
 
     if [[ -z "${GATEWAY_IP:-}" ]]; then
-        GATEWAY_IP=$(${TOOL_PATHS[ip]} route 2>/dev/null | awk '/default/{print $3}' | head -1)
+        GATEWAY_IP=$(run_tool ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
     fi
 
     if [[ -z "${MY_IP:-}" ]]; then
-        MY_IP=$(${TOOL_PATHS[ip]} -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+        MY_IP=$(run_tool ip -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
     fi
 
     local subnet_base
@@ -133,58 +144,38 @@ run_b5() {
     if [[ "$has_onesixtyone" == "true" ]]; then
         # Use ${TOOL_PATHS[onesixtyone]} for fast SNMP sweep
         log_cmd "${TOOL_PATHS[onesixtyone]} -c ${community_file} ${scan_range}"
-        run_with_spinner "${TOOL_PATHS[onesixtyone]} -c ${community_file} ${scan_range}" \
-            "Sweeping ${scan_range} for SNMP services"
+        run_with_spinner "Sweeping ${scan_range} for SNMP services" "${TOOL_PATHS[onesixtyone]}" -c "$community_file" "$scan_range"
 
         echo "$CMD_OUTPUT" >> "$sweep_file"
 
-        # Parse ${TOOL_PATHS[onesixtyone]} output: "IP [community] description"
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            [[ "$line" =~ ^Scanning ]] && continue
-
-            local c_ip community desc
-            local c_ip=$(echo "$line" | grep -oP '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
-            local community=$(echo "$line" | grep -oP '\[.*?\]' | tr -d '[]')
-            local desc=$(echo "$line" | sed 's/^[^ ]* \[.*\] //')
-
-            [[ -z "$c_ip" ]] && continue
-
-            log_result "FINDING" "SNMP accessible: ${c_ip} [${community}] — ${desc}"
-
-            snmp_hosts=$(echo "$snmp_hosts" | ${TOOL_PATHS[jq]} \
-                --arg ip "$c_ip" \
-                --arg community "$community" \
-                --arg desc "$desc" \
-                '. += [{ip: $c_ip, community: $community, sysDescr: $desc}]')
-
-            communities_found=$(echo "$communities_found" | ${TOOL_PATHS[jq]} --arg c "$community" 'if (. | index($c)) then . else . += [$c] end')
-        done <<< "$CMD_OUTPUT"
+        # Parse ${TOOL_PATHS[onesixtyone]} output and build findings list in one pass
+        # Output format: "IP [community] description"
+        local found_list
+        found_list=$(echo "$CMD_OUTPUT" | grep -oP '^[0-9.]+\s+\[.*?\]\s+.*' | sed 's/ /|/g')
+        
+        # Build JSON in one batch call
+        if [[ -n "$found_list" ]]; then
+            snmp_hosts=$(echo "$found_list" | run_tool jq -R -s 'split("\n") | map(select(length > 0)) | map(split("|")) | map({ip: .[0], community: (.[1]|gsub("[\\[\\]]"; "")), sysDescr: (.[2:]|join(" "))})')
+            communities_found=$(echo "$snmp_hosts" | run_tool jq -c 'map(.community) | unique')
+        fi
     else
         # Fallback: use ${TOOL_PATHS[nmap]} SNMP brute
         log_cmd "${TOOL_PATHS[nmap]} -sU -p 161 --script snmp-brute --script-args snmp-brute.communitiesdb=${community_file} ${scan_range}"
-        run_with_spinner "${TOOL_PATHS[nmap]} -sU -p 161 --script snmp-brute --script-args snmp-brute.communitiesdb=${community_file} ${scan_range} -oA ${sweep_file%.txt}" \
-            "Scanning for SNMP services (UDP scan — may take a few minutes)"
+        run_with_spinner "Scanning for SNMP services (UDP scan — may take a few minutes)" "${TOOL_PATHS[nmap]}" -sU -p 161 --script snmp-brute --script-args "snmp-brute.communitiesdb=${community_file}" "$scan_range" -oA "${sweep_file%.txt}"
 
-        # Parse ${TOOL_PATHS[nmap]} output
-        local current_host=""
-        while IFS= read -r line; do
-            if [[ "$line" =~ "Nmap scan report for" ]]; then
-                current_host=$(echo "$line" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
-            elif [[ "$line" =~ "161/udp" ]] && [[ "$line" =~ "open" ]]; then
-                [[ -z "$current_host" ]] && continue
-                log_result "FINDING" "SNMP port open: ${current_host}"
-                snmp_hosts=$(echo "$snmp_hosts" | ${TOOL_PATHS[jq]} --arg ip "$current_host" '. += [{ip: $c_ip, community: "unknown", sysDescr: "port open"}]')
-            elif [[ "$line" =~ "Valid credentials" ]] || [[ "$line" =~ "snmp-brute:" ]]; then
-                local community
-                community=$(echo "$line" | grep -oP '\b\w+\b' | tail -1)
-                communities_found=$(echo "$communities_found" | ${TOOL_PATHS[jq]} --arg c "$community" 'if (. | index($c)) then . else . += [$c] end')
-            fi
-        done < "${sweep_file%.txt}.nmap"
+        # Optimized Nmap parsing
+        local nmap_hosts=$(grep "Nmap scan report for" "${sweep_file%.txt}.nmap" | grep -oP '[0-9.]+')
+        local nmap_creds=$(grep -E "Valid credentials|snmp-brute:" "${sweep_file%.txt}.nmap" | grep -oP '\b\w+\b' | tail -n +2)
+        
+        # Simplified batch assembly for Nmap results
+        if [[ -n "$nmap_hosts" ]]; then
+            snmp_hosts=$(echo "$nmap_hosts" | run_tool jq -R -s 'split("\n") | map(select(length > 0)) | map({ip: ., community: "unknown", sysDescr: "port open"})')
+            communities_found=$(echo "$nmap_creds" | run_tool jq -R -s 'split("\n") | map(select(length > 0)) | unique')
+        fi
     fi
 
     local host_count
-    host_count=$(echo "$snmp_hosts" | ${TOOL_PATHS[jq]} 'length')
+    host_count=$(echo "$snmp_hosts" | run_tool jq 'length')
     log_info "SNMP hosts found: ${host_count}"
 
     check_abort || return 1
@@ -199,11 +190,15 @@ run_b5() {
     local sensitive_data="false"
 
     if [[ $host_count -gt 0 && "$has_snmpwalk" == "true" ]]; then
+        # Build temp data for batch JSON assembly
+        local device_info_raw=$(mktemp)
+        
         # Enumerate each host
+        # We stream the JSON array to avoid word-splitting issues
         while IFS= read -r host_entry; do
             local c_ip community
-            local c_ip=$(echo "$host_entry" | ${TOOL_PATHS[jq]} -r '.ip')
-            community=$(echo "$host_entry" | ${TOOL_PATHS[jq]} -r '.community')
+            c_ip=$(echo "$host_entry" | run_tool jq -r '.ip')
+            community=$(echo "$host_entry" | run_tool jq -r '.community')
 
             [[ -z "$c_ip" || "$community" == "unknown" ]] && continue
 
@@ -219,92 +214,38 @@ run_b5() {
 
             # System information
             echo "--- System Information ---" >> "$walk_file"
-            local sys_info
             local sys_info=$(timeout 15 ${TOOL_PATHS[snmpwalk]} -v2c -c "$community" "$c_ip" system 2>/dev/null || true)
             echo "$sys_info" >> "$walk_file"
 
             local sys_descr sys_name sys_location sys_contact
-            local sys_descr=$(echo "$sys_info" | grep "sysDescr" | head -1 | sed 's/.*STRING: //')
-            local sys_name=$(echo "$sys_info" | grep "sysName" | head -1 | sed 's/.*STRING: //')
-            local sys_location=$(echo "$sys_info" | grep "sysLocation" | head -1 | sed 's/.*STRING: //')
-            local sys_contact=$(echo "$sys_info" | grep "sysContact" | head -1 | sed 's/.*STRING: //')
+            sys_descr=$(echo "$sys_info" | grep "sysDescr" | head -1 | sed 's/.*STRING: //' | tr -d '"')
+            sys_name=$(echo "$sys_info" | grep "sysName" | head -1 | sed 's/.*STRING: //' | tr -d '"')
+            sys_location=$(echo "$sys_info" | grep "sysLocation" | head -1 | sed 's/.*STRING: //' | tr -d '"')
+            sys_contact=$(echo "$sys_info" | grep "sysContact" | head -1 | sed 's/.*STRING: //' | tr -d '"')
 
-            log_result "FINDING" "SNMP data from ${c_ip}:"
-            log_output "  sysName: ${sys_name}"
-            log_output "  sysDescr: ${sys_descr}"
-            log_output "  sysLocation: ${sys_location}"
+            log_result "FINDING" "SNMP data from ${c_ip}: ${sys_name:-unknown}"
 
             # Interface table
-            echo "" >> "$walk_file"
-            echo "--- Interfaces ---" >> "$walk_file"
-            local iface_data
             local iface_data=$(timeout 15 ${TOOL_PATHS[snmpwalk]} -v2c -c "$community" "$c_ip" ifDescr 2>/dev/null || true)
-            echo "$iface_data" >> "$walk_file"
+            local iface_count=$(echo "$iface_data" | grep -c "ifDescr" 2>/dev/null || echo "0")
 
-            local iface_count
-            local iface_count=$(echo "$iface_data" | grep -c "ifDescr" 2>/dev/null) || true
+            # ARP & Routes (Sensitive!)
+            local arp_data=$(timeout 10 ${TOOL_PATHS[snmpwalk]} -v2c -c "$community" "$c_ip" ipNetToMediaPhysAddress 2>/dev/null || true)
+            local route_data=$(timeout 10 ${TOOL_PATHS[snmpwalk]} -v2c -c "$community" "$c_ip" ipRouteDest 2>/dev/null || true)
 
-            # IP addresses
-            echo "" >> "$walk_file"
-            echo "--- IP Addresses ---" >> "$walk_file"
-            local ip_data
-            local ip_data=$(timeout 15 ${TOOL_PATHS[snmpwalk]} -v2c -c "$community" "$c_ip" ipAdEntAddr 2>/dev/null || true)
-            echo "$ip_data" >> "$walk_file"
+            local has_arp="false"; [[ $(echo "$arp_data" | grep -c . || echo "0") -gt 2 ]] && has_arp="true" && sensitive_data="true"
+            local has_routes="false"; [[ $(echo "$route_data" | grep -c . || echo "0") -gt 2 ]] && has_routes="true" && sensitive_data="true"
 
-            # ARP table (sensitive!)
-            echo "" >> "$walk_file"
-            echo "--- ARP Table ---" >> "$walk_file"
-            local arp_data
-            local arp_data=$(timeout 15 ${TOOL_PATHS[snmpwalk]} -v2c -c "$community" "$c_ip" ipNetToMediaPhysAddress 2>/dev/null || true)
-            echo "$arp_data" >> "$walk_file"
+            # Log to temp file for batch JSON
+            echo "${c_ip}|${community}|${sys_descr:-}|${sys_name:-}|${sys_location:-}|${sys_contact:-}|${iface_count}|${has_arp}|${has_routes}" >> "$device_info_raw"
 
-            if [[ -n "$arp_data" && $(echo "$arp_data" | wc -l) -gt 2 ]]; then
-                local sensitive_data="true"
-                log_result "CRITICAL" "ARP table accessible via SNMP from ${c_ip} — reveals internal hosts"
-            fi
-
-            # Routing table (sensitive!)
-            echo "" >> "$walk_file"
-            echo "--- Routing Table ---" >> "$walk_file"
-            local route_data
-            local route_data=$(timeout 15 ${TOOL_PATHS[snmpwalk]} -v2c -c "$community" "$c_ip" ipRouteDest 2>/dev/null || true)
-            echo "$route_data" >> "$walk_file"
-
-            if [[ -n "$route_data" && $(echo "$route_data" | wc -l) -gt 2 ]]; then
-                local sensitive_data="true"
-                log_result "CRITICAL" "Routing table accessible via SNMP from ${c_ip} — reveals network topology"
-            fi
-
-            # VLAN information (Cisco specific)
-            echo "" >> "$walk_file"
-            echo "--- VLAN Table (Cisco) ---" >> "$walk_file"
-            local vlan_data
-            local vlan_data=$(timeout 15 ${TOOL_PATHS[snmpwalk]} -v2c -c "$community" "$c_ip" 1.3.6.1.4.1.9.9.46.1.3.1.1.2 2>/dev/null || true)
-            echo "$vlan_data" >> "$walk_file"
-
-            device_info=$(echo "$device_info" | ${TOOL_PATHS[jq]} \
-                --arg ip "$c_ip" \
-                --arg community "$community" \
-                --arg sys_descr "$sys_descr" \
-                --arg sys_name "$sys_name" \
-                --arg sys_location "$sys_location" \
-                --arg sys_contact "$sys_contact" \
-                --argjson iface_count "$iface_count" \
-                --arg has_arp "$(if [[ -n "$arp_data" ]]; then echo "true"; else echo "false"; fi)" \
-                --arg has_routes "$(if [[ -n "$route_data" ]]; then echo "true"; else echo "false"; fi)" \
-                '. += [{
-                    ip: $c_ip,
-                    community: $community,
-                    sysDescr: $sys_descr,
-                    sysName: $sys_name,
-                    sysLocation: $sys_location,
-                    sysContact: $sys_contact,
-                    interface_count: $iface_count,
-                    arp_table_accessible: ($has_arp == "true"),
-                    routing_table_accessible: ($has_routes == "true")
-                }]')
-
-        done < <(echo "$snmp_hosts" | ${TOOL_PATHS[jq]} -c '.[]')
+        done < <(echo "$snmp_hosts" | run_tool jq -c '.[]')
+        
+        # Batch assemble device_info JSON
+        if [[ -s "$device_info_raw" ]]; then
+            device_info=$(cat "$device_info_raw" | run_tool jq -R -s 'split("\n") | map(select(length > 0)) | map(split("|")) | map({ip: .[0], community: .[1], sysDescr: .[2], sysName: .[3], sysLocation: .[4], sysContact: .[5], interface_count: (.[6]|tonumber), arp_table_accessible: (.[7]=="true"), routing_table_accessible: (.[8]=="true")})')
+        fi
+        rm -f "$device_info_raw"
     fi
 
     #--- Step 5: Check for SNMP write access ---
@@ -318,7 +259,7 @@ run_b5() {
     if [[ "$has_snmpwalk" == "true" ]]; then
         while IFS= read -r host_entry; do
             local c_ip
-            local c_ip=$(echo "$host_entry" | ${TOOL_PATHS[jq]} -r '.ip')
+            local c_ip=$(echo "$host_entry" | run_tool jq -r '.ip')
             [[ -z "$c_ip" ]] && continue
 
             # Test 'private' community for write
@@ -333,7 +274,7 @@ run_b5() {
                     local write_access="true"
                 fi
             done
-        done < <(echo "$snmp_hosts" | ${TOOL_PATHS[jq]} -c '.[]')
+        done < <(echo "$snmp_hosts" | run_tool jq -c '.[]')
     fi
 
     #--- Step 6: Save results ---
@@ -348,12 +289,12 @@ run_b5() {
         echo "============================================================"
         echo ""
         echo "SNMP Hosts Found: ${host_count}"
-        echo "Working Communities: $(echo "$communities_found" | ${TOOL_PATHS[jq]} -r 'join(", ")')"
+        echo "Working Communities: $(echo "$communities_found" | run_tool jq -r 'join(", ")')"
         echo "Sensitive Data Exposed: ${sensitive_data}"
         echo "Write Access Possible: ${write_access}"
         echo ""
         echo "Device Information:"
-        echo "$device_info" | ${TOOL_PATHS[jq]} -r '.[] | "  \(.ip): \(.sysName) (\(.sysDescr))"'
+        echo "$device_info" | run_tool jq -r '.[] | "  \(.ip): \(.sysName) (\(.sysDescr))"'
     } > "$findings_file"
 
     local result_status="SECURE"
@@ -362,7 +303,7 @@ run_b5() {
 
     if [[ $host_count -gt 0 ]]; then
         local result_status="FINDING"
-        local result_summary="SNMP is accessible from target WiFi on ${host_count} device(s). Working community strings: $(echo "$communities_found" | ${TOOL_PATHS[jq]} -r 'join(", ")'). "
+        local result_summary="SNMP is accessible from target WiFi on ${host_count} device(s). Working community strings: $(echo "$communities_found" | run_tool jq -r 'join(", ")'). "
         if [[ "$sensitive_data" == "true" ]]; then
             result_summary+="CRITICAL: ARP tables and/or routing tables are accessible — full network topology exposed. "
         fi
@@ -379,10 +320,10 @@ run_b5() {
     evidence_register_file "b5_snmp_sweep.txt"
     evidence_register_file "b5_snmp_findings.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
-        --arg details "Hosts: ${host_count}, Communities: $(echo "$communities_found" | ${TOOL_PATHS[jq]} 'length'), Sensitive: ${sensitive_data}, Write: ${write_access}" \
+        --arg details "Hosts: ${host_count}, Communities: $(echo "$communities_found" | run_tool jq 'length'), Sensitive: ${sensitive_data}, Write: ${write_access}" \
         --arg recommendations "$recommendations" \
         --argjson snmp_hosts_found "$host_count" \
         --argjson communities_found "$communities_found" \
@@ -401,7 +342,7 @@ run_b5() {
             write_access_possible: ($write_access == "true"),
                     }')
 
-    save_tc_result "B5" "$result_json"
+    save_tc_result "B5" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""

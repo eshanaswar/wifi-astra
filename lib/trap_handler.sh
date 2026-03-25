@@ -1,38 +1,54 @@
 #!/usr/bin/env bash
 #===============================================================================
-#  lib/trap_handler.sh — Signal Handling
+#  lib/trap_handler.sh — Signal Handling & Recursive Cleanup
 #  
 #  Ctrl+\  (SIGQUIT) = Abort current test case only
 #  Ctrl+C  (SIGINT)  = Exit entire script gracefully
 #===============================================================================
 
+set -uo pipefail
+
 declare -ga CLEANUP_HOOKS=()
 
+#--- Register a command to be executed during cleanup ---
 register_cleanup() {
     CLEANUP_HOOKS+=("$1")
 }
 
+#--- Execute all registered cleanup hooks in LIFO order ---
 _execute_cleanups() {
     if [[ ${#CLEANUP_HOOKS[@]} -eq 0 ]]; then
         return
     fi
+    
     log_info "Executing cleanup hooks..."
-    # LIFO execution
+    
+    # LIFO execution (Last-In, First-Out)
     for (( i=${#CLEANUP_HOOKS[@]}-1; i>=0; i-- )); do
         local cmd="${CLEANUP_HOOKS[$i]}"
-        log_debug "Cleanup: $cmd"
-        eval "$cmd" 2>/dev/null || true
+        log_debug "Cleanup hook: $cmd"
+        
+        # Execute each hook in a subshell to prevent failure propagation
+        (
+            # Ignore further signals during cleanup to prevent loops
+            trap '' SIGINT SIGTERM SIGHUP EXIT
+            eval "$cmd"
+        ) 2>/dev/null || log_warn "Cleanup hook failed: $cmd"
     done
+    
     CLEANUP_HOOKS=()
 }
 
+#--- Register signal traps ---
 register_traps() {
     trap '_handle_sigquit' SIGQUIT    # Ctrl+\
     trap '_handle_sigint'  SIGINT     # Ctrl+C
-    trap '_handle_exit'    EXIT       # Script exit (cleanup)
+    trap '_handle_sigterm' SIGTERM    # External kill
+    trap '_handle_sighup'  SIGHUP     # Terminal closed
+    trap '_handle_exit'    EXIT       # Normal exit
 }
 
-#--- Ctrl+\ Handler: Abort current test ---
+#--- SIGQUIT Handler: Abort current test ---
 _handle_sigquit() {
     echo ""
     
@@ -40,7 +56,7 @@ _handle_sigquit() {
         TC_ABORT_REQUESTED=1
         log_warn "Abort requested for ${CURRENT_TC}"
         
-        # Stop any active PCAP capture for this TC (best effort)
+        # Stop any active PCAP capture for this TC
         if declare -f pcap_stop &>/dev/null; then
             pcap_stop "$CURRENT_TC" || true
         fi
@@ -77,14 +93,14 @@ _handle_sigquit() {
         log_warn "No test running. Use Ctrl+C to exit or 'Q' from the menu."
     fi
     
-    # Re-register the trap (one-shot on some systems)
+    # Re-register the trap
     trap '_handle_sigquit' SIGQUIT
 }
 
-#--- Ctrl+C Handler: Exit script ---
+#--- SIGINT/SIGTERM/SIGHUP Handler: Exit script ---
 _handle_sigint() {
     echo ""
-    log_warn "Script exit requested (Ctrl+C)"
+    log_warn "Interrupt or termination signal received."
     
     # Kill any running test
     if [[ -n "${CURRENT_TC:-}" ]]; then
@@ -108,9 +124,21 @@ _handle_sigint() {
     echo -e "${C_YELLOW}Session ID: ${SESSION_ID}${C_RESET}"
     
     # Cleanup monitor mode if active
-    ensure_managed_mode
+    if declare -f ensure_managed_mode &>/dev/null; then
+        ensure_managed_mode
+    fi
     
     exit 0
+}
+
+_handle_sigterm() {
+    log_debug "SIGTERM received"
+    _handle_sigint
+}
+
+_handle_sighup() {
+    log_debug "SIGHUP received"
+    _handle_sigint
 }
 
 #--- EXIT Handler: Final cleanup ---
@@ -124,7 +152,10 @@ _handle_exit() {
         pcap_stop "$CURRENT_TC" || true
     fi
     
-    # Execute cleanups (just in case)
+    # Kill background processes one last time
+    _kill_tc_processes
+
+    # Execute cleanups
     _execute_cleanups
 
     # Finalize permissions for all evidence files
@@ -135,9 +166,19 @@ _handle_exit() {
     # Save session one final time
     save_session_state 2>/dev/null
     
+    # Cleanup monitor mode if active
+    if declare -f ensure_managed_mode &>/dev/null; then
+        ensure_managed_mode
+    fi
+
     # Restore terminal
     stty sane 2>/dev/null
     tput cnorm 2>/dev/null  # Show cursor
+
+    # Cleanup secure temporary workspace
+    if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" ]]; then
+        rm -rf "$TMP_DIR" 2>/dev/null
+    fi
 }
 
 #--- Kill processes spawned by current TC ---
@@ -145,39 +186,35 @@ _kill_tc_processes() {
     # Kill specific tracked PID
     if [[ -n "${CURRENT_TC_PID:-}" ]] && kill -0 "$CURRENT_TC_PID" 2>/dev/null; then
         kill -TERM "$CURRENT_TC_PID" 2>/dev/null
-        sleep 1
+        sleep 0.5
         kill -9 "$CURRENT_TC_PID" 2>/dev/null
         wait "$CURRENT_TC_PID" 2>/dev/null
         CURRENT_TC_PID=""
     fi
     
-    # Kill any ${TOOL_PATHS[airodump-ng]}, ${TOOL_PATHS[masscan]} etc that we spawned
-    # (tracked via PID files in session dir)
-    local pid_dir="${SESSION_DIR:-/tmp}/.pids"
-    if [[ -d "$pid_dir" ]]; then
-        for pid_file in "$pid_dir"/*.pid; do
-            [[ -f "$pid_file" ]] || continue
-            local pid
-            pid=$(cat "$pid_file")
-            if kill -0 "$pid" 2>/dev/null; then
-                kill -TERM "$pid" 2>/dev/null
-                sleep 0.5
-                kill -9 "$pid" 2>/dev/null
-            fi
-            rm -f "$pid_file"
-        done
+    # Call the new comprehensive cleanup from process_manager.sh
+    if declare -f cleanup_processes &>/dev/null; then
+        cleanup_processes
     fi
 }
 
-# Also stop the runner-level PCAP capture (stored in pcap.sh registry).
-_kill_runner_pcap() {
-    if [[ -n "${CURRENT_TC:-}" ]] && declare -f pcap_stop &>/dev/null; then
-        pcap_stop "$CURRENT_TC" || true
-    fi
+#--- Helper: Track a background PID ---
+track_pid() {
+    local name="$1"
+    local pid="$2"
+    local base_dir="${SESSION_DIR:-$TMP_DIR/wifi-astra/default}"
+    local pid_dir="${base_dir}/.pids"
+    mkdir -p "$pid_dir"
+    echo "$pid" > "${pid_dir}/${name}.pid"
 }
 
-#--- Cleanup monitor mode ---
-# Supported by global ensure_managed_mode
+#--- Helper: Check if abort was requested ---
+check_abort() {
+    if [[ ${TC_ABORT_REQUESTED:-0} -eq 1 ]]; then
+        return 1
+    fi
+    return 0
+}
 
 #--- Abort Menu ---
 _show_abort_menu() {
@@ -200,20 +237,24 @@ _show_abort_menu() {
     echo ""
     
     while true; do
-        read -rep "  Select [M/R/Q]: " abort_choice
+        safe_read "Select [M/R/Q]: " abort_choice
         case "${abort_choice^^}" in
             "M")
                 return 0  # Will return to menu loop
                 ;;
             "R")
                 # Reset status and re-run
-                TC_STATUS["$tc_id"]="not_run"
-                execute_test_case "$tc_id"
+                if [[ -n "${tc_id}" ]]; then
+                    TC_STATUS["$tc_id"]="not_run"
+                    if declare -f execute_test_case &>/dev/null; then
+                        execute_test_case "$tc_id"
+                    fi
+                fi
                 return 0
                 ;;
             "Q")
-                save_session_state
-                echo -e "${C_GREEN}Session saved: ${SESSION_ID}${C_RESET}"
+                save_session_state 2>/dev/null
+                echo -e "${C_GREEN}Session saved: ${SESSION_ID:-unknown}${C_RESET}"
                 exit 0
                 ;;
             *)
@@ -221,21 +262,4 @@ _show_abort_menu() {
                 ;;
         esac
     done
-}
-
-#--- Helper: Track a background PID ---
-track_pid() {
-    local name="$1"
-    local pid="$2"
-    local pid_dir="${SESSION_DIR}/.pids"
-    mkdir -p "$pid_dir"
-    echo "$pid" > "${pid_dir}/${name}.pid"
-}
-
-#--- Helper: Check if abort was requested ---
-check_abort() {
-    if [[ ${TC_ABORT_REQUESTED:-0} -eq 1 ]]; then
-        return 1
-    fi
-    return 0
 }

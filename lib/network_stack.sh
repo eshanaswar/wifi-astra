@@ -3,6 +3,8 @@
 #  lib/network_stack.sh — Interface & Connection Management
 #===============================================================================
 
+set -uo pipefail
+
 configure_network() {
     echo ""
     echo -e "${C_CYAN}───────────────────────────────────────────────────────────────────${C_RESET}"
@@ -36,7 +38,7 @@ configure_network() {
     
     echo ""
     local iface_choice
-    read -rep "  Select interface [1-$((idx-1))]: " iface_choice
+    safe_read "Select interface [1-$((idx-1))]: " iface_choice
     
     if [[ "$iface_choice" =~ ^[0-9]+$ ]] && [[ $iface_choice -ge 1 ]] && [[ $iface_choice -le ${#iface_list[@]} ]]; then
         WIFI_INTERFACE="${iface_list[$((iface_choice-1))]}"
@@ -65,9 +67,14 @@ configure_network() {
 }
 
 enable_monitor_mode() {
+    # 1. If we already have a valid monitor interface, just verify it's UP
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
         if iw dev "$MONITOR_INTERFACE" info &>/dev/null; then
-            return 0
+            local type=$(iw dev "$MONITOR_INTERFACE" info | awk '/type/{print $2}')
+            if [[ "$type" == "monitor" ]]; then
+                ip link set "$MONITOR_INTERFACE" up 2>/dev/null || true
+                return 0
+            fi
         fi
     fi
     
@@ -75,71 +82,171 @@ enable_monitor_mode() {
     
     log_info "Enabling monitor mode on ${WIFI_INTERFACE}..."
     
-    # Preferred: Virtual interface
-    local mon_iface="mon0"
-    local idx=0
-    while iw dev "$mon_iface" info &>/dev/null; do ((idx++)); mon_iface="mon${idx}"; done
-
-    if iw dev "${WIFI_INTERFACE}" interface add "${mon_iface}" type monitor 2>/dev/null; then
-        ip link set "$mon_iface" up 2>/dev/null
-        MONITOR_INTERFACE="$mon_iface"
-        register_cleanup "iw dev $mon_iface del 2>/dev/null || true"
-        log_success "Monitor interface created: ${MONITOR_INTERFACE}"
-        save_session_state
-        return 0
+    # 2. Kill interfering processes (Essential for in-place mode switching)
+    log_info "Stopping interfering processes (airmon-ng check kill)..."
+    ${TOOL_PATHS[airmon-ng]} check kill &>/dev/null
+    
+    # 3. Perform in-place mode switch using airmon-ng (industry standard)
+    # airmon-ng is the most robust tool for handling the variety of driver naming conventions
+    if ! ${TOOL_PATHS[airmon-ng]} start "$WIFI_INTERFACE" > $TMP_DIR/airmon_start.log 2>&1; then
+        # If airmon-ng fails, try raw iw fallback
+        log_warn "airmon-ng failed. Attempting raw kernel mode switch..."
+        ip link set "$WIFI_INTERFACE" down 2>/dev/null || true
+        if ! iw dev "$WIFI_INTERFACE" set type monitor 2>/dev/null; then
+            log_error "Kernel rejected monitor mode request for ${WIFI_INTERFACE}."
+            return 1
+        fi
+        ip link set "$WIFI_INTERFACE" up 2>/dev/null || true
+    fi
+    
+    # 4. Detect the resulting interface name
+    # airmon-ng often renames 'wlan0' to 'wlan0mon'
+    local detected_mon=""
+    
+    # Check for the expected airmon-ng suffix
+    if iw dev "${WIFI_INTERFACE}mon" info &>/dev/null; then
+        detected_mon="${WIFI_INTERFACE}mon"
+    # Check if the name stayed the same but mode changed
+    elif [[ "$(iw dev "$WIFI_INTERFACE" info 2>/dev/null | awk '/type/{print $2}')" == "monitor" ]]; then
+        detected_mon="$WIFI_INTERFACE"
+    # Scrape all interfaces for any monitor mode device
+    else
+        detected_mon=$(iw dev 2>/dev/null | awk '/Interface/{print $2}' | while read -r iface; do
+            if [[ "$(iw dev "$iface" info | awk '/type/{print $2}')" == "monitor" ]]; then
+                echo "$iface"
+                break
+            fi
+        done | head -1)
     fi
 
-    # Fallback: airmon-ng
-    log_warn "Virtual interface failed. Falling back to airmon-ng check kill..."
-    ${TOOL_PATHS[airmon-ng]} check kill &>/dev/null
-    ${TOOL_PATHS[airmon-ng]} start "$WIFI_INTERFACE" &>/dev/null
-    
-    MONITOR_INTERFACE=$(iw dev 2>/dev/null | awk '/Interface/{print $2}' | grep -E "mon|wlan[0-9]+mon" | head -1)
-    [[ -z "$MONITOR_INTERFACE" ]] && MONITOR_INTERFACE="$WIFI_INTERFACE"
-    
-    log_success "Monitor mode enabled: ${MONITOR_INTERFACE}"
-    save_session_state
-    return 0
+    if [[ -n "$detected_mon" ]]; then
+        MONITOR_INTERFACE="$detected_mon"
+        log_success "Monitor mode active: ${MONITOR_INTERFACE}"
+        
+        # Lock to target channel
+        if [[ -n "${GUEST_CHANNEL:-}" ]]; then
+            log_info "Tuning ${MONITOR_INTERFACE} to CH ${GUEST_CHANNEL}..."
+            iw dev "$MONITOR_INTERFACE" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+        fi
+        
+        save_session_state
+        return 0
+    else
+        log_error "Could not identify monitor interface after setup."
+        return 1
+    fi
+}
+
+#--- Restore NetworkManager service if it was stopped ---
+restore_network_manager() {
+    log_info "Ensuring NetworkManager is running..."
+    # Check if NetworkManager is inactive
+    if ! systemctl is-active --quiet NetworkManager 2>/dev/null; then
+        log_info "Restarting NetworkManager..."
+        systemctl restart NetworkManager 2>/dev/null || service network-manager restart 2>/dev/null || true
+        # Wait a bit for it to initialize
+        sleep 2
+    fi
+}
+
+#--- Comprehensive cleanup of all wireless interfaces ---
+scrub_interfaces() {
+    log_debug "Scrubbing wireless interfaces to a clean state..."
+
+    # Detect all virtual monitor interfaces (mon0, wlan0mon, etc.)
+    local virtual_ifaces
+    virtual_ifaces=$(iw dev 2>/dev/null | awk '/Interface/{print $2}' | grep -E "mon[0-9]+|wlan[0-9]+mon|[a-z0-9]+mon")
+
+    for iface in $virtual_ifaces; do
+        log_debug "Stopping virtual interface: $iface"
+        # Use airmon-ng if available
+        if [[ -n "${TOOL_PATHS[airmon-ng]:-}" ]]; then
+            ${TOOL_PATHS[airmon-ng]} stop "$iface" &>/dev/null || true
+        fi
+        
+        # If it still exists and is not our primary interface, delete it via iw
+        if iw dev "$iface" info &>/dev/null; then
+            if [[ "$iface" != "${WIFI_INTERFACE:-}" ]]; then
+                log_debug "Deleting remaining virtual device: $iface"
+                iw dev "$iface" del 2>/dev/null || true
+            fi
+        fi
+    done
+
+    # Ensure the physical device is in managed mode and up
+    if [[ -n "${WIFI_INTERFACE:-}" ]]; then
+        local type
+        type=$(iw dev "$WIFI_INTERFACE" info 2>/dev/null | awk '/type/{print $2}')
+        if [[ "$type" != "managed" ]]; then
+            log_info "Restoring ${WIFI_INTERFACE} to managed mode..."
+            ip link set "$WIFI_INTERFACE" down 2>/dev/null || true
+            iw dev "$WIFI_INTERFACE" set type managed 2>/dev/null || true
+            ip link set "$WIFI_INTERFACE" up 2>/dev/null || true
+        fi
+    fi
+
+    # Reliable NetworkManager restoration
+    restore_network_manager
+
+    MONITOR_INTERFACE=""
+    save_session_state 2>/dev/null || true
 }
 
 disable_monitor_mode() {
-    if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
-        log_info "Disabling monitor mode on ${MONITOR_INTERFACE}..."
-        ${TOOL_PATHS[airmon-ng]} stop "$MONITOR_INTERFACE" &>/dev/null
-        
-        # If it was a virtual mon0, delete it
-        if [[ "$MONITOR_INTERFACE" == mon* ]]; then
-            iw dev "$MONITOR_INTERFACE" del 2>/dev/null
-        fi
-        
-        MONITOR_INTERFACE=""
-        systemctl start NetworkManager 2>/dev/null || service network-manager start 2>/dev/null
-        save_session_state
-    fi
+    scrub_interfaces
 }
 
 ensure_managed_mode() {
-    local mode=$(iw dev "${WIFI_INTERFACE:-wlan0}" info 2>/dev/null | awk '/type/{print $2}')
-    if [[ "$mode" == "monitor" || -n "${MONITOR_INTERFACE:-}" ]]; then
-        disable_monitor_mode
-        sleep 2
+    # Only scrub if we actually have virtual monitor interfaces
+    local virtual_ifaces
+    virtual_ifaces=$(iw dev 2>/dev/null | awk '/Interface/{print $2}' | grep -E "mon[0-9]+|wlan[0-9]+mon|[a-z0-9]+mon")
+    
+    if [[ -n "$virtual_ifaces" ]]; then
+        scrub_interfaces
+    else
+        # Even if no virtual ifaces, ensure physical iface is managed
+        if [[ -n "${WIFI_INTERFACE:-}" ]]; then
+            local type
+            type=$(iw dev "$WIFI_INTERFACE" info 2>/dev/null | awk '/type/{print $2}')
+            if [[ "$type" != "managed" ]]; then
+                scrub_interfaces
+            fi
+        fi
     fi
+    return 0
 }
 
 ensure_connected_wifi() {
     [[ -n "${WIFI_INTERFACE:-}" ]] || { configure_network || return 1; }
     ensure_managed_mode || return 1
 
-    local ip_addr=$(${TOOL_PATHS[ip]} -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
-    local link=$(iw dev "$WIFI_INTERFACE" link 2>/dev/null || true)
+    # Get current IP and link status
+    local ip_addr link
+    ip_addr=$(${TOOL_PATHS[ip]} -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+    link=$(iw dev "$WIFI_INTERFACE" link 2>/dev/null || true)
 
     if [[ -z "$ip_addr" ]] || echo "$link" | grep -q "Not connected"; then
+        if [[ "${HEADLESS_MODE:-0}" == "1" ]]; then
+            log_error "Headless mode: Interface ${WIFI_INTERFACE} is not connected to WiFi."
+            return 1
+        fi
+        
         log_warn "Not connected to WiFi on ${WIFI_INTERFACE}."
-        read -rep "  Connect to ${GUEST_SSID:-target} and press Enter: " _
+        echo -e "${C_YELLOW}  Please connect to '${GUEST_SSID:-the target network}' first.${C_RESET}"
+        safe_read "Press Enter after connecting (or Q to skip)" _
+        [[ "${_,,}" == "q" ]] && return 1
+        
+        # Refresh after wait
+        ip_addr=$(${TOOL_PATHS[ip]} -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
     fi
 
-    # Refresh
-    MY_IP=$(${TOOL_PATHS[ip]} -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+    if [[ -z "$ip_addr" ]]; then
+        log_error "Still no IP address on ${WIFI_INTERFACE}."
+        return 1
+    fi
+
+    # Final refresh of globals
+    MY_IP="$ip_addr"
     GATEWAY_IP=$(${TOOL_PATHS[ip]} route show dev "$WIFI_INTERFACE" 2>/dev/null | awk '/default/{print $3}' | head -1)
     export MY_IP GATEWAY_IP
     return 0

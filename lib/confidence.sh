@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #===============================================================================
-#  lib/confidence.sh — Confidence scoring helpers (LOW/MEDIUM/HIGH)
+#  lib/confidence.sh — Confidence scoring helpers (0-100)
 #===============================================================================
+
+set -uo pipefail
 
 # Compute confidence from checklist booleans (0/1) and a few caps.
 # Usage:
@@ -9,6 +11,8 @@
 #                         <has_commands> <has_versions> <has_environment> \
 #                         <has_independent_confirm> <has_known_good_target> \
 #                         <adequate_runtime> <clean_run> <is_secure_claim>
+#
+# Returns: "score|LABEL" (e.g., "85|HIGH")
 confidence_from_flags() {
     local pcap_required="${1:-0}"
     local has_tool_output="${2:-0}"
@@ -24,42 +28,42 @@ confidence_from_flags() {
 
     local score=0
 
-    (( has_tool_output )) && (( score+=20 ))
-    (( has_cmds ))        && (( score+=10 ))
-    (( has_versions ))    && (( score+=10 ))
-    (( has_env ))         && (( score+=20 ))
-    (( has_primary ))     && (( score+=20 ))
-    (( has_confirm ))     && (( score+=20 ))
-    (( adequate_runtime ))&& (( score+=10 ))
-    (( clean_run ))       && (( score+=10 ))
-    (( has_known_target ))&& (( score+=15 ))
+    # Weighted scoring (Total: 100)
+    (( has_primary ))      && (( score += 25 )) # Essential artifact (PCAP, Handshake, etc.)
+    (( has_tool_output ))  && (( score += 15 )) # Raw tool logs/output
+    (( has_confirm ))      && (( score += 15 )) # Independent verification
+    (( has_env ))          && (( score += 10 )) # System context (IPs, Ifaces)
+    (( has_known_target )) && (( score += 10 )) # Target verification (BSSID/ESSID confirmed)
+    (( adequate_runtime )) && (( score += 10 )) # Enough time for reliable results
+    (( has_cmds ))         && (( score += 5 ))  # Reproducibility (CLI commands logged)
+    (( has_versions ))     && (( score += 5 ))  # Versioning of tools
+    (( clean_run ))        && (( score += 5 ))  # No errors or warnings
 
-    # Caps / penalties
+    # Caps / Penalties
+    # 1. PCAP Required but missing
     if (( pcap_required )) && (( ! has_primary )); then
-        echo "LOW"
+        (( score > 30 )) && score=30
+        echo "${score}|LOW"
         return 0
     fi
+
+    # 2. Secure claim without known-good target (e.g. "We are secure" but we didn't даже find the AP)
     if (( is_secure_claim )) && (( ! has_known_target )); then
-        # Can't exceed MEDIUM for SECURE without known-good target
-        if (( score >= 75 )); then
-            echo "MEDIUM"
-            return 0
-        fi
+        (( score > 60 )) && score=60
     fi
+
+    # 3. Unclean run (errors occurred)
     if (( ! clean_run )); then
-        # Errors/aborts cap confidence
-        if (( score >= 40 )); then
-            echo "LOW"
-            return 0
-        fi
+        (( score > 40 )) && score=40
     fi
 
-    if (( score >= 75 )); then
-        echo "HIGH"
+    # Determine Label
+    local label="LOW"
+    if (( score >= 80 )); then
+        label="HIGH"
     elif (( score >= 40 )); then
-        echo "MEDIUM"
-    else
-        echo "LOW"
+        label="MEDIUM"
     fi
-}
 
+    echo "${score}|${label}"
+}

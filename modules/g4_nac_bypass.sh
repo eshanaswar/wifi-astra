@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="NAC / 802.1X Bypass"
+# CATEGORY="G"
+# DEPS="C2"
+# CRITICAL="no"
+# DESC="Test MAC whitelist bypass, VLAN assignment, and NAC exception discovery"
+# REQS="managed_iface,gateway_ip,my_ip"
+# PCAP="yes"
+# DECODE="dhcp"
+
 #===============================================================================
 #  modules/g4_nac_bypass.sh
 #  G4: NAC / 802.1X Port Bypass
@@ -8,7 +18,7 @@
 #    Attempts MAC whitelist bypass, wired-to-wireless pivoting assessment,
 #    and checks for NAC exceptions or misconfigurations.
 #
-#  TOOLS: ${TOOL_PATHS[nmap]}, ${TOOL_PATHS[macchanger]}, ${TOOL_PATHS[tcpdump]}, ${TOOL_PATHS[ip]}
+#  TOOLS: ${TOOL_PATHS[nmap]}, ${TOOL_PATHS[macchanger]}, ${TOOL_PATHS[tcpdump]}, run_tool ip
 #  PHASE: 2B — Policy Validation
 #  DEPENDENCIES: C2 (needs network scan data)
 #
@@ -86,7 +96,7 @@ local has_nmap=false
     update_tc_progress 2 $total_steps "NAC analysis"
 
     local orig_mac
-    local orig_mac=$(${TOOL_PATHS[ip]} link show "$iface" | awk '/ether/{print $2}')
+    local orig_mac=$(run_tool ip link show "$iface" | awk '/ether/{print $2}')
     local orig_ip="$MY_IP"
     local orig_dns="$DNS_SERVER"
 
@@ -161,13 +171,13 @@ local has_nmap=false
         # Test 1: Random MAC
         log_info "Test: Connecting with random MAC address..."
 
-        ${TOOL_PATHS[ip]} link set "$iface" down 2>/dev/null
+        run_tool ip link set "$iface" down 2>/dev/null
         ${TOOL_PATHS[macchanger]} -r "$iface" &>/dev/null || true
-        ${TOOL_PATHS[ip]} link set "$iface" up 2>/dev/null
-        register_cleanup "${TOOL_PATHS[ip]} link set $iface down 2>/dev/null; ${TOOL_PATHS[macchanger]} -p $iface &>/dev/null || ${TOOL_PATHS[ip]} link set $iface address $orig_mac 2>/dev/null || true; ${TOOL_PATHS[ip]} link set $iface up 2>/dev/null; dhclient $iface &>/dev/null || true"
+        run_tool ip link set "$iface" up 2>/dev/null
+        register_cleanup "run_tool ip link set $iface down 2>/dev/null; ${TOOL_PATHS[macchanger]} -p $iface &>/dev/null || run_tool ip link set $iface address $orig_mac 2>/dev/null || true; run_tool ip link set $iface up 2>/dev/null; dhclient $iface &>/dev/null || true"
 
         local new_mac
-        local new_mac=$(${TOOL_PATHS[ip]} link show "$iface" | awk '/ether/{print $2}')
+        local new_mac=$(run_tool ip link show "$iface" | awk '/ether/{print $2}')
         echo "Random MAC: ${new_mac}" >> "$mac_bypass_file"
 
         # Wait for DHCP
@@ -177,7 +187,7 @@ local has_nmap=false
         sleep 5
 
         local new_ip
-        local new_ip=$(${TOOL_PATHS[ip]} -4 addr show "$iface" | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+        local new_ip=$(run_tool ip -4 addr show "$iface" | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
 
         if [[ -n "$new_ip" ]]; then
             echo "Got IP with random MAC: ${new_ip}" >> "$mac_bypass_file"
@@ -246,11 +256,11 @@ local has_nmap=false
             local oui="${vendor_macs[$idx]}"
             local vendor="${vendor_names[$idx]}"
 
-            ${TOOL_PATHS[ip]} link set "$iface" down 2>/dev/null
+            run_tool ip link set "$iface" down 2>/dev/null
             local random_suffix
             local random_suffix=$(printf '%02X:%02X:%02X' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
-            ${TOOL_PATHS[ip]} link set "$iface" address "${oui}:${random_suffix}" 2>/dev/null || continue
-            ${TOOL_PATHS[ip]} link set "$iface" up 2>/dev/null
+            run_tool ip link set "$iface" address "${oui}:${random_suffix}" 2>/dev/null || continue
+            run_tool ip link set "$iface" up 2>/dev/null
 
             sleep 3
             dhclient -r "$iface" &>/dev/null || true
@@ -258,7 +268,7 @@ local has_nmap=false
             sleep 3
 
             local vendor_ip
-            local vendor_ip=$(${TOOL_PATHS[ip]} -4 addr show "$iface" | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+            local vendor_ip=$(run_tool ip -4 addr show "$iface" | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
 
             if [[ -n "$vendor_ip" ]]; then
                 echo "Vendor ${vendor} (${oui}:${random_suffix}): Got IP ${vendor_ip}" >> "$mac_bypass_file"
@@ -330,7 +340,7 @@ local has_nmap=false
     evidence_register_file "g4_nac_analysis.txt"
     evidence_register_file "g4_findings.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "NAC detected: ${nac_detected}, MAC bypass: ${mac_bypass_possible}, VLAN changed: ${vlan_assignment_changed}, Extra ports: ${restricted_ports_accessible}" \
@@ -350,7 +360,7 @@ local has_nmap=false
             vlan_assignment_changed: ($vlan_assignment_changed == "true"),
                     }')
 
-    save_tc_result "G4" "$result_json"
+    save_tc_result "G4" "$result_json" "has_tool_output:1,clean_run:1"
 
     echo ""
     if [[ "$mac_bypass_possible" == "true" ]]; then

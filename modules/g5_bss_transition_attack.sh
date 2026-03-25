@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="BSS Transition Roaming Attack"
+# CATEGORY="G"
+# DEPS="A1,F1"
+# CRITICAL="yes"
+# TOOLS="tcpdump,tshark,hostapd-mana"
+# DESC="Exploit 802.11v BTM frames to force clients to roam to rogue AP"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="no"
+# DECODE="none"
+
 #===============================================================================
 #  modules/g5_bss_transition_attack.sh
 #  G5: BSS Transition Roaming Attack (802.11v)
@@ -16,6 +27,8 @@ run_g5() {
     log_step 1 $total_steps "Detecting 802.11v/k Support"
     update_tc_progress 1 $total_steps "Detection"
 
+    check_abort || return 1
+
     if [[ -z "${GUEST_SSID:-}" ]]; then
         log_error "Target SSID not set. Run A1 first."; return 1
     fi
@@ -23,15 +36,16 @@ run_g5() {
     # Verify if the AP advertises 802.11v (BSS Transition)
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
-    local beacon_file="/tmp/g5_check.pcap"
+    local beacon_file="$TMP_DIR/g5_check.pcap"
     
     log_info "Analyzing beacons for 802.11v/k capabilities..."
     ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 20 -w "$beacon_file" "type mgt subtype beacon and ether src ${GUEST_BSSID}" &>/dev/null || true
     
     local dot11v_supported="false"
     if [[ -f "$beacon_file" ]]; then
+        ensure_user_ownership "$beacon_file"
         # Check for Wireless Management capability bit (802.11v)
-        if ${TOOL_PATHS[tshark]} -r "$beacon_file" -Y "wlan.mgt.fixed.capabilities.radio_measurement == 1" 2>/dev/null | grep -q "."; then
+        if run_as_user tshark -r "$beacon_file" -Y "wlan.mgt.fixed.capabilities.radio_measurement == 1" 2>/dev/null | grep -q "."; then
             dot11v_supported="true"
             log_success "802.11v/k (Radio Measurement) support detected in AP beacons."
         fi
@@ -40,6 +54,8 @@ run_g5() {
 
     log_step 2 $total_steps "Preparing Roaming Rogue AP"
     update_tc_progress 2 $total_steps "Setup"
+
+    check_abort || return 1
 
     # This attack requires hostapd-mana for BTM frame injection
     if [[ ! -x "${TOOL_PATHS[hostapd-mana]}" ]] && ! command -v hostapd-mana &>/dev/null; then
@@ -65,6 +81,8 @@ EOF
     log_step 3 $total_steps "Initiating Steering Attack"
     update_tc_progress 3 $total_steps "Steering"
 
+    check_abort || return 1
+
     log_info "Deploying Rogue AP and sending BTM steering frames..."
     # Start hostapd-mana with steering enabled
     hostapd-mana "$mana_conf" > "${evidence_prefix}_mana.log" 2>&1 &
@@ -86,7 +104,7 @@ EOF
     local result_status="SECURE"
     [[ "$roam_detected" == "true" ]] && result_status="VULNERABLE"
     
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "BSS Transition Attack: ${result_status}" \
         --arg details "802.11v detected: ${dot11v_supported}, Client Roamed: ${roam_detected}" \
@@ -96,6 +114,6 @@ EOF
             details: $details
         }')
     
-    save_tc_result "G5" "$result_json"
+    save_tc_result "G5" "$result_json" "has_tool_output:1,clean_run:1"
     return 0
 }

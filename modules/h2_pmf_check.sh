@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="PMF Enforcement"
+# CATEGORY="H"
+# DEPS="A1"
+# CRITICAL="yes"
+# TOOLS="aireplay-ng,tshark"
+# DESC="Verify if 802.11w Protected Management Frames are enforced"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="no"
+# DECODE="none"
+
 #===============================================================================
 #  modules/h2_pmf_check.sh
 #  H2: PMF (Protected Management Frames) Enforcement Check
@@ -16,6 +27,8 @@ run_h2() {
     
     log_step 1 $total_steps "Detecting PMF Support"
     update_tc_progress 1 $total_steps "Detection"
+
+    check_abort || return 1
 
     if [[ -z "${GUEST_SSID:-}" ]]; then
         log_error "Target SSID not set. Run A1 first."; return 1
@@ -35,9 +48,11 @@ run_h2() {
     enable_monitor_mode || return 1
     local mon_iface="${MONITOR_INTERFACE}"
 
+    check_abort || return 1
+
     log_step 3 $total_steps "Selecting Target Client"
     # Try to find an active client on the target AP
-    local target_client=$(tshark -i "$mon_iface" -a duration:10 -Y "wlan.bssid == ${GUEST_BSSID}" -T fields -e wlan.sa 2>/dev/null | sort | uniq | head -1)
+    local target_client=$(run_as_user tshark -i "$mon_iface" -a duration:10 -Y "wlan.bssid == ${GUEST_BSSID}" -T fields -e wlan.sa 2>/dev/null | sort | uniq | head -1)
     
     if [[ -z "$target_client" ]]; then
         log_warn "No active clients detected on ${GUEST_SSID}. Cannot test PMF enforcement."
@@ -48,15 +63,17 @@ run_h2() {
     log_step 4 $total_steps "Attempting Unprotected Deauth"
     update_tc_progress 4 $total_steps "Attack Test"
 
+    check_abort || return 1
+
     local log_file="${evidence_prefix}_deauth_test.txt"
     log_info "Sending 10 deauth frames to ${target_client}..."
     
     # Send deauths
-    run_attack_tool --timeout 5 --log "$log_file" --cmd "${TOOL_PATHS[aireplay-ng]} --deauth 10 -a ${GUEST_BSSID} -c ${target_client} ${mon_iface}"
+    run_fg "aireplay-ng" --deauth 10 -a "${GUEST_BSSID}" -c "${target_client}" "${mon_iface}" > "$log_file" 2>&1
     
     # Check if client reconnects immediately (indicator of success)
     log_info "Monitoring for client re-association..."
-    local reauth=$(timeout 15 tshark -i "$mon_iface" -Y "wlan.fc.type_subtype == 0x00 and wlan.addr == ${target_client}" -c 1 2>/dev/null)
+    local reauth=$(timeout 15 run_as_user tshark -i "$mon_iface" -Y "wlan.fc.type_subtype == 0x00 and wlan.addr == ${target_client}" -c 1 2>/dev/null)
     
     local vulnerability="SECURE"
     if [[ -n "$reauth" ]]; then
@@ -67,7 +84,7 @@ run_h2() {
     fi
 
     log_step 5 $total_steps "Saving Results"
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$vulnerability" \
         --arg summary "PMF Enforcement: ${vulnerability}" \
         --arg details "AP: ${GUEST_BSSID}, Client: ${target_client}" \
@@ -77,6 +94,6 @@ run_h2() {
             details: $details
         }')
     
-    save_tc_result "H2" "$result_json"
+    save_tc_result "H2" "$result_json" "has_tool_output:1,clean_run:1"
     return 0
 }

@@ -8,6 +8,9 @@
 #  All output goes to both console AND log files simultaneously.
 #===============================================================================
 
+# Global verbosity flag (0 or 1)
+VERBOSE_MODE=${VERBOSE_MODE:-0}
+
 #--- Internal: Write to log file ---
 _log_to_file() {
     local level="$1"
@@ -31,37 +34,41 @@ _log_to_file() {
 
 log_info() {
     local msg="$1"
-    echo -e "${C_BLUE}[ℹ]${C_RESET} ${msg}"
+    echo -e "${C_BLUE}[ℹ]${C_RESET} ${msg}" >&2
     _log_to_file "INFO" "$msg"
 }
 
 log_warn() {
     local msg="$1"
-    echo -e "${C_YELLOW}[⚠]${C_RESET} ${msg}"
+    echo -e "${C_YELLOW}[⚠]${C_RESET} ${msg}" >&2
     _log_to_file "WARN" "$msg"
 }
 
 log_error() {
     local msg="$1"
-    echo -e "${C_RED}[✗]${C_RESET} ${msg}"
+    echo -e "${C_RED}[✗]${C_RESET} ${msg}" >&2
     _log_to_file "ERROR" "$msg"
 }
 
 log_success() {
     local msg="$1"
-    echo -e "${C_GREEN}[✓]${C_RESET} ${msg}"
+    echo -e "${C_GREEN}[✓]${C_RESET} ${msg}" >&2
     _log_to_file "SUCCESS" "$msg"
 }
 
 log_debug() {
     local msg="$1"
-    # Only to file, not console (verbose)
+    # Print to console if verbose mode is enabled
+    if [[ "${VERBOSE_MODE:-0}" == "1" ]]; then
+        echo -e "${C_GRAY}[DEBUG]${C_RESET} ${msg}" >&2
+    fi
+    # Always log to file
     _log_to_file "DEBUG" "$msg"
 }
 
 log_critical() {
     local msg="$1"
-    echo -e "${C_BG_RED}${C_WHITE}[!!!]${C_RESET} ${C_RED}${C_BOLD}${msg}${C_RESET}"
+    echo -e "${C_BG_RED}${C_WHITE}[!!!]${C_RESET} ${C_RED}${C_BOLD}${msg}${C_RESET}" >&2
     _log_to_file "CRITICAL" "$msg"
 }
 
@@ -75,11 +82,11 @@ log_step() {
     local description="$3"
     local tc_label="${CURRENT_TC:-SYSTEM}"
     
-    echo ""
-    echo -e "${C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
-    echo -e "${C_CYAN}  [${tc_label}] Step ${current}/${total}: ${description}${C_RESET}"
-    echo -e "${C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}"
-    echo ""
+    echo "" >&2
+    echo -e "${C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}" >&2
+    echo -e "${C_CYAN}  [${tc_label}] Step ${current}/${total}: ${description}${C_RESET}" >&2
+    echo -e "${C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}" >&2
+    echo "" >&2
     _log_to_file "STEP" "[${tc_label}] Step ${current}/${total}: ${description}"
 }
 
@@ -87,7 +94,7 @@ log_step() {
 # Usage: log_cmd "${TOOL_PATHS[nmap]} -sV -p 161 10.0.0.1"
 log_cmd() {
     local cmd="$1"
-    echo -e "  ${C_GRAY}▶ Running: ${C_DIM}${cmd}${C_RESET}"
+    echo -e "  ${C_GRAY}▶ Running: ${C_DIM}${cmd}${C_RESET}" >&2
     _log_to_file "CMD" "$cmd"
 
     # Per-TC commands file (evidence)
@@ -114,15 +121,15 @@ log_result() {
 
     case "$type" in
         "FINDING"|"VULN"|"CRITICAL")
-            echo -e "  ${C_RED}${C_BOLD}  ${ICON_FAIL} FINDING: ${msg}${C_RESET}"
+            echo -e "  ${C_RED}${C_BOLD}  ${ICON_FAIL} FINDING: ${msg}${C_RESET}" >&2
             _log_to_file "FINDING" "$msg"
             ;;
         "SECURE"|"PASS")
-            echo -e "  ${C_GREEN}${C_BOLD}  ${ICON_DONE} SECURE: ${msg}${C_RESET}"
+            echo -e "  ${C_GREEN}${C_BOLD}  ${ICON_DONE} SECURE: ${msg}${C_RESET}" >&2
             _log_to_file "SECURE" "$msg"
             ;;
         "NEUTRAL"|"INFO")
-            echo -e "  ${C_YELLOW}  ${ICON_INFO} INFO: ${msg}${C_RESET}"
+            echo -e "  ${C_YELLOW}  ${ICON_INFO} INFO: ${msg}${C_RESET}" >&2
             _log_to_file "INFO" "$msg"
             ;;
     esac
@@ -132,14 +139,14 @@ log_result() {
 log_output() {
     local output="$1"
     while IFS= read -r line; do
-        echo -e "  ${C_DIM}  │ ${line}${C_RESET}"
+        echo -e "  ${C_DIM}  │ ${line}${C_RESET}" >&2
     done <<< "$output"
     _log_to_file "OUTPUT" "$output"
 }
 
 # Separator line
 log_separator() {
-    echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────${C_RESET}"
+    echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────${C_RESET}" >&2
 }
 
 # TC Start Banner
@@ -150,13 +157,13 @@ log_tc_start() {
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     
-    echo ""
-    echo -e "${C_BOLD}${C_CYAN}╔══════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}║  ${ICON_RUNNING}  RUNNING: ${tc_id} — ${tc_name}${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}║  Started: ${timestamp}${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}║  Abort: Ctrl+\\   │   Exit Script: Ctrl+C${C_RESET}"
-    echo -e "${C_BOLD}${C_CYAN}╚══════════════════════════════════════════════════════════════════╝${C_RESET}"
-    echo ""
+    echo "" >&2
+    echo -e "${C_BOLD}${C_CYAN}╔══════════════════════════════════════════════════════════════════╗${C_RESET}" >&2
+    echo -e "${C_BOLD}${C_CYAN}║  ${ICON_RUNNING}  RUNNING: ${tc_id} — ${tc_name}${C_RESET}" >&2
+    echo -e "${C_BOLD}${C_CYAN}║  Started: ${timestamp}${C_RESET}" >&2
+    echo -e "${C_BOLD}${C_CYAN}║  Abort: Ctrl+\\   │   Exit Script: Ctrl+C${C_RESET}" >&2
+    echo -e "${C_BOLD}${C_CYAN}╚══════════════════════════════════════════════════════════════════╝${C_RESET}" >&2
+    echo "" >&2
     _log_to_file "TC-START" "${tc_id} — ${tc_name}"
 }
 
@@ -175,12 +182,12 @@ log_tc_end() {
         "aborted") status_icon="${C_YELLOW}${ICON_WARN}${C_RESET}${status_color}"; status_color="$C_YELLOW"; status_text="ABORTED" ;;
     esac
     
-    echo ""
-    echo -e "${C_BOLD}${status_color}╔══════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_BOLD}${status_color}║  ${status_icon}  ${status_text}: ${tc_id} — ${tc_name}${C_RESET}"
-    echo -e "${C_BOLD}${status_color}║  Duration: ${duration}${C_RESET}"
-    echo -e "${C_BOLD}${status_color}╚══════════════════════════════════════════════════════════════════╝${C_RESET}"
-    echo ""
+    echo "" >&2
+    echo -e "${C_BOLD}${status_color}╔══════════════════════════════════════════════════════════════════╗${C_RESET}" >&2
+    echo -e "${C_BOLD}${status_color}║  ${status_icon}  ${status_text}: ${tc_id} — ${tc_name}${C_RESET}" >&2
+    echo -e "${C_BOLD}${status_color}║  Duration: ${duration}${C_RESET}" >&2
+    echo -e "${C_BOLD}${status_color}╚══════════════════════════════════════════════════════════════════╝${C_RESET}" >&2
+    echo "" >&2
     _log_to_file "TC-END" "${tc_id} — ${status_text} — Duration: ${duration}"
 
     # Append any generated text evidence directly into the log file for completeness
@@ -280,7 +287,7 @@ validate_pcap() {
 
     # Count actual packets
     local pkt_count=0
-    pkt_count=$(${TOOL_PATHS[tcpdump]} -r "$pcap_file" -c 1 2>/dev/null | wc -l) || true
+    pkt_count=$(${TOOL_PATHS[tcpdump]} -r "$pcap_file" -c 1 2>/dev/null | wc -l)
     pkt_count=${pkt_count:-0}
 
     if [[ $pkt_count -eq 0 ]]; then

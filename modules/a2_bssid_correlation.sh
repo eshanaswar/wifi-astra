@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="BSSID Correlation Analysis"
+# CATEGORY="A"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="airmon-ng,airodump-ng"
+# DESC="Map BSSIDs to same controller, detect infra overlap"
+# REQS="monitor_iface,target_ssid"
+# PCAP="no"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/a2_bssid_correlation.sh
 #  A2: BSSID Correlation Analysis
@@ -10,7 +21,7 @@
 #    networks share the same physical APs (indicating virtual SSID separation
 #    vs physical separation).
 #
-#  TOOLS: ${TOOL_PATHS[jq]} (analysis of A1 JSON data)
+#  TOOLS: run_tool jq (analysis of A1 JSON data)
 #  PHASE: 1A — Passive Recon
 #  DEPENDENCIES: A1
 #
@@ -29,31 +40,33 @@ run_a2() {
     local total_steps=5
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/a2"
 
-    #--- Step 1: Verify A1 data exists ---
-    log_step 1 $total_steps "Loading A1 scan data"
+    #--- Step 1: Load scan data from assessment engine ---
+    log_step 1 $total_steps "Loading scan data from assessment engine"
     update_tc_progress 1 $total_steps "Loading data"
 
-    
-    if ! has_tc_results "A1"; then
-        log_error "A1 results not found. Run A1 first."
+    if [[ ! -f "${SESSION_DB_FILE:-}" ]]; then
+        log_error "Session database not found. Run A1 first."
         return 1
     fi
 
-    local a1_data
-    a1_data=$(load_tc_result "A1")
+    local networks_json
+    networks_json=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list 2>/dev/null)
+
+    if [[ -z "$networks_json" || "$networks_json" == "null" || "$networks_json" == "[]" ]]; then
+        log_error "No network data found in database. Run A1 first."
+        return 1
+    fi
 
     local network_count
-    network_count=$(echo "$a1_data" | ${TOOL_PATHS[jq]} '.network_count // 0')
+    network_count=$(echo "$networks_json" | run_tool jq length)
 
-    if [[ $network_count -eq 0 ]]; then
-        log_error "A1 found zero networks. Cannot perform correlation."
-        return 1
+    # Use internal variables if available, otherwise fallback to config in DB
+    local target_ssid="${GUEST_SSID:-}"
+    if [[ -z "$target_ssid" ]]; then
+        target_ssid=$(run_tool astra-engine --db "$SESSION_DB_FILE" state get-config --key guest_ssid 2>/dev/null)
     fi
 
-    local target_ssid
-    target_ssid=$(echo "$a1_data" | ${TOOL_PATHS[jq]} -r '.target_ssid // ""')
-
-    log_success "Loaded ${network_count} networks from A1"
+    log_success "Loaded ${network_count} networks from assessment engine"
     log_info "Target SSID: ${target_ssid:-NOT SET}"
 
     #--- Step 2: Extract and group by OUI prefix ---
@@ -70,14 +83,14 @@ run_a2() {
         echo "============================================================"
         echo "  A2: BSSID Correlation Analysis"
         echo "  Analysis Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Source: A1 scan data (${network_count} networks)"
+        echo "  Source: Assessment Engine (${network_count} networks)"
         echo "============================================================"
         echo ""
     } > "$correlation_file"
 
     # Group BSSIDs by OUI (first 3 octets)
     local oui_groups
-    local oui_groups=$(echo "$a1_data" | ${TOOL_PATHS[jq]} -r '.networks[].bssid' | cut -d: -f1-3 | sort | uniq -c | sort -rn)
+    local oui_groups=$(echo "$networks_json" | run_tool jq -r '.[].bssid' | cut -d: -f1-3 | sort | uniq -c | sort -rn)
 
     echo "--- OUI Prefix Distribution ---" >> "$correlation_file"
     echo "$oui_groups" >> "$correlation_file"
@@ -117,19 +130,19 @@ run_a2() {
 
     while IFS= read -r network_line; do
         local bssid ssid
-        local bssid=$(echo "$network_line" | ${TOOL_PATHS[jq]} -r '.bssid')
-        local ssid=$(echo "$network_line" | ${TOOL_PATHS[jq]} -r '.ssid')
+        local bssid=$(echo "$network_line" | run_tool jq -r '.bssid')
+        local ssid=$(echo "$network_line" | run_tool jq -r '.ssid')
         local channel
-        local channel=$(echo "$network_line" | ${TOOL_PATHS[jq]} -r '.channel')
+        local channel=$(echo "$network_line" | run_tool jq -r '.channel')
         local encryption
-        local encryption=$(echo "$network_line" | ${TOOL_PATHS[jq]} -r '.encryption')
+        local encryption=$(echo "$network_line" | run_tool jq -r '.encryption')
 
         # AP group key: first 5 octets
         local ap_key
         local ap_key=$(echo "$bssid" | cut -d: -f1-5)
 
         # Add to groups
-        ap_groups_json=$(echo "$ap_groups_json" | ${TOOL_PATHS[jq]} \
+        ap_groups_json=$(echo "$ap_groups_json" | run_tool jq \
             --arg key "$ap_key" \
             --arg ssid "$ssid" \
             --arg bssid "$bssid" \
@@ -137,7 +150,7 @@ run_a2() {
             --arg encryption "$encryption" \
             '.[$key] = (.[$key] // []) + [{ssid: $ssid, bssid: $bssid, channel: $channel, encryption: $encryption}]')
 
-    done < <(echo "$a1_data" | ${TOOL_PATHS[jq]} -c '.networks[]')
+    done < <(echo "$a1_data" | run_tool jq -c '.networks[]')
 
     # Analyze AP groups
     {
@@ -151,9 +164,9 @@ run_a2() {
 
     while IFS= read -r ap_key; do
         local group
-        local group=$(echo "$ap_groups_json" | ${TOOL_PATHS[jq]} --arg key "$ap_key" '.[$key]')
+        local group=$(echo "$ap_groups_json" | run_tool jq --arg key "$ap_key" '.[$key]')
         local group_size
-        group_size=$(echo "$group" | ${TOOL_PATHS[jq]} 'length')
+        group_size=$(echo "$group" | run_tool jq 'length')
 
         if [[ $group_size -gt 1 ]]; then
             ((co_located_aps++))
@@ -162,20 +175,20 @@ run_a2() {
             {
                 echo "Physical AP: ${ap_key}:XX"
                 echo "  SSIDs on this AP:"
-                echo "$group" | ${TOOL_PATHS[jq]} -r '.[] | "    - \(.ssid) (\(.bssid)) CH:\(.channel) \(.encryption)"'
+                echo "$group" | run_tool jq -r '.[] | "    - \(.ssid) (\(.bssid)) CH:\(.channel) \(.encryption)"'
                 echo ""
             } >> "$ap_map_file"
 
             # Check if target SSID shares AP with other SSIDs (especially the reference internal SSID)
             local has_target
-            local has_target=$(echo "$group" | ${TOOL_PATHS[jq]} --arg target "$target_ssid" '[.[] | select(.ssid == $target)] | length')
+            local has_target=$(echo "$group" | run_tool jq --arg target "$target_ssid" '[.[] | select(.ssid == $target)] | length')
 
             if [[ $has_target -gt 0 && $group_size -gt 1 ]]; then
                 ((target_internal_shared++))
                 local same_infrastructure="true"
 
                 local other_ssids
-                local other_ssids=$(echo "$group" | ${TOOL_PATHS[jq]} -r --arg target "$target_ssid" '[.[] | select(.ssid != $target) | .ssid] | unique | join(", ")')
+                local other_ssids=$(echo "$group" | run_tool jq -r --arg target "$target_ssid" '[.[] | select(.ssid != $target) | .ssid] | unique | join(", ")')
 
                 # Specifically highlight if it shares with the selected INTERNAL_SSID
                 if [[ -n "${INTERNAL_SSID:-}" ]]; then
@@ -191,14 +204,14 @@ run_a2() {
             fi
 
             # Add to AP map JSON
-            ap_map_json=$(echo "$ap_map_json" | ${TOOL_PATHS[jq]} \
+            ap_map_json=$(echo "$ap_map_json" | run_tool jq \
                 --arg ap_key "$ap_key" \
                 --argjson ssids "$group" \
                 --argjson has_target "$has_target" \
                 '. += [{ap_prefix: $ap_key, ssids: $ssids, has_target: ($has_target > 0)}]')
         fi
 
-    done < <(echo "$ap_groups_json" | ${TOOL_PATHS[jq]} -r 'keys[]')
+    done < <(echo "$ap_groups_json" | run_tool jq -r 'keys[]')
 
     #--- Step 4: OUI Vendor Lookup ---
     log_step 4 $total_steps "Performing OUI vendor identification"
@@ -242,12 +255,12 @@ run_a2() {
         [[ -z "$vendor" ]] && vendor="Unknown (manual lookup needed)"
 
         local ap_count_for_oui
-        local ap_count_for_oui=$(echo "$a1_data" | ${TOOL_PATHS[jq]} -r '.networks[].bssid' | grep -ic "^${oui}" || true)
+        local ap_count_for_oui=$(echo "$a1_data" | run_tool jq -r '.networks[].bssid' | grep -ic "^${oui}" || true)
 
         echo "  ${oui} → ${vendor} (${ap_count_for_oui} APs)" >> "$correlation_file"
         oui_results+="${oui}=${vendor}\n"
 
-    done < <(echo "$a1_data" | ${TOOL_PATHS[jq]} -r '.networks[].bssid' | cut -d: -f1-3 | sort -u)
+    done < <(echo "$a1_data" | run_tool jq -r '.networks[].bssid' | cut -d: -f1-3 | sort -u)
 
     log_info "OUI vendor lookup complete"
 
@@ -282,7 +295,7 @@ run_a2() {
     evidence_register_file "a2_bssid_correlation.txt"
     evidence_register_file "a2_ap_infrastructure_map.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "$(echo -e "$details")" \
@@ -304,7 +317,7 @@ run_a2() {
             unique_oui_count: $unique_oui_count,
                     }')
 
-    save_tc_result "A2" "$result_json"
+    save_tc_result "A2" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""

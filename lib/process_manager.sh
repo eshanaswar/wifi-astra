@@ -5,50 +5,177 @@
 #  Provides robust tool execution, timeout handling, and prevents race conditions.
 #===============================================================================
 
-# Run an attack tool safely with a timeout, logging, and error handling.
-# Usage: run_attack_tool --timeout <secs> --log <file> --cmd "<command>"
-run_attack_tool() {
-    local timeout_secs=""
+set -uo pipefail
+
+# Run a tool in the foreground
+# Usage: run_fg [--quiet] <tool_name> [args...]
+run_fg() {
+    local quiet=0
+    if [[ "$1" == "--quiet" ]]; then
+        quiet=1
+        shift
+    fi
+
+    local tool_name="$1"
+    shift
+    
+    local path="${TOOL_PATHS[$tool_name]:-}"
+    
+    if [[ -z "$path" ]]; then
+        log_error "Tool '$tool_name' not found in TOOL_PATHS."
+        return 127
+    fi
+
+    if [[ ! -x "$path" ]]; then
+        log_error "Tool path '$path' for '$tool_name' is not executable."
+        return 127
+    fi
+
+    if [[ $quiet -eq 0 ]]; then
+        log_cmd "$path $*"
+    fi
+    "$path" "$@"
+    return $?
+}
+
+# Spawn a tool in the background
+# Usage: spawn_bg <name> <tool_name> [--log <file>] [args...]
+spawn_bg() {
+    local name="$1"
+    local tool_name="$2"
+    shift 2
+    
     local log_file=""
-    local cmd=""
-    
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --timeout) timeout_secs="$2"; shift 2 ;;
-            --log) log_file="$2"; shift 2 ;;
-            --cmd) cmd="$2"; shift 2 ;;
-            *) log_error "Unknown argument to run_attack_tool: $1"; return 1 ;;
-        esac
-    done
-    
-    if [[ -z "$cmd" ]]; then
-        log_error "run_attack_tool requires --cmd"
-        return 1
+    if [[ $# -ge 2 && "$1" == "--log" ]]; then
+        log_file="$2"
+        shift 2
     fi
     
-    log_cmd "$cmd"
+    local path="${TOOL_PATHS[$tool_name]:-}"
+
+    if [[ -z "$path" ]]; then
+        log_error "Tool '$tool_name' not found in TOOL_PATHS."
+        return 127
+    fi
+
+    if [[ ! -x "$path" ]]; then
+        log_error "Tool path '$path' for '$tool_name' is not executable."
+        return 127
+    fi
+
+    # Ensure SESSION_DIR is set; fallback to $TMP_DIR/wifi-astra/default if not
+    local base_dir="${SESSION_DIR:-$TMP_DIR/wifi-astra/default}"
+    local pid_dir="${base_dir}/.pids"
+    mkdir -p "$pid_dir"
+    local pid_file="${pid_dir}/${name}.pid"
+
+    log_info "Spawning background job '$name' ($tool_name): $path $*"
     
     if [[ -n "$log_file" ]]; then
-        if [[ -n "$timeout_secs" ]]; then
-            timeout "$timeout_secs" bash -c "$cmd" >> "$log_file" 2>&1
-        else
-            bash -c "$cmd" >> "$log_file" 2>&1
-        fi
+        mkdir -p "$(dirname "$log_file")"
+        "$path" "$@" >> "$log_file" 2>&1 &
     else
-        if [[ -n "$timeout_secs" ]]; then
-            timeout "$timeout_secs" bash -c "$cmd"
-        else
-            bash -c "$cmd"
-        fi
+        "$path" "$@" > /dev/null 2>&1 &
     fi
     
-    local exit_code=$?
+    local pid=$!
+    echo "$pid" > "$pid_file"
+    log_debug "Background job '$name' started with PID $pid. PID file: $pid_file"
     
-    # 124 is the standard exit code for GNU timeout
-    if [[ $exit_code -eq 124 ]]; then
-        log_info "Command completed (timeout reached: ${timeout_secs}s)"
+    return 0
+}
+
+# Run a command as the non-root human user (drops privileges)
+# Usage: run_as_user <command> [args...]
+run_as_user() {
+    local cmd="$1"
+    shift
+    
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        sudo -u "$SUDO_USER" "$cmd" "$@"
+    else
+        "$cmd" "$@"
+    fi
+}
+
+# Systematic cleanup of background processes
+# Iterates through .pid files in SESSION_DIR/.pids
+cleanup_processes() {
+    local base_dir="${SESSION_DIR:-$TMP_DIR/wifi-astra/default}"
+    local pid_dir="${base_dir}/.pids"
+    
+    if [[ ! -d "$pid_dir" ]]; then
         return 0
     fi
+
+    log_debug "Cleaning up background processes in $pid_dir"
     
-    return $exit_code
+    # Use nullglob to avoid literal *.pid if no files match
+    shopt -s nullglob
+    local pid_files=("$pid_dir"/*.pid)
+    shopt -u nullglob
+
+    if [[ ${#pid_files[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    for pid_file in "${pid_files[@]}"; do
+        if [[ ! -f "$pid_file" ]]; then continue; fi
+        
+        local pid
+        pid=$(cat "$pid_file" 2>/dev/null)
+        local name
+        name=$(basename "$pid_file" .pid)
+
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            log_debug "Sending SIGTERM to $name (PID: $pid)"
+            kill -TERM "$pid" 2>/dev/null
+            
+            # Wait for process to exit (max 5s)
+            local count=0
+            while kill -0 "$pid" 2>/dev/null && [[ $count -lt 50 ]]; do
+                sleep 0.1
+                ((count++))
+            done
+
+            if kill -0 "$pid" 2>/dev/null; then
+                log_warn "$name (PID: $pid) did not exit after SIGTERM, sending SIGKILL"
+                kill -9 "$pid" 2>/dev/null
+            fi
+        fi
+        rm -f "$pid_file"
+    done
+}
+
+# Stop a specific background process by name
+# Usage: stop_process <name> [signal]
+stop_process() {
+    local name="$1"
+    local signal="${2:-TERM}"
+    local base_dir="${SESSION_DIR:-$TMP_DIR/wifi-astra/default}"
+    local pid_file="${base_dir}/.pids/${name}.pid"
+
+    if [[ -f "$pid_file" ]]; then
+        local pid
+        pid=$(cat "$pid_file" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            log_debug "Stopping background process '$name' (PID: $pid) with SIG$signal"
+            kill -"$signal" "$pid" 2>/dev/null
+            
+            # Wait up to 5s for process to exit
+            local count=0
+            while kill -0 "$pid" 2>/dev/null && [[ $count -lt 50 ]]; do
+                sleep 0.1
+                ((count++))
+            done
+            
+            if kill -0 "$pid" 2>/dev/null; then
+                log_warn "Process '$name' (PID: $pid) did not exit after SIG$signal, sending SIGKILL"
+                kill -9 "$pid" 2>/dev/null
+            fi
+        fi
+        rm -f "$pid_file"
+    else
+        log_debug "No PID file found for background process '$name' at $pid_file"
+    fi
 }

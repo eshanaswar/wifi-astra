@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="AirSnitch — Client Isolation Bypass"
+# CATEGORY="B"
+# DEPS="B1"
+# CRITICAL="no"
+# TOOLS="airsnitch"
+# DESC="Test client isolation bypass via GTK abuse, gateway bouncing, port stealing (airsnitch)"
+# REQS="managed_iface,gateway_ip,monitor_iface"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/b10_airsnitch.sh
 #  B10: AirSnitch — Client Isolation Bypass Test
@@ -82,7 +93,7 @@ run_b10() {
         evidence_register_file "b10_airsnitch_output.txt"
         evidence_register_file "b10_airsnitch_summary.txt"
 
-        local result_json=$(${TOOL_PATHS[jq]} -n \
+        local result_json=$(run_tool jq -n \
             --arg status "INFO" \
             --arg summary "B10 skipped: AirSnitch not installed. Install from https://github.com/vanhoefm/airsnitch to test client isolation bypass (GTK abuse, gateway bouncing, port stealing)." \
             --arg details "Tool not found in PATH or AIRSNITCH_PATH. No bypass test performed." \
@@ -97,7 +108,7 @@ run_b10() {
                 tool_available: $tool_available,
                 bypass_detected: $bypass_detected,
                             }')
-        save_tc_result "B10" "$result_json"
+        save_tc_result "B10" "$result_json" "has_tool_output:1,clean_run:1"
         log_result "INFO" "B10 skipped — install AirSnitch to test client isolation bypass"
         return 0
     fi
@@ -122,8 +133,8 @@ run_b10() {
     ensure_managed_mode || return 1
 
     local my_ip gateway_ip
-    local my_ip=$(${TOOL_PATHS[ip]} -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
-    local gateway_ip="${GATEWAY_IP:-$(${TOOL_PATHS[ip]} route show dev "$WIFI_INTERFACE" 2>/dev/null | awk '/default/{print $3}' | head -1)}"
+    local my_ip=$(run_tool ip -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+    local gateway_ip="${GATEWAY_IP:-$(run_tool ip route show dev "$WIFI_INTERFACE" 2>/dev/null | awk '/default/{print $3}' | head -1)}"
 
     if [[ -z "$my_ip" ]]; then
         log_error "No IP on ${WIFI_INTERFACE}. Connect to the target WiFi first."
@@ -210,7 +221,7 @@ run_b10() {
         local recommendations="Client isolation bypass detected. Harden wireless controller: enforce key separation, disable gateway bouncing where possible, and review port/VLAN mapping."
     fi
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "${result_details:-AirSnitch executed. See evidence.}" \
@@ -225,7 +236,7 @@ run_b10() {
             tool_available: $tool_available,
             bypass_detected: $bypass_detected,
         }')
-    save_tc_result "B10" "$result_json"
+    save_tc_result "B10" "$result_json" "has_tool_output:1,clean_run:1"
 
     if [[ "$bypass_detected" == "true" ]]; then
         log_result "FINDING" "Client isolation bypass indicated by AirSnitch"

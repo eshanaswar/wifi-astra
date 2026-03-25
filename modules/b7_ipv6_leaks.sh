@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="IPv6 SLAAC & RA Leaks"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="tcpdump,tshark,ip"
+# DESC="Listen for corporate IPv6 router advertisements bleeding into target VLAN"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="none"
+
 #===============================================================================
 #  modules/b7_ipv6_leaks.sh
 #  B7: IPv6 SLAAC/RA Leaks
@@ -58,9 +69,9 @@ run_b7() {
     log_info "Listening for ICMPv6 type 134 on ${iface}..."
     log_cmd "${TOOL_PATHS[tcpdump]} -i ${iface} -nn -v 'icmp6 and ip6[40] == 134' -w ${pcap_file}"
 
-    # Run ${TOOL_PATHS[tcpdump]} in foreground with timeout via run_attack_tool
+    # Run ${TOOL_PATHS[tcpdump]} in foreground with timeout
     start_countdown "$capture_time" "Listening for IPv6 RA leaks"
-    run_attack_tool --timeout "$capture_time" --cmd "${TOOL_PATHS[tcpdump]} -i \"${iface}\" -nn -v 'icmp6 and ip6[40] == 134' -w \"${pcap_file}\""
+    timeout "$capture_time" "${TOOL_PATHS[tcpdump]}" -i "$iface" -nn -v 'icmp6 and ip6[40] == 134' -w "$pcap_file" >/dev/null 2>&1 || true
     stop_countdown
 
     check_abort || return 1
@@ -84,19 +95,20 @@ run_b7() {
     local summary="No IPv6 Router Advertisements detected."
 
     if [[ -f "$pcap_file" && -s "$pcap_file" ]]; then
+        ensure_user_ownership "$pcap_file"
         log_cmd "${TOOL_PATHS[tshark]} -r ${pcap_file} -Y 'icmpv6.type == 134' -T fields -e ipv6.src -e icmpv6.opt.prefix"
         
         # Extract unique sources and prefixes
         local raw_data
-        raw_data=$(${TOOL_PATHS[tshark]} -r "${pcap_file}" -Y 'icmpv6.type == 134' -T fields -e ipv6.src -e icmpv6.opt.prefix 2>/dev/null | sort -u)
+        raw_data=$(run_as_user tshark -r "${pcap_file}" -Y 'icmpv6.type == 134' -T fields -e ipv6.src -e icmpv6.opt.prefix 2>/dev/null | sort -u)
         
         if [[ -n "$raw_data" ]]; then
             echo "$raw_data" > "$txt_file"
-            ra_count=$(wc -l <<< "$raw_data")
+            ra_count=$(echo "$raw_data" | wc -l)
             
             while IFS=$'\t' read -r src prefix; do
                 [[ -z "$src" ]] && continue
-                leaked_prefixes=$(echo "$leaked_prefixes" | ${TOOL_PATHS[jq]} --arg s "$src" --arg p "$prefix" '. += [{"src": $s, "prefix": $p}]')
+                leaked_prefixes=$(echo "$leaked_prefixes" | run_tool jq --arg s "$src" --arg p "$prefix" '. += [{"src": $s, "prefix": $p}]')
             done <<< "$raw_data"
             
             status="FINDING"
@@ -115,7 +127,7 @@ run_b7() {
     evidence_register_file "$pcap"
     evidence_register_file "$txt"
 
-    result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_tool jq -n \
         --arg status "$status" \
         --arg summary "$summary" \
         --argjson ra_count "$ra_count" \
@@ -131,6 +143,6 @@ run_b7() {
             recommendations: (if $status == "FINDING" then "Enable RA Guard on switches. Filter ICMPv6 type 134 (Router Advertisements) at the WLC/Gateway for the target VLAN." else "No action required." end),
                     }')
 
-    save_tc_result "B7" "$result_json"
+    save_tc_result "B7" "$result_json" "has_tool_output:1,clean_run:1"
     return 0
 }

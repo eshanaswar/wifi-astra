@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Discover Hidden SSIDs"
+# CATEGORY="A"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="airmon-ng,airodump-ng,aireplay-ng"
+# DESC="Deauthenticate and capture hidden SSID probe responses"
+# REQS="monitor_iface,target_ssid,target_bssid"
+# PCAP="no"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/a3_hidden_ssid.sh
 #  A3: Discover Hidden SSIDs
@@ -26,30 +37,25 @@ run_a3() {
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/a3"
 
-    #--- Step 1: Load A1 data, identify hidden networks ---
-    log_step 1 $total_steps "Loading A1 data and identifying hidden networks"
+    #--- Step 1: Load data from assessment engine, identify hidden networks ---
+    log_step 1 $total_steps "Loading scan data and identifying hidden networks"
     update_tc_progress 1 $total_steps "Loading data"
 
-    if ! has_tc_results "A1"; then
-        log_error "A1 results not found. Run A1 first."
+    if [[ ! -f "${SESSION_DB_FILE:-}" ]]; then
+        log_error "Session database not found. Run A1 first."
         return 1
     fi
 
-    
-    local a1_data
-    a1_data=$(load_tc_result "A1")
-
-    # Get hidden networks from A1
     local hidden_networks
-    hidden_networks=$(echo "$a1_data" | ${TOOL_PATHS[jq]} -c '[.networks[] | select(.hidden == true)]')
+    hidden_networks=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-hidden 2>/dev/null)
     local hidden_count
-    hidden_count=$(echo "$hidden_networks" | ${TOOL_PATHS[jq]} 'length')
+    hidden_count=$(echo "$hidden_networks" | run_tool jq 'length')
 
     if [[ $hidden_count -eq 0 ]]; then
-        log_success "No hidden SSIDs were detected in A1 scan."
+        log_success "No hidden SSIDs were detected in assessment database."
 
         local result_json
-        result_json=$(${TOOL_PATHS[jq]} -n \
+        result_json=$(run_tool jq -n \
             --arg status "SECURE" \
             --arg summary "No hidden SSIDs detected. All networks broadcast their SSID." \
             '{
@@ -62,7 +68,7 @@ run_a3() {
                 evidence_files: [],
                 recommendations: "No action needed."
             }')
-        save_tc_result "A3" "$result_json"
+        save_tc_result "A3" "$result_json" "has_tool_output:1,clean_run:1"
         return 0
     fi
 
@@ -71,7 +77,7 @@ run_a3() {
     # List hidden networks
     echo ""
     echo -e "  ${C_BOLD}Hidden Networks:${C_RESET}"
-    echo "$hidden_networks" | ${TOOL_PATHS[jq]} -r '.[] | "    BSSID: \(.bssid)  CH: \(.channel)  Signal: \(.signal)dBm  Enc: \(.encryption)"'
+    echo "$hidden_networks" | run_tool jq -r '.[] | "    BSSID: \(.bssid)  CH: \(.channel)  Signal: \(.signal)dBm  Enc: \(.encryption)"'
 
     #--- Step 2: Ensure monitor mode ---
     log_step 2 $total_steps "Verifying monitor mode"
@@ -90,7 +96,7 @@ run_a3() {
 
     # Target the channels of hidden networks
     local target_channels
-    local target_channels=$(echo "$hidden_networks" | ${TOOL_PATHS[jq]} -r '.[].channel' | sort -un | paste -sd',' -)
+    local target_channels=$(echo "$hidden_networks" | run_tool jq -r '.[].channel' | sort -un | paste -sd',' -)
 
     log_cmd "${TOOL_PATHS[airodump-ng]} ${MONITOR_INTERFACE} --channel ${target_channels} --write ${capture_file} --output-format pcap"
 
@@ -115,9 +121,10 @@ run_a3() {
     local revealed_ssids=()
 
     if [[ -n "$cap_file" && -f "$cap_file" ]]; then
+        ensure_user_ownership "$cap_file"
         # Extract probe responses with SSIDs using ${TOOL_PATHS[tshark]}
         local probe_results
-        local probe_results=$(${TOOL_PATHS[tshark]} -r "$cap_file" \
+        local probe_results=$(run_as_user tshark -r "$cap_file" \
             -Y "wlan.fc.type_subtype == 0x05" \
             -T fields \
             -e wlan.ta \
@@ -128,10 +135,23 @@ run_a3() {
             [[ -z "$ssid" || -z "$ta" ]] && continue
             # Check if this TA matches a hidden network BSSID
             local matches
-            local matches=$(echo "$hidden_networks" | ${TOOL_PATHS[jq]} --arg bssid "$ta" '[.[] | select(.bssid == $bssid)] | length')
+            local matches=$(echo "$hidden_networks" | run_tool jq --arg bssid "$ta" '[.[] | select(.bssid == $bssid)] | length')
             if [[ $matches -gt 0 ]]; then
                 revealed_ssids+=("$ssid")
                 log_result "FINDING" "Hidden SSID revealed (passive): ${ssid} (BSSID: ${ta})"
+                
+                # Sync with Assessment Engine
+                if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+                    # Get existing network info if possible
+                    local net_info
+                    net_info=$(echo "$hidden_networks" | run_tool jq -c --arg bssid "$ta" '.[] | select(.bssid == $bssid)')
+                    
+                    # Build updated JSON
+                    local updated_json
+                    updated_json=$(echo "$net_info" | run_tool jq --arg ssid "$ssid" '.ssid = $ssid')
+                    
+                    run_tool astra-engine --db "$SESSION_DB_FILE" ingest network --json "$updated_json"
+                fi
             fi
         done <<< "$probe_results"
     fi
@@ -171,8 +191,8 @@ run_a3() {
             # Send deauth to each hidden network BSSID
             while IFS= read -r hidden_net; do
                 local h_bssid h_channel
-                local h_bssid=$(echo "$hidden_net" | ${TOOL_PATHS[jq]} -r '.bssid')
-                local h_channel=$(echo "$hidden_net" | ${TOOL_PATHS[jq]} -r '.channel')
+                local h_bssid=$(echo "$hidden_net" | run_tool jq -r '.bssid')
+                local h_channel=$(echo "$hidden_net" | run_tool jq -r '.channel')
 
                 # Check if already revealed
                 local already_found="false"
@@ -190,7 +210,7 @@ run_a3() {
                 ${TOOL_PATHS[aireplay-ng]} --deauth 5 -a "$h_bssid" "$MONITOR_INTERFACE" &>/dev/null || true
                 sleep 3
 
-            done < <(echo "$hidden_networks" | ${TOOL_PATHS[jq]} -c '.[]')
+            done < <(echo "$hidden_networks" | run_tool jq -c '.[]')
 
             # Wait for reconnections
             start_countdown 30 "Waiting for clients to reconnect and reveal SSIDs"
@@ -204,8 +224,9 @@ run_a3() {
             local deauth_cap_file=$(ls "${deauth_cap}"*.cap 2>/dev/null | head -1)
 
             if [[ -n "$deauth_cap_file" && -f "$deauth_cap_file" ]]; then
+                ensure_user_ownership "$deauth_cap_file"
                 local deauth_probes
-                local deauth_probes=$(${TOOL_PATHS[tshark]} -r "$deauth_cap_file" \
+                local deauth_probes=$(run_as_user tshark -r "$deauth_cap_file" \
                     -Y "wlan.fc.type_subtype == 0x05 || wlan.fc.type_subtype == 0x04" \
                     -T fields \
                     -e wlan.ta \
@@ -215,7 +236,7 @@ run_a3() {
                 while IFS=$'\t' read -r ta ssid; do
                     [[ -z "$ssid" || -z "$ta" ]] && continue
                     local matches
-                    local matches=$(echo "$hidden_networks" | ${TOOL_PATHS[jq]} --arg bssid "$ta" '[.[] | select(.bssid == $bssid)] | length')
+                    local matches=$(echo "$hidden_networks" | run_tool jq --arg bssid "$ta" '[.[] | select(.bssid == $bssid)] | length')
                     if [[ $matches -gt 0 ]]; then
                         # Check not already in list
                         local already="false"
@@ -225,6 +246,19 @@ run_a3() {
                         if [[ "$already" == "false" ]]; then
                             revealed_ssids+=("$ssid")
                             log_result "FINDING" "Hidden SSID revealed (deauth): ${ssid} (BSSID: ${ta})"
+                            
+                            # Sync with Assessment Engine
+                            if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+                                # Get existing network info if possible
+                                local net_info
+                                net_info=$(echo "$hidden_networks" | run_tool jq -c --arg bssid "$ta" '.[] | select(.bssid == $bssid)')
+                                
+                                # Build updated JSON
+                                local updated_json
+                                updated_json=$(echo "$net_info" | run_tool jq --arg ssid "$ssid" '.ssid = $ssid')
+                                
+                                run_tool astra-engine --db "$SESSION_DB_FILE" ingest network --json "$updated_json"
+                            fi
                         fi
                     fi
                 done <<< "$deauth_probes"
@@ -276,14 +310,14 @@ run_a3() {
     # Build revealed array for JSON
     local revealed_json="[]"
     for ssid in "${revealed_ssids[@]}"; do
-        revealed_json=$(echo "$revealed_json" | ${TOOL_PATHS[jq]} --arg s "$ssid" '. += [$s]')
+        revealed_json=$(echo "$revealed_json" | run_tool jq --arg s "$ssid" '. += [$s]')
     done
 
     local evidence_files='["a3_hidden_ssids_revealed.txt"]'
-    [[ -n "${cap_file:-}" ]] && evidence_files=$(echo "$evidence_files" | ${TOOL_PATHS[jq]} '. += ["a3_hidden_ssid_capture.cap"]')
+    [[ -n "${cap_file:-}" ]] && evidence_files=$(echo "$evidence_files" | run_tool jq '. += ["a3_hidden_ssid_capture.cap"]')
 
     local result_json
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg recommendations "$recommendations" \
@@ -302,7 +336,7 @@ run_a3() {
             evidence_files: $evidence_files
         }')
 
-    save_tc_result "A3" "$result_json"
+    save_tc_result "A3" "$result_json" "has_tool_output:1,clean_run:1"
 
     return 0
 }

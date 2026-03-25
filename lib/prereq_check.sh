@@ -9,92 +9,220 @@
 #  to avoid a full system upgrade.
 #===============================================================================
 
-#--- Tool-to-Module mapping ---
-declare -gA TOOL_TC_MAP
-TOOL_TC_MAP=(
-    ["airmon-ng"]="A1,A2,A3"
-    ["airodump-ng"]="A1,A2,A3,D2"
-    ["aireplay-ng"]="A3,D1,D2,E3"
-    ["nmap"]="B1,B2,B5,B9,C2,C3,C4,C5"
-    ["masscan"]="C2"
-    ["tcpdump"]="B3,B4,B7,B8,A4"
-    ["tshark"]="B3,B4,B7,B8,D4,E1,E2,A4"
-    ["nbtscan"]="C2"
-    ["onesixtyone"]="B5"
-    ["snmpwalk"]="B5,B9"
-    ["yersinia"]="G1"
-    ["fping"]="B1,C2"
-    ["arping"]="B1"
-    ["avahi-browse"]="B4"
-    ["dig"]="C1,F3"
-    ["nslookup"]="C1"
-    ["ip"]="B1,B7,C3,G1"
-    ["jq"]="ALL"
-    ["curl"]="B2,F3,F4"
-    ["wget"]="B2"
-    ["mdk4"]="E3,E4,F2,H1"
-    ["wash"]="D3"
-    ["reaver"]="D3"
-    ["bully"]="D3"
-    ["hostapd"]="F1"
-    ["dnsmasq"]="F1"
-    ["macchanger"]="F4"
-    ["aircrack-ng"]="D1,D2"
-    ["hcxdumptool"]="D1"
-    ["hcxpcapngtool"]="D1"
-    ["eaphammer"]="D5"
-    ["hostapd-mana"]="D5,F2"
-    ["airsnitch"]="B10"
-    ["searchsploit"]="B9"
-    ["python3"]="F1"
-    ["iptables"]="F1"
-    ["iw"]="ALL"
-    ["bettercap"]="G2"
-    ["arpspoof"]="G2"
-    ["responder"]="G3"
-    ["krack-test"]="E1"
-    ["fragattack"]="E2"
-    ["dragonslayer"]="D4"
-    ["dragondrain"]="D4"
-    ["packetforge-ng"]="D2"
-)
+# NOTE: TOOL_TC_MAP is now dynamically populated by lib/discovery.sh at startup.
 
-#--- Quick check at startup (non-blocking) ---
-quick_prereq_check() {
-    local missing_critical=0
-    local critical_tools=("nmap" "jq" "ip" "tcpdump" "dig" "iw")
+#--- Check availability of all modules based on tools ---
+declare -gA TC_AVAILABLE
+
+#--- Resolve tool path (System PATH + Custom locations) ---
+_resolve_tool_path() {
+    local tool="$1"
+    local path=""
     
-    # Disable strict mode temporarily to handle associative array lookups safely
-    set +u
+    # 1. Check system PATH
+    path=$(command -v "$tool" 2>/dev/null)
+    if [[ -n "$path" ]]; then
+        echo "$path"
+        return 0
+    fi
+    
+    # 2. Check for common research tool names in subdirectories
+    # Some tools have different binary names than their folder/repo name
+    local binary="$tool"
+    case "$tool" in
+        airsnitch)      binary="research/airsnitch.py" ;;
+        eaphammer)      binary="eaphammer" ;;
+        krack-test)     binary="krackattacks-scripts/krackattack/krackattack.py" ;;
+        fragattack)     binary="fragattacks/fragattack.py" ;;
+        dragonslayer)   binary="dragonblood/dragonslayer.py" ;;
+        dragondrain)    binary="dragonblood/dragondrain.py" ;;
+    esac
+
+    # Check relative to script dir
+    if [[ -x "${SCRIPT_DIR}/${binary}" ]]; then
+        echo "${SCRIPT_DIR}/${binary}"
+        return 0
+    elif [[ -x "${SCRIPT_DIR}/${tool}/${binary}" ]]; then
+        echo "${SCRIPT_DIR}/${tool}/${binary}"
+        return 0
+    fi
+    
+    # 3. Check environment variables
+    local env_var=$(echo "${tool^^}_PATH" | tr '-' '_')
+    if [[ -n "${!env_var:-}" && -x "${!env_var}" ]]; then
+        echo "${!env_var}"
+        return 0
+    fi
+
+    return 1
+}
+
+check_all_module_availabilities() {
+    for _tc in "${TC_ORDER[@]}"; do
+        local tools
+        tools=$(get_tools_for_tc "$_tc")
+        if [[ -z "$tools" ]]; then
+            TC_AVAILABLE["$_tc"]=1
+            continue
+        fi
+        
+        local all_present=1
+        for tool in $tools; do
+            local path="${TOOL_PATHS[$tool]:-}"
+            if [[ -z "$path" ]] || [[ ! -x "$path" ]]; then
+                # Re-check path
+                path=$(_resolve_tool_path "$tool")
+                if [[ -n "$path" ]]; then
+                    TOOL_PATHS["$tool"]="$path"
+                else
+                    all_present=0
+                    break
+                fi
+            fi
+        done
+        TC_AVAILABLE["$_tc"]=$all_present
+    done
+}
+
+#--- Quick check at startup (blocking for critical tools) ---
+quick_prereq_check() {
+    local missing_critical=()
+    local critical_tools=("bash" "jq" "ip" "tcpdump" "dig" "iw")
     
     # Check every tool in the registry and store its path
     local tool
     for tool in "${!TOOL_TC_MAP[@]}"; do
-        if command -v "$tool" &>/dev/null; then
-            TOOL_PATHS["$tool"]=$(command -v "$tool")
+        local path
+        path=$(_resolve_tool_path "$tool")
+        if [[ -n "$path" ]]; then
+            TOOL_PATHS["$tool"]="$path"
         else
-            # Default to name if not found
-            TOOL_PATHS["$tool"]="$tool"
+            TOOL_PATHS["$tool"]=""
         fi
     done
     
-    # Validate critical ones for reporting
+    # Validate critical ones
     for tool in "${critical_tools[@]}"; do
-        local path="${TOOL_PATHS[$tool]}"
-        
-        # If path is empty or not an executable, check if it's in PATH
-        if [[ ! -x "$path" ]] && ! command -v "$tool" &>/dev/null; then
-            ((missing_critical++))
+        if [[ -z "${TOOL_PATHS[$tool]:-}" ]]; then
+            # Re-check
+            local path
+            path=$(_resolve_tool_path "$tool")
+            if [[ -n "$path" ]]; then
+                TOOL_PATHS["$tool"]="$path"
+            else
+                missing_critical+=("$tool")
+            fi
         fi
     done
     
-    set -u
-    
-    if [[ $missing_critical -gt 0 ]]; then
-        log_warn "${missing_critical} critical tool(s) missing. Run [P] from menu for full check."
-    else
-        log_success "Core environment verified."
+    if [[ ${#missing_critical[@]} -gt 0 ]]; then
+        log_warn "CRITICAL TOOLS MISSING: ${missing_critical[*]}"
+        log_info "These tools are required for core framework functionality."
+        
+        local choice=""
+        # Use safe_read if available, otherwise fallback to basic read
+        if declare -f safe_read &>/dev/null; then
+            safe_read "Attempt to install missing critical tools now? [Y/n]" choice "y"
+        else
+            printf "  Attempt to install missing critical tools now? [Y/n]: "
+            read choice
+            choice="${choice:-y}"
+        fi
+
+        if [[ "${choice,,}" == "y" ]]; then
+            log_info "Updating package lists..."
+            apt update -qq || true
+            log_info "Installing: ${missing_critical[*]}..."
+            # Translate tool names to packages if needed (e.g. jq is jq)
+            local pkgs=()
+            for t in "${missing_critical[@]}"; do
+                local p
+                p=$(_get_apt_package "$t")
+                [[ -n "$p" ]] && pkgs+=("$p")
+            done
+            
+            if [[ ${#pkgs[@]} -gt 0 ]]; then
+                apt install -y "${pkgs[@]}"
+            fi
+
+            # Re-verify
+            local still_missing=()
+            for tool in "${missing_critical[@]}"; do
+                if command -v "$tool" &>/dev/null; then
+                    TOOL_PATHS["$tool"]=$(command -v "$tool")
+                else
+                    still_missing+=("$tool")
+                fi
+            done
+            
+            if [[ ${#still_missing[@]} -eq 0 ]]; then
+                log_success "Critical tools installed and verified."
+                missing_critical=()
+            else
+                missing_critical=("${still_missing[@]}")
+            fi
+        fi
     fi
+
+    if [[ ${#missing_critical[@]} -gt 0 ]]; then
+        log_error "FAILED to resolve critical dependencies: ${missing_critical[*]}"
+        log_error "Please install them manually (e.g., sudo apt install ${missing_critical[*]}) and restart."
+        exit 1
+    fi
+    
+    log_success "Core environment verified."
+    check_all_module_availabilities
+    return 0
+}
+
+#--- Hardware Injection Validation ---
+check_hardware_injection() {
+    local iface="${MONITOR_INTERFACE:-}"
+    if [[ -z "$iface" ]]; then
+        log_debug "MONITOR_INTERFACE not set, skipping injection check."
+        return 0
+    fi
+    
+    if ! validate_injection "$iface"; then
+        echo ""
+        echo -e "${C_BG_RED}${C_WHITE}  [!] HARDWARE INJECTION FAILURE  ${C_RESET}"
+        echo -e "${C_RED}  The interface ${C_BOLD}${iface}${C_RESET}${C_RED} failed the injection test.${C_RESET}"
+        echo -e "${C_RED}  Active attacks (deauth, replay, etc.) will likely fail.${C_RESET}"
+        echo ""
+        return 1
+    fi
+    return 0
+}
+
+#--- Check module-specific dependencies before execution ---
+check_module_dependencies() {
+    local tc_id="$1"
+    local tools
+    tools=$(get_tools_for_tc "$tc_id")
+    [[ -z "$tools" ]] && return 0
+    
+    local missing_tools=()
+    for tool in $tools; do
+        local path="${TOOL_PATHS[$tool]:-}"
+        if [[ -z "$path" ]] || [[ ! -x "$path" ]]; then
+            # Re-check path
+            if command -v "$tool" &>/dev/null; then
+                TOOL_PATHS["$tool"]=$(command -v "$tool")
+            else
+                missing_tools+=("$tool")
+            fi
+        fi
+    done
+    
+    if [[ ${#missing_tools[@]} -gt 0 ]]; then
+        log_warn "Missing dependencies for module ${tc_id}: ${missing_tools[*]}"
+        if require_tools "${missing_tools[@]}"; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+    return 0
 }
 
 #--- Full prerequisite check ---
@@ -164,9 +292,7 @@ full_prereq_check() {
             fi
         done
         
-        echo ""
-        echo -e "  ${C_BOLD}Install all missing tools at once (batch apt + custom installs)?${C_RESET}"
-        read -rep "  [Y/n]: " prompt
+        safe_read "Install all missing tools at once (batch apt + custom installs)? [Y/n]: " prompt
         if [[ "$prompt" =~ ^[Yy]$ ]] || [[ -z "$prompt" ]]; then
             local os
             os=$(_detect_os)
@@ -215,17 +341,17 @@ full_prereq_check() {
         echo -e "  ${C_GREEN}${C_BOLD}${ICON_DONE} All tools installed! All test cases are ready to run.${C_RESET}"
     fi
     
+    check_all_module_availabilities
+    
     echo ""
-    read -rep "  Press Enter to return to menu..." _
+    safe_read "Press Enter to return to menu..." _
 }
 
 #--- Get tool version (best effort) ---
 _get_tool_version() {
     local tool="$1"
-    set +u
-    local path="${TOOL_PATHS[$tool]}"
-    set -u
-    [[ -z "$path" ]] && path="$tool"
+    local path="${TOOL_PATHS[$tool]:-}"
+    [[ -z "$path" ]] && return 1
     
     case "$tool" in
         nmap)         "$path" --version 2>/dev/null | head -1 | awk '{print $3}' ;;
@@ -263,9 +389,21 @@ _get_install_command() {
         macchanger)     echo "apt install -y macchanger" ;;
         hcxdumptool)    echo "apt install -y hcxdumptool" ;;
         hcxpcapngtool)  echo "apt install -y hcxtools" ;;
-        eaphammer)      echo "git clone https://github.com/s0lst1c3/eaphammer.git && cd eaphammer && ./kali-setup" ;;
+        eaphammer)      echo "[[ -d eaphammer ]] || git clone https://github.com/s0lst1c3/eaphammer.git; cd eaphammer && ./kali-setup" ;;
         hostapd-mana)   echo "apt install -y hostapd-mana" ;;
-        airsnitch)      echo "git clone https://github.com/vanhoefm/airsnitch.git && cd airsnitch && make" ;;
+        airsnitch)      echo "apt install -y libnl-3-dev libnl-genl-3-dev libnl-route-3-dev libssl-dev libdbus-1-dev pkg-config build-essential net-tools python3-venv; [[ -d airsnitch ]] || git clone https://github.com/vanhoefm/airsnitch.git; cd airsnitch && ./setup.sh && cd airsnitch/research && ./build.sh && ./pysetup.sh" ;;
+        wkhtmltopdf)    echo "apt install -y wkhtmltopdf 2>/dev/null || { 
+            echo '  [*] wkhtmltopdf not in apt, trying GitHub releases (Bookworm/Kali)...';
+            local deb_url='https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_amd64.deb';
+            wget -q \"\$deb_url\" -O $TMP_DIR/wkhtml.deb && apt install -y $TMP_DIR/wkhtml.deb && rm $TMP_DIR/wkhtml.deb;
+        } || {
+            echo '  [*] Bookworm build failed, trying Bullseye fallback...';
+            local deb_url_fallback='https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-2/wkhtmltox_0.12.6.1-2.bullseye_amd64.deb';
+            wget -q \"\$deb_url_fallback\" -O $TMP_DIR/wkhtml.deb && apt install -y $TMP_DIR/wkhtml.deb && rm $TMP_DIR/wkhtml.deb;
+        } || echo 'Warning: Could not install wkhtmltopdf. PDF reports will be disabled (HTML still available).'" ;;
+        krack-test)     echo "[[ -d krackattacks-scripts ]] || git clone https://github.com/vanhoefm/krackattacks-scripts.git" ;;
+        fragattack)     echo "[[ -d fragattacks ]] || git clone https://github.com/vanhoefm/fragattacks.git" ;;
+        dragonslayer|dragondrain) echo "[[ -d dragonblood ]] || git clone https://github.com/vanhoefm/dragonblood.git" ;;
         *)              echo "apt install -y ${tool}" ;;
     esac
 }
@@ -277,7 +415,7 @@ require_tool() {
         local install_cmd
         install_cmd=$(_get_install_command "$tool")
         log_warn "Required tool '${tool}' is not installed."
-        read -rep "  Install now? (${install_cmd}) [Y/n]: " prompt
+        safe_read "Install now? (${install_cmd}) [Y/n]: " prompt
         if [[ "$prompt" =~ ^[Yy]$ ]] || [[ -z "$prompt" ]]; then
             local os
             os=$(_detect_os)
@@ -285,6 +423,7 @@ require_tool() {
                 kali|parrot|ubuntu|debian)
                     eval "$install_cmd"
                     if command -v "$tool" &>/dev/null; then
+                        TOOL_PATHS["$tool"]=$(command -v "$tool")
                         log_success "${tool} installed successfully."
                         return 0
                     else
@@ -320,7 +459,7 @@ require_tools() {
     
     if [[ ${#missing_tools[@]} -gt 0 ]]; then
         log_warn "Missing tools: ${missing_tools[*]}"
-        read -rep "  Attempt to install missing tools now? [Y/n]: " prompt
+        safe_read "Attempt to install missing tools now? [Y/n]: " prompt
         if [[ "$prompt" =~ ^[Yy]$ ]] || [[ -z "$prompt" ]]; then
             local os
             os=$(_detect_os)
@@ -338,6 +477,7 @@ require_tools() {
                             log_error "Failed to install ${tool}."
                             ((still_missing++))
                         else
+                            TOOL_PATHS["$tool"]=$(command -v "$tool")
                             log_success "${tool} installed successfully."
                         fi
                     done
@@ -387,17 +527,6 @@ get_tools_for_tc() {
     echo "${tools[*]}"
 }
 
-#--- Ensure all tools for a test case are installed; install if missing ---
-# Called at the start of each module run. Prompts to install any missing tools, then proceeds.
-# Returns 0 if all tools present (or installed), 1 if user skipped or install failed.
-ensure_tools_for_tc() {
-    local tc_id="$1"
-    local tools
-    tools=$(get_tools_for_tc "$tc_id")
-    [[ -z "$tools" ]] && return 0
-    require_tools $tools
-}
-
 #--- Record tool versions into a file (best effort) ---
 # Usage: record_tool_versions_to_file "/path/to/file" tool1 tool2 ...
 record_tool_versions_to_file() {
@@ -410,30 +539,20 @@ record_tool_versions_to_file() {
 
     local tool
     for tool in "$@"; do
-        command -v "$tool" &>/dev/null || continue
+        local path="${TOOL_PATHS[$tool]:-}"
+        [[ -n "$path" ]] || continue
         {
             printf "%s: " "$tool"
             case "$tool" in
                 airmon-ng|airodump-ng|aireplay-ng|aircrack-ng|packetforge-ng)
-                    ${TOOL_PATHS[aircrack-ng]} --help 2>/dev/null | head -1 || echo "installed"
-                    ;;
-                tcpdump)
-                    ${TOOL_PATHS[tcpdump]} --version 2>/dev/null | head -1 || echo "installed"
-                    ;;
-                tshark)
-                    ${TOOL_PATHS[tshark]} --version 2>/dev/null | head -1 || echo "installed"
-                    ;;
-                nmap)
-                    ${TOOL_PATHS[nmap]} --version 2>/dev/null | head -1 || echo "installed"
-                    ;;
-                masscan)
-                    ${TOOL_PATHS[masscan]} --version 2>/dev/null | head -1 || echo "installed"
+                    local ac_path="${TOOL_PATHS[aircrack-ng]:-}"
+                    if [[ -n "$ac_path" ]]; then
+                        "$ac_path" --help 2>/dev/null | head -1 || echo "installed"
+                    else
+                        echo "missing"
+                    fi
                     ;;
                 *)
-                    set +u
-                    local path="${TOOL_PATHS[$tool]}"
-                    set -u
-                    [[ -z "$path" ]] && path="$tool"
                     "$path" --version 2>/dev/null | head -1 || echo "installed"
                     ;;
             esac
@@ -476,7 +595,7 @@ _get_apt_package() {
         bettercap)      echo "bettercap" ;;
         arpspoof)       echo "dsniff" ;;
         responder)      echo "responder" ;;
-        eaphammer|airsnitch|hostapd-mana) echo "" ;;  # custom install
+        eaphammer|airsnitch|hostapd-mana|krack-test|fragattack|dragonslayer|dragondrain|wkhtmltopdf) echo "" ;;  # custom install
         *)              echo "$tool" ;;
-    esac
-}
+        esac
+        }

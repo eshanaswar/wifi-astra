@@ -5,6 +5,8 @@
 #  Generates both TXT and HTML assessment reports from completed test results.
 #===============================================================================
 
+set -uo pipefail
+
 generate_report() {
     local completed
     completed=$(get_completed_count)
@@ -12,7 +14,7 @@ generate_report() {
     
     if [[ $completed -eq 0 ]]; then
         log_warn "No tests completed yet. Run some tests first."
-        [[ ${HEADLESS_MODE:-0} -eq 0 ]] && read -rep "  Press Enter to return to menu..." _
+        [[ ${HEADLESS_MODE:-0} -eq 0 ]] && safe_read "Press Enter to return to menu..." _
         return
     fi
     
@@ -24,20 +26,25 @@ generate_report() {
     
     local txt_report="${SESSION_REPORT_DIR}/assessment_report.txt"
     local html_report="${SESSION_REPORT_DIR}/assessment_report.html"
+    local pdf_report="${SESSION_REPORT_DIR}/assessment_report.pdf"
     
     # Generate TXT report
     _generate_txt_report "$txt_report"
     
     # Generate HTML report
     _generate_html_report "$html_report"
+
+    # Generate PDF report
+    _generate_pdf_report "$html_report" "$pdf_report"
     
     echo ""
     log_success "Reports generated:"
     log_info "  TXT:  ${txt_report}"
     log_info "  HTML: ${html_report}"
+    [[ -f "$pdf_report" ]] && log_info "  PDF:  ${pdf_report}"
     log_info "  Evidence: ${SESSION_EVIDENCE_DIR}/"
     echo ""
-    [[ ${HEADLESS_MODE:-0} -eq 0 ]] && read -rep "  Press Enter to return to menu..." _
+    [[ ${HEADLESS_MODE:-0} -eq 0 ]] && safe_read "Press Enter to return to menu..." _
 }
 
 #--- TXT Report ---
@@ -67,25 +74,25 @@ _generate_txt_report() {
         local critical=0
         
         for _tc in "${TC_ORDER[@]}"; do
-            if [[ "${TC_STATUS[$_tc]}" == "done" ]]; then
+            if [[ "${TC_STATUS[$_tc]:-}" == "done" ]]; then
                 local result_file
                 result_file=$(get_tc_result_file "$_tc")
                 if [[ -f "$result_file" ]]; then
                     local status
-                    status=$(${TOOL_PATHS[jq]} -r '.status // "unknown"' "$result_file" 2>/dev/null || echo "unknown")
-                    case "$status" in
-                        "FINDING"|"FAIL"|"VULNERABLE")
-                            ((findings++))
-                            local is_crit
-                            is_crit=$(get_tc_field "$_tc" "critical")
-                            if [[ "$is_crit" == "yes" ]]; then
-                                ((critical++))
-                            fi
+                    status=$(run_tool jq -r '.status // "INFO"' "$result_file" 2>/dev/null || echo "INFO")
+                    case "${status^^}" in
+                        "CRITICAL")
+                            ((findings++)) || true
+                            ((critical++)) || true
                             ;;
-                        "SECURE"|"PASS")
-                            ((secure++))
+                        "FINDING"|"FAIL")
+                            ((findings++)) || true
+                            ;;
+                        "SECURE")
+                            ((secure++)) || true
                             ;;
                     esac
+
                 fi
             fi
         done
@@ -100,7 +107,7 @@ _generate_txt_report() {
         echo ""
         
         if [[ $critical -gt 0 ]]; then
-            echo "  *** CRITICAL: Segmentation bypass detected. Immediate remediation required. ***"
+            echo "  *** CRITICAL: Segmentation bypass or severe vulnerability detected. ***"
         elif [[ $findings -gt 0 ]]; then
             echo "  WARNING: Issues detected that may weaken target WiFi isolation."
         else
@@ -128,13 +135,18 @@ _generate_txt_report() {
                 result_file=$(get_tc_result_file "$_tc")
                 if [[ -f "$result_file" ]]; then
                     echo ""
-                    # Pretty-print the JSON results
-                    ${TOOL_PATHS[jq]} -r '
-                        if .status then "  Result: \(.status)" else empty end,
-                        if .summary then "  Summary: \(.summary)" else empty end,
-                        if .details then "\n  Details:\n\(.details)" else empty end,
-                        if .evidence_files then "  Evidence: \(.evidence_files | join(", "))" else empty end,
-                        if .recommendations then "\n  Recommendations:\n\(.recommendations)" else empty end
+                    # Pretty-print the JSON results with defensive parsing
+                    run_tool jq -r '
+                        "  Result:         " + (.status // "N/A"),
+                        "  Confidence:     " + (.confidence // "N/A"),
+                        "  Summary:        " + (.summary // "N/A"),
+                        "\n  Details:",
+                        "  " + (.details // "No details provided"),
+                        "\n  Recommendations:",
+                        "  " + (.recommendations // "No recommendations provided"),
+                        (if .evidence_files and (.evidence_files | length > 0) then 
+                            "\n  Evidence Files: " + (.evidence_files | join(", "))
+                         else empty end)
                     ' "$result_file" 2>/dev/null || echo "  [Results file exists but could not be parsed]"
                 fi
             else
@@ -171,176 +183,480 @@ _generate_html_report() {
     local completed
     completed=$(get_completed_count)
     
-    # Count findings for summary
-    local findings=0 secure=0 critical=0 not_run=0
+    # Group results and count for summary
+    local critical_tcs=() finding_tcs=() secure_tcs=() info_tcs=() failed_tcs=() not_run_tcs=()
+    local critical=0 findings=0 secure=0 info=0
+    
     for _tc in "${TC_ORDER[@]}"; do
-        case "${TC_STATUS[$_tc]}" in
+        case "${TC_STATUS[$_tc]:-not_run}" in
             "done")
                 local result_file
                 result_file=$(get_tc_result_file "$_tc")
                 if [[ -f "$result_file" ]]; then
                     local status
-                    status=$(${TOOL_PATHS[jq]} -r '.status // "unknown"' "$result_file" 2>/dev/null || echo "unknown")
-                    case "$status" in
-                        "FINDING"|"FAIL"|"VULNERABLE") ((findings++)) ;;
-                        "SECURE"|"PASS") ((secure++)) ;;
+                    status=$(run_tool jq -r '.status // "INFO"' "$result_file" 2>/dev/null || echo "INFO")
+                    case "${status^^}" in
+                        "CRITICAL")
+                            ((critical++)) || true
+                            critical_tcs+=("$_tc")
+                            ;;
+                        "FINDING"|"FAIL")
+                            ((findings++)) || true
+                            finding_tcs+=("$_tc")
+                            ;;
+                        "SECURE")
+                            ((secure++)) || true
+                            secure_tcs+=("$_tc")
+                            ;;
+                        *)
+                            ((info++)) || true
+                            info_tcs+=("$_tc")
+                            ;;
                     esac
+                else
+                    info_tcs+=("$_tc")
                 fi
                 ;;
-            "not_run") ((not_run++)) ;;
+            "failed")
+                failed_tcs+=("$_tc")
+                ;;
+            "not_run")
+                not_run_tcs+=("$_tc")
+                ;;
         esac
     done
     
+    # Start HTML generation
     cat > "$output" << 'HTMLHEAD'
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WiFi-Astra Report</title>
-<style>
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: #eee; }
-    .container { max-width: 1200px; margin: 0 auto; }
-    h1 { color: #00d4ff; border-bottom: 2px solid #00d4ff; padding-bottom: 10px; }
-    h2 { color: #00d4ff; margin-top: 30px; }
-    .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
-    .summary-card { background: #16213e; border-radius: 8px; padding: 20px; text-align: center; border-left: 4px solid #555; }
-    .summary-card.critical { border-left-color: #ff4444; }
-    .summary-card.finding { border-left-color: #ffaa00; }
-    .summary-card.secure { border-left-color: #00ff88; }
-    .summary-card.info { border-left-color: #00d4ff; }
-    .summary-card .number { font-size: 36px; font-weight: bold; }
-    .summary-card .label { font-size: 14px; color: #aaa; margin-top: 5px; }
-    table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-    th { background: #16213e; color: #00d4ff; padding: 12px; text-align: left; }
-    td { padding: 10px 12px; border-bottom: 1px solid #2a2a4a; }
-    tr:hover { background: #16213e44; }
-    .status-done { color: #00ff88; font-weight: bold; }
-    .status-finding { color: #ff4444; font-weight: bold; }
-    .status-secure { color: #00ff88; }
-    .status-notrun { color: #666; }
-    .status-failed { color: #ff4444; }
-    .tc-detail { background: #16213e; border-radius: 8px; padding: 20px; margin: 15px 0; }
-    .tc-detail h3 { color: #00d4ff; margin-top: 0; }
-    .evidence { background: #0d1117; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 13px; overflow-x: auto; }
-    .meta { color: #888; font-size: 14px; }
-    .tag-critical { background: #ff4444; color: white; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
-    .tag-finding { background: #ffaa00; color: black; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
-    .tag-secure { background: #00ff88; color: black; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WiFi-Astra Assessment Report</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --header-bg: #1e293b;
+            --accent: #38bdf8;
+            --text-main: #f1f5f9;
+            --text-dim: #94a3b8;
+            --critical: #ef4444;
+            --finding: #f59e0b;
+            --secure: #10b981;
+            --info: #38bdf8;
+            --border: #334155;
+        }
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            line-height: 1.5;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+        header {
+            background-color: var(--header-bg);
+            border-bottom: 1px solid var(--border);
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+        }
+        .header-content {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 0 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        .brand h1 {
+            margin: 0;
+            color: var(--accent);
+            font-size: 1.875rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .brand p {
+            margin: 0.25rem 0 0;
+            color: var(--text-dim);
+        }
+        .session-meta {
+            text-align: right;
+            font-size: 0.875rem;
+            color: var(--text-dim);
+        }
+        .session-meta div span {
+            color: var(--text-main);
+            font-weight: 600;
+        }
+        
+        /* Dashboard */
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 3rem;
+        }
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.25rem;
+            text-align: center;
+        }
+        .stat-card .value {
+            font-size: 2.25rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+        .stat-card .label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+        }
+        .stat-card.critical .value { color: var(--critical); }
+        .stat-card.finding .value { color: var(--finding); }
+        .stat-card.secure .value { color: var(--secure); }
+        .stat-card.info .value { color: var(--info); }
+        
+        /* Sections */
+        section { margin-bottom: 3rem; }
+        h2 {
+            font-size: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        /* Finding Cards */
+        .finding-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border-left-width: 6px;
+        }
+        .finding-card.critical { border-left-color: var(--critical); }
+        .finding-card.finding { border-left-color: var(--finding); }
+        .finding-card.secure { border-left-color: var(--secure); }
+        .finding-card.info { border-left-color: var(--info); }
+        
+        .finding-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+            gap: 1rem;
+        }
+        .finding-title h3 {
+            margin: 0;
+            font-size: 1.25rem;
+        }
+        .finding-id {
+            font-family: monospace;
+            font-size: 0.875rem;
+            color: var(--text-dim);
+        }
+        .badge {
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 0.25rem 0.625rem;
+            border-radius: 9999px;
+            text-transform: uppercase;
+        }
+        .badge.critical { background: rgba(239, 68, 68, 0.15); color: var(--critical); }
+        .badge.finding { background: rgba(245, 158, 11, 0.15); color: var(--finding); }
+        .badge.secure { background: rgba(16, 185, 129, 0.15); color: var(--secure); }
+        .badge.info { background: rgba(56, 189, 248, 0.15); color: var(--info); }
+        
+        .finding-body {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.25rem;
+        }
+        .finding-summary {
+            font-weight: 600;
+            color: var(--text-main);
+        }
+        .finding-details, .finding-recs {
+            font-size: 0.9375rem;
+        }
+        .finding-details h4, .finding-recs h4 {
+            margin: 0 0 0.5rem;
+            font-size: 0.8125rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+        }
+        .evidence-list {
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+        }
+        .evidence-list h4 {
+            margin: 0 0 0.5rem;
+            font-size: 0.8125rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+        .evidence-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .ev-link {
+            background: rgba(255,255,255,0.05);
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.375rem;
+            text-decoration: none;
+            color: var(--accent);
+            font-size: 0.8125rem;
+            border: 1px solid var(--border);
+            transition: all 0.2s;
+        }
+        .ev-link:hover {
+            background: rgba(255,255,255,0.1);
+            border-color: var(--accent);
+        }
+        
+        footer {
+            text-align: center;
+            padding: 3rem 0;
+            color: var(--text-dim);
+            font-size: 0.875rem;
+        }
+        
+        @media (max-width: 640px) {
+            .header-content { flex-direction: column; text-align: center; align-items: center; }
+            .session-meta { text-align: center; }
+            .finding-header { flex-direction: column; }
+        }
+        
+        /* PDF/Print Tweaks */
+        @media print {
+            body { background-color: #0f172a !important; color: #f1f5f9 !important; -webkit-print-color-adjust: exact; }
+            .finding-card { page-break-inside: avoid; border: 1px solid #334155 !important; }
+            .stat-card { border: 1px solid #334155 !important; }
+            /* wkhtmltopdf sometimes struggles with CSS variables, provide fallbacks */
+            :root {
+                --bg: #0f172a;
+                --card-bg: #1e293b;
+                --text-main: #f1f5f9;
+            }
+        }
+    </style>
 </head>
 <body>
-<div class="container">
 HTMLHEAD
 
-    # Dynamic content
+    # Dynamic Header content
     {
-        echo "<h1>🛜 WiFi-Astra — Wireless Security Assessment Framework</h1>"
-        echo "<p class='meta'>Session: ${SESSION_ID} | Generated: $(date '+%Y-%m-%d %H:%M:%S') | Target: ${GUEST_SSID:-N/A}</p>"
+        local esc_sid esc_ssid esc_bssid esc_date
+        esc_sid=$(echo -n "${SESSION_ID}" | run_tool jq -Rr '@html')
+        esc_ssid=$(echo -n "${GUEST_SSID:-N/A}" | run_tool jq -Rr '@html')
+        esc_bssid=$(echo -n "${GUEST_BSSID:-N/A}" | run_tool jq -Rr '@html')
+        esc_date=$(date '+%Y-%m-%d %H:%M:%S' | run_tool jq -Rr '@html')
+
+        echo "<header>"
+        echo "    <div class='header-content'>"
+        echo "        <div class='brand'>"
+        echo "            <h1>🛜 WiFi-Astra</h1>"
+        echo "            <p>Wireless Security Assessment Report</p>"
+        echo "        </div>"
+        echo "        <div class='session-meta'>"
+        echo "            <div>Session ID: <span>${esc_sid}</span></div>"
+        echo "            <div>Target SSID: <span>${esc_ssid}</span></div>"
+        echo "            <div>Target BSSID: <span>${esc_bssid}</span></div>"
+        echo "            <div>Date: <span>${esc_date}</span></div>"
+        echo "        </div>"
+        echo "    </div>"
+        echo "</header>"
         
-        echo "<div class='summary-grid'>"
-        echo "  <div class='summary-card info'><div class='number'>${completed}</div><div class='label'>Tests Completed</div></div>"
-        echo "  <div class='summary-card finding'><div class='number'>${findings}</div><div class='label'>Findings</div></div>"
-        echo "  <div class='summary-card secure'><div class='number'>${secure}</div><div class='label'>Secure</div></div>"
-        echo "  <div class='summary-card info'><div class='number'>${not_run}</div><div class='label'>Not Run</div></div>"
-        echo "</div>"
+        echo "<div class='container'>"
         
-        echo "<h2>Test Case Results</h2>"
-        echo "<table>"
-        echo "<tr><th>#</th><th>Test Case</th><th>Name</th><th>Status</th><th>Result</th><th>Confidence</th></tr>"
+        # Dashboard
+        echo "    <div class='dashboard'>"
+        echo "        <div class='stat-card critical'><div class='value'>${critical}</div><div class='label'>Critical</div></div>"
+        echo "        <div class='stat-card finding'><div class='value'>${findings}</div><div class='label'>Findings</div></div>"
+        echo "        <div class='stat-card secure'><div class='value'>${secure}</div><div class='label'>Secure</div></div>"
+        echo "        <div class='stat-card info'><div class='value'>${info}</div><div class='label'>Info/Fail</div></div>"
+        echo "    </div>"
         
-        local num=1
-        for _tc in "${TC_ORDER[@]}"; do
-            local tc_name
-            tc_name=$(get_tc_field "$_tc" "name")
-            local tc_status="${TC_STATUS[$_tc]:-not_run}"
-            local result_status="—"
-            local confidence="—"
-            local status_class="status-notrun"
+        # Render Function
+        render_tc_card() {
+            local tc_id="$1"
+            local tc_name esc_tc_name result_file
+            tc_name=$(get_tc_field "$tc_id" "name")
+            esc_tc_name=$(echo -n "$tc_name" | run_tool jq -Rr '@html')
+            result_file=$(get_tc_result_file "$tc_id")
             
-            case "$tc_status" in
-                "done")
-                    status_class="status-done"
-                    local result_file
-                    result_file=$(get_tc_result_file "$_tc")
-                    if [[ -f "$result_file" ]]; then
-                        result_status=$(${TOOL_PATHS[jq]} -r '.status // "—"' "$result_file" 2>/dev/null || echo "—")
-                        confidence=$(${TOOL_PATHS[jq]} -r '.confidence // "—"' "$result_file" 2>/dev/null || echo "—")
-                    fi
-                    ;;
-                "failed") status_class="status-failed" ;;
-            esac
-            
-            local result_class="status-notrun"
-            case "$result_status" in
-                "FINDING"|"FAIL"|"VULNERABLE") result_class="status-finding" ;;
-                "SECURE"|"PASS") result_class="status-secure" ;;
-            esac
-            
-            echo "<tr><td>${num}</td><td>${_tc}</td><td>${tc_name}</td><td class='${status_class}'>${tc_status^^}</td><td class='${result_class}'>${result_status}</td><td>${confidence}</td></tr>"
-            ((num++))
-        done
-        
-        echo "</table>"
-        
-        # Detailed results per TC
-        echo "<h2>Detailed Findings</h2>"
-        
-        for _tc in "${TC_ORDER[@]}"; do
-            if [[ "${TC_STATUS[$_tc]}" == "done" ]]; then
-                local tc_name
-                tc_name=$(get_tc_field "$_tc" "name")
-                local result_file
-                result_file=$(get_tc_result_file "$_tc")
-                
-                echo "<div class='tc-detail'>"
-                echo "<h3>${_tc}: ${tc_name}</h3>"
-                
-                if [[ -f "$result_file" ]]; then
-                    local summary
-                    summary=$(${TOOL_PATHS[jq]} -r '.summary // "No summary"' "$result_file" 2>/dev/null)
-                    local details
-                    details=$(${TOOL_PATHS[jq]} -r '.details // "No details"' "$result_file" 2>/dev/null)
-                    local status
-                    status=$(${TOOL_PATHS[jq]} -r '.status // "unknown"' "$result_file" 2>/dev/null)
-                    local confidence
-                    confidence=$(${TOOL_PATHS[jq]} -r '.confidence // ""' "$result_file" 2>/dev/null)
-                    
-                    local tag_class="tag-secure"
-                    case "$status" in
-                        "FINDING"|"FAIL"|"VULNERABLE") tag_class="tag-finding" ;;
-                        "SECURE"|"PASS") tag_class="tag-secure" ;;
-                    esac
-                    
-                    local reqs
-                    reqs=$(${TOOL_PATHS[jq]} -r '.recommendations // ""' "$result_file" 2>/dev/null)
-                    local ev
-                    ev=$(${TOOL_PATHS[jq]} -r 'if .evidence_files and (.evidence_files | type) == "array" then .evidence_files | join(", ") else "" end' "$result_file" 2>/dev/null)
-                    
-                    if [[ -n "$confidence" && "$confidence" != "null" ]]; then
-                        echo "<p><span class='${tag_class}'>${status}</span> <span class='tag-info'>Confidence: ${confidence}</span></p>"
-                    else
-                        echo "<p><span class='${tag_class}'>${status}</span></p>"
-                    fi
-                    echo "<p><strong>Summary:</strong> ${summary}</p>"
-                    if [[ -n "$reqs" && "$reqs" != "null" ]]; then
-                        echo "<p><strong>Recommendations:</strong> ${reqs}</p>"
-                    fi
-                    if [[ -n "$ev" && "$ev" != "null" ]]; then
-                        echo "<p><strong>Evidence Files:</strong> ${ev}</p>"
-                    fi
-                    echo "<div class='evidence'><pre>${details}</pre></div>"
-                fi
-                
+            if [[ ! -f "$result_file" ]]; then
+                # Handle cases where result file is missing but status is done
+                echo "<div class='finding-card info'>"
+                echo "  <div class='finding-header'><h3>${tc_id}: ${esc_tc_name}</h3></div>"
+                echo "  <div class='finding-body'>Result data missing.</div>"
                 echo "</div>"
+                return
             fi
-        done
+            
+            local status confidence summary details recommendations
+            status=$(run_tool jq -r '.status // "INFO" | @html' "$result_file" 2>/dev/null)
+            confidence=$(run_tool jq -r '.confidence // "N/A" | @html' "$result_file" 2>/dev/null)
+            summary=$(run_tool jq -r '.summary // "No summary provided" | @html' "$result_file" 2>/dev/null)
+            details=$(run_tool jq -r '.details // "No details provided" | @html' "$result_file" 2>/dev/null)
+            recommendations=$(run_tool jq -r '.recommendations // "" | @html' "$result_file" 2>/dev/null)
+            
+            local lower_status="${status,,}"
+            [[ "$lower_status" == "fail" ]] && lower_status="finding"
+            [[ "$lower_status" != "critical" && "$lower_status" != "finding" && "$lower_status" != "secure" ]] && lower_status="info"
+            
+            echo "<div class='finding-card ${lower_status}'>"
+            echo "    <div class='finding-header'>"
+            echo "        <div class='finding-title'>"
+            echo "            <div class='finding-id'>${tc_id}</div>"
+            echo "            <h3>${esc_tc_name}</h3>"
+            echo "        </div>"
+            echo "        <div class='badge ${lower_status}'>${status}</div>"
+            echo "    </div>"
+            echo "    <div class='finding-body'>"
+            echo "        <div class='finding-summary'>${summary}</div>"
+            echo "        <div class='finding-meta'><small>Confidence: ${confidence}</small></div>"
+            echo "        <div class='finding-details'><h4>Details</h4>${details}</div>"
+            
+            if [[ -n "$recommendations" && "$recommendations" != "" && "$recommendations" != "null" ]]; then
+                echo "        <div class='finding-recs'><h4>Recommendations</h4>${recommendations}</div>"
+            fi
+            
+            # Evidence Links
+            local ev_files
+            ev_files=$(run_tool jq -r 'if .evidence_files and (.evidence_files | type) == "array" then .evidence_files[] else empty end' "$result_file" 2>/dev/null)
+            if [[ -n "$ev_files" ]]; then
+                echo "        <div class='evidence-list'>"
+                echo "            <h4>Evidence Files</h4>"
+                echo "            <div class='evidence-links'>"
+                for ev in $ev_files; do
+                    local esc_ev
+                    esc_ev=$(echo -n "$ev" | run_tool jq -Rr '@html')
+                    # Relative link to evidence dir from report dir
+                    # Report is in $SESSION_REPORT_DIR/assessment_report.html
+                    # Evidence is in $SESSION_EVIDENCE_DIR/
+                    # Assuming they are both subdirs of $SESSION_DIR
+                    echo "                <a href='../evidence/${esc_ev}' class='ev-link' target='_blank'>${esc_ev}</a>"
+                done
+                echo "            </div>"
+                echo "        </div>"
+            fi
+            
+            echo "    </div>"
+            echo "</div>"
+        }
         
-        echo "</div></body></html>"
+        # CRITICAL
+        if [[ ${#critical_tcs[@]} -gt 0 ]]; then
+            echo "<section>"
+            echo "    <h2>🔴 Critical Findings</h2>"
+            for tc in "${critical_tcs[@]}"; do render_tc_card "$tc"; done
+            echo "</section>"
+        fi
+        
+        # FINDINGS
+        if [[ ${#finding_tcs[@]} -gt 0 ]]; then
+            echo "<section>"
+            echo "    <h2>🟠 Security Findings</h2>"
+            for tc in "${finding_tcs[@]}"; do render_tc_card "$tc"; done
+            echo "</section>"
+        fi
+        
+        # SECURE
+        if [[ ${#secure_tcs[@]} -gt 0 ]]; then
+            echo "<section>"
+            echo "    <h2>🟢 Secure Checks</h2>"
+            for tc in "${secure_tcs[@]}"; do render_tc_card "$tc"; done
+            echo "</section>"
+        fi
+        
+        # INFO / OTHERS
+        if [[ ${#info_tcs[@]} -gt 0 || ${#failed_tcs[@]} -gt 0 ]]; then
+            echo "<section>"
+            echo "    <h2>🔵 Information & Other Results</h2>"
+            for tc in "${info_tcs[@]}"; do render_tc_card "$tc"; done
+            for tc in "${failed_tcs[@]}"; do
+                echo "<div class='finding-card info'>"
+                echo "  <div class='finding-header'><h3>${tc}: $(get_tc_field "$tc" "name" | run_tool jq -Rr '@html')</h3><div class='badge info'>FAILED</div></div>"
+                echo "  <div class='finding-body'>Test case failed during execution.</div>"
+                echo "</div>"
+            done
+            echo "</section>"
+        fi
+        
+        echo "</div>" # end container
+        echo "<footer>Generated by WiFi-Astra Assessment Framework — $(date '+%Y')</footer>"
+        echo "</body></html>"
         
     } >> "$output"
     
     log_success "HTML report: ${output}"
+}
+
+#--- PDF Report ---
+_generate_pdf_report() {
+    local html_input="$1"
+    local pdf_output="$2"
+    
+    local wk_path="${TOOL_PATHS[wkhtmltopdf]:-}"
+    
+    # Re-check if not set
+    if [[ -z "$wk_path" ]]; then
+        wk_path=$(command -v wkhtmltopdf 2>/dev/null || echo "")
+    fi
+    
+    if [[ -z "$wk_path" ]] || [[ ! -x "$wk_path" ]]; then
+        log_warn "wkhtmltopdf not found. Skipping PDF generation."
+        return 0
+    fi
+    
+    log_info "Generating PDF report..."
+    
+    # wkhtmltopdf can be finicky with some CSS, so we use some safe flags
+    # We use --enable-local-file-access as requested
+    local cmd=(
+        "$wk_path"
+        "--quiet"
+        "--page-size" "Letter"
+        "--margin-top" "20mm"
+        "--margin-bottom" "20mm"
+        "--header-center" "WiFi-Astra Security Assessment"
+        "--footer-right" "Page [page] of [topage]"
+        "--enable-local-file-access"
+        "$html_input"
+        "$pdf_output"
+    )
+
+    # Log command if VERBOSE_MODE is enabled
+    if [[ "${VERBOSE_MODE:-0}" -eq 1 ]]; then
+        log_info "PDF generation command: ${cmd[*]}"
+    fi
+    
+    if "${cmd[@]}" 2>/dev/null; then
+        log_success "PDF report: ${pdf_output}"
+    else
+        log_warn "Failed to generate PDF report (wkhtmltopdf error)."
+    fi
 }
 
 #--- Session info display ---
@@ -397,5 +713,5 @@ show_session_info() {
     fi
     echo -e "  ${C_BOLD}Evidence Size:${C_RESET} ${evidence_size}"
     echo ""
-    [[ ${HEADLESS_MODE:-0} -eq 0 ]] && read -rep "  Press Enter to return to menu..." _
+    [[ ${HEADLESS_MODE:-0} -eq 0 ]] && safe_read "Press Enter to return to menu..." _
 }

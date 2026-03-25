@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Gateway & WLC Management Exposure"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="nmap,curl,wget"
+# DESC="Check if gateway/WLC admin panels are reachable from target WiFi"
+# REQS="managed_iface,gateway_ip"
+# PCAP="no"
+# DECODE="none"
+
 #===============================================================================
 #  modules/b2_mgmt_exposure.sh
 #  B2: Gateway & WLC Management Exposure
@@ -28,7 +39,7 @@
 #
 #  RESULT JSON FIELDS:
 #    - gateway_mgmt_exposed: bool
-#    - exposed_services[]: array of {${TOOL_PATHS[ip]}, port, service, protocol}
+#    - exposed_services[]: array of {run_tool ip, port, service, protocol}
 #    - web_interfaces[]: accessible web management URLs
 #    - wlc_identified: bool
 #===============================================================================
@@ -47,10 +58,10 @@ run_b2() {
 
     # Ensure we're connected
     if [[ -z "${MY_IP:-}" ]]; then
-        MY_IP=$(${TOOL_PATHS[ip]} -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+        MY_IP=$(run_tool ip -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
     fi
     if [[ -z "${GATEWAY_IP:-}" ]]; then
-        GATEWAY_IP=$(${TOOL_PATHS[ip]} route 2>/dev/null | awk '/default/{print $3}' | head -1)
+        GATEWAY_IP=$(run_tool ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
     fi
 
     if [[ -z "$MY_IP" || -z "$GATEWAY_IP" ]]; then
@@ -74,8 +85,7 @@ run_b2() {
     local mgmt_ports="22,23,80,161,162,443,830,8080,8443,8888,4343,5998,9090,3389,4786"
 
     log_cmd "${TOOL_PATHS[nmap]} -sT -sV -Pn -p ${mgmt_ports} ${NMAP_TIMING} ${GATEWAY_IP} -oA ${gw_scan_file%.nmap}"
-    run_with_spinner "${TOOL_PATHS[nmap]} -sT -sV -Pn -p ${mgmt_ports} ${NMAP_TIMING} ${GATEWAY_IP} -oA ${gw_scan_file%.nmap}" \
-        "Scanning gateway for management ports"
+    run_with_spinner "Scanning gateway for management ports" "${TOOL_PATHS[nmap]}" -sT -sV -Pn -p "$mgmt_ports" $NMAP_TIMING "$GATEWAY_IP" -oA "${gw_scan_file%.nmap}"
 
     # Parse open ports
     local gw_open_ports
@@ -98,7 +108,7 @@ run_b2() {
 
             log_output "${port}/${protocol} — ${service} ${version}"
 
-            exposed_services=$(echo "$exposed_services" | ${TOOL_PATHS[jq]} \
+            exposed_services=$(echo "$exposed_services" | run_tool jq \
                 --arg ip "$GATEWAY_IP" \
                 --arg port "$port" \
                 --arg protocol "$protocol" \
@@ -142,8 +152,7 @@ run_b2() {
     local wlc_ports="22,23,80,443,4343,5246,5247,8443,16113,161"
 
     log_cmd "${TOOL_PATHS[nmap]} -sT -sV -Pn -p ${wlc_ports} ${NMAP_TIMING} ${wlc_targets} -oA ${wlc_scan_file%.nmap}"
-    run_with_spinner "${TOOL_PATHS[nmap]} -sT -sV -Pn -p ${wlc_ports} ${NMAP_TIMING} ${wlc_targets} -oA ${wlc_scan_file%.nmap}" \
-        "Scanning for WLC/infrastructure devices"
+    run_with_spinner "Scanning for WLC/infrastructure devices" "${TOOL_PATHS[nmap]}" -sT -sV -Pn -p "$wlc_ports" $NMAP_TIMING $wlc_targets -oA "${wlc_scan_file%.nmap}"
 
     local wlc_identified="false"
 
@@ -164,7 +173,7 @@ run_b2() {
             wlc_identified="true"
             log_result "FINDING" "Infrastructure device ${current_host} — port ${port}/${protocol} (${service} ${version})"
 
-            exposed_services=$(echo "$exposed_services" | ${TOOL_PATHS[jq]} \
+            exposed_services=$(echo "$exposed_services" | run_tool jq \
                 --arg ip "$current_host" \
                 --arg port "$port" \
                 --arg protocol "$protocol" \
@@ -194,7 +203,7 @@ run_b2() {
 
     # Collect all IPs with HTTP/HTTPS ports
     local web_targets
-    local web_targets=$(echo "$exposed_services" | ${TOOL_PATHS[jq]} -r '.[] | select(.service | test("http|ssl|https|web"; "i")) | "\(.ip):\(.port)"' | sort -u)
+    local web_targets=$(echo "$exposed_services" | run_tool jq -r '.[] | select(.service | test("http|ssl|https|web"; "i")) | "\(.ip):\(.port)"' | sort -u)
 
     # Also try common web ports on gateway
     for web_url_combo in "${GATEWAY_IP}:80" "${GATEWAY_IP}:443" "${GATEWAY_IP}:8443" "${GATEWAY_IP}:8080" "${GATEWAY_IP}:4343"; do
@@ -232,7 +241,7 @@ run_b2() {
 
                 log_result "FINDING" "Web interface accessible: ${url} (HTTP ${http_code}) — ${page_title}"
 
-                web_interfaces=$(echo "$web_interfaces" | ${TOOL_PATHS[jq]} \
+                web_interfaces=$(echo "$web_interfaces" | run_tool jq \
                     --arg url "$url" \
                     --arg status "$http_code" \
                     --arg title "$page_title" \
@@ -293,7 +302,7 @@ run_b2() {
                         log_result "CRITICAL" "WLC management interface found: ${url} — ${page_title}"
                         local wlc_identified="true"
 
-                        web_interfaces=$(echo "$web_interfaces" | ${TOOL_PATHS[jq]} \
+                        web_interfaces=$(echo "$web_interfaces" | run_tool jq \
                             --arg url "$url" \
                             --arg status "$http_code" \
                             --arg title "${page_title:-WLC Login}" \
@@ -323,7 +332,7 @@ run_b2() {
                 echo "$snmp_result" | sed 's/^/  /' >> "$mgmt_file"
                 echo "" >> "$mgmt_file"
 
-                exposed_services=$(echo "$exposed_services" | ${TOOL_PATHS[jq]} \
+                exposed_services=$(echo "$exposed_services" | run_tool jq \
                     --arg ip "$GATEWAY_IP" \
                     --arg community "$community" \
                     '. += [{ip: $ip, port: "161", protocol: "udp", service: "snmp", version: ("community: " + $community), type: "gateway"}]')
@@ -336,9 +345,9 @@ run_b2() {
     update_tc_progress 7 $total_steps "Saving"
 
     local exposed_count
-    exposed_count=$(echo "$exposed_services" | ${TOOL_PATHS[jq]} 'length')
+    exposed_count=$(echo "$exposed_services" | run_tool jq 'length')
     local web_count
-    web_count=$(echo "$web_interfaces" | ${TOOL_PATHS[jq]} 'length')
+    web_count=$(echo "$web_interfaces" | run_tool jq 'length')
 
     local result_status="SECURE"
     local result_summary=""
@@ -361,7 +370,7 @@ run_b2() {
     evidence_register_file "b2_wlc_scan.nmap"
     evidence_register_file "b2_mgmt_interfaces.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg recommendations "$recommendations" \
@@ -382,7 +391,7 @@ run_b2() {
             gateway_ip: $gateway_ip,
                     }')
 
-    save_tc_result "B2" "$result_json"
+    save_tc_result "B2" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""

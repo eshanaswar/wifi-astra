@@ -1,0 +1,7 @@
+{
+    "session_name": "test_verbose",
+    "params": {
+        "AIRODUMP_SCAN_TIME": "1"
+    },
+    "run_modules": []
+}

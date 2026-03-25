@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Identify All Wireless Networks"
+# CATEGORY="A"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="airmon-ng,airodump-ng,python3"
+# DESC="Enumerate all SSIDs, BSSIDs, channels, encryption using monitor mode"
+# REQS="monitor_iface"
+# PCAP="no"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/a1_identify_networks.sh
 #  A1: Identify All Wireless Networks
@@ -24,7 +35,7 @@
 #===============================================================================
 
 run_a1() {
-    local total_steps=6
+    local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/a1"
 
     #--- Step 1: Verify prerequisites ---
@@ -92,9 +103,21 @@ run_a1() {
 
     log_success "Scan complete. CSV: $(basename "$csv_file"), CAP: $(basename "${cap_file:-none}")"
 
-    #--- Step 5: Parse results ---
-    log_step 5 $total_steps "Parsing scan results"
-    update_tc_progress 5 $total_steps "Parsing"
+    #--- Step 5: Ingest into Assessment Engine ---
+    log_step 5 $total_steps "Ingesting results into assessment engine"
+    update_tc_progress 5 $total_steps "Ingesting"
+    
+    # Use the Go engine to ingest the airodump CSV into the session database
+    if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+        log_info "Ingesting scan data into session database: $(basename "${SESSION_DB_FILE}")"
+        run_tool astra-engine --db "$SESSION_DB_FILE" ingest airodump --file "$csv_file"
+    else
+        log_warn "Assessment engine or DB not available; skipping ingestion."
+    fi
+
+    #--- Step 6: Parse results for report ---
+    log_step 6 $total_steps "Parsing scan results"
+    update_tc_progress 6 $total_steps "Parsing"
 
     check_abort || return 1
 
@@ -102,7 +125,8 @@ run_a1() {
     local summary_file="${evidence_prefix}_networks_summary.txt"
     
     local networks_json
-    networks_json=$(python3 "${SCRIPT_DIR}/utils/parsers/airodump_parser.py" "$csv_file" 2>/dev/null)
+    ensure_user_ownership "$csv_file"
+    networks_json=$(run_as_user python3 "${SCRIPT_DIR}/utils/parsers/airodump_parser.py" "$csv_file" 2>/dev/null)
     
     if [[ -z "$networks_json" || "$networks_json" == *"error"* ]]; then
         log_error "Failed to parse Airodump CSV."
@@ -110,11 +134,11 @@ run_a1() {
     fi
 
     local network_count
-    network_count=$(echo "$networks_json" | ${TOOL_PATHS[jq]} length)
+    network_count=$(echo "$networks_json" | run_tool jq length)
     local hidden_count
-    hidden_count=$(echo "$networks_json" | ${TOOL_PATHS[jq]} '[.[] | select(.hidden == true)] | length')
+    hidden_count=$(echo "$networks_json" | run_tool jq '[.[] | select(.hidden == true)] | length')
     local open_networks
-    open_networks=$(echo "$networks_json" | ${TOOL_PATHS[jq]} '[.[] | select(.encryption | contains("OPN"))] | length')
+    open_networks=$(echo "$networks_json" | run_tool jq '[.[] | select(.encryption | contains("OPN"))] | length')
 
     # Header for summary file
     {
@@ -132,17 +156,17 @@ run_a1() {
     local target_found="false"
     if [[ -n "${GUEST_SSID:-}" ]]; then
         local target_net
-        target_net=$(echo "$networks_json" | ${TOOL_PATHS[jq]} -r --arg ssid "$GUEST_SSID" '.[] | select(.ssid == $ssid) | .bssid' | head -1)
+        target_net=$(echo "$networks_json" | run_tool jq -r --arg ssid "$GUEST_SSID" '.[] | select(.ssid == $ssid) | .bssid' | head -1)
         if [[ -n "$target_net" && "$target_net" != "null" && "$target_net" != "" ]]; then
             target_found="true"
             GUEST_BSSID="$target_net"
-            GUEST_CHANNEL=$(echo "$networks_json" | ${TOOL_PATHS[jq]} -r --arg ssid "$GUEST_SSID" '.[] | select(.ssid == $ssid) | .channel' | head -1)
+            GUEST_CHANNEL=$(echo "$networks_json" | run_tool jq -r --arg ssid "$GUEST_SSID" '.[] | select(.ssid == $ssid) | .channel' | head -1)
             log_info "Target network found: ${GUEST_SSID} (${GUEST_BSSID}) on channel ${GUEST_CHANNEL}"
         fi
     fi
 
     # Write to summary
-    echo "$networks_json" | ${TOOL_PATHS[jq]} -r '.[] | "\(.ssid)\t\(.bssid)\t\(.channel)\t\(.encryption)\t\(.signal)\t\(.beacons)"' | \
+    echo "$networks_json" | run_tool jq -r '.[] | "\(.ssid)\t\(.bssid)\t\(.channel)\t\(.encryption)\t\(.signal)\t\(.beacons)"' | \
     while IFS=$'\t' read -r ssid bssid channel encryption signal beacons; do
         printf "%-35s %-20s %-5s %-15s %-8s %-6s\n" "$ssid" "$bssid" "$channel" "$encryption" "${signal}dBm" "$beacons" >> "$summary_file"
     done
@@ -165,9 +189,9 @@ run_a1() {
         echo -e "  ${C_GRAY}${line}${C_RESET}"
     done
 
-    #--- Step 6: Save results & prompt for target selection ---
-    log_step 6 $total_steps "Saving results"
-    update_tc_progress 6 $total_steps "Saving"
+    #--- Step 7: Save results & prompt for target selection ---
+    log_step 7 $total_steps "Saving results"
+    update_tc_progress 7 $total_steps "Saving"
 
     # If target SSID already identified, ask if the user wants to change it
     local _prompt_selection=false
@@ -211,7 +235,7 @@ run_a1() {
             ssid_list+=("$ssid")
             bssid_list+=("$bssid")
             ((ssid_idx++))
-        done < <(echo "$networks_json" | ${TOOL_PATHS[jq]} -r '.[] | "\(.ssid)\t\(.bssid)\t\(.channel)\t\(.signal)"' | sort -u)
+        done < <(echo "$networks_json" | run_tool jq -r '.[] | "\(.ssid)\t\(.bssid)\t\(.channel)\t\(.signal)"' | sort -u)
 
         if [[ ${#ssid_list[@]} -gt 0 ]]; then
             echo ""
@@ -236,7 +260,7 @@ run_a1() {
             else
                 GUEST_SSID="$ssid_choice"
                 # Try to find BSSID for manually entered SSID
-                GUEST_BSSID=$(echo "$networks_json" | ${TOOL_PATHS[jq]} -r --arg ssid "$GUEST_SSID" '[.[] | select(.ssid == $ssid)] | .[0].bssid // ""')
+                GUEST_BSSID=$(echo "$networks_json" | run_tool jq -r --arg ssid "$GUEST_SSID" '[.[] | select(.ssid == $ssid)] | .[0].bssid // ""')
                 export GUEST_SSID GUEST_BSSID
             fi
         else
@@ -248,14 +272,14 @@ run_a1() {
             read manual_ssid
             if [[ -n "$manual_ssid" ]]; then
                 GUEST_SSID="$manual_ssid"
-                GUEST_BSSID=$(echo "$networks_json" | ${TOOL_PATHS[jq]} -r --arg ssid "$GUEST_SSID" '[.[] | select(.ssid == $ssid)] | .[0].bssid // ""')
+                GUEST_BSSID=$(echo "$networks_json" | run_tool jq -r --arg ssid "$GUEST_SSID" '[.[] | select(.ssid == $ssid)] | .[0].bssid // ""')
                 export GUEST_SSID GUEST_BSSID
             fi
         fi
 
         # Find channel for selected network
-        GUEST_CHANNEL=$(echo "$networks_json" | ${TOOL_PATHS[jq]} -r --arg bssid "$GUEST_BSSID" '[.[] | select(.bssid == $bssid)] | .[0].channel // ""')
-        [[ -z "$GUEST_CHANNEL" ]] && GUEST_CHANNEL=$(echo "$networks_json" | ${TOOL_PATHS[jq]} -r --arg ssid "$GUEST_SSID" '[.[] | select(.ssid == $ssid)] | .[0].channel // ""')
+        GUEST_CHANNEL=$(echo "$networks_json" | run_tool jq -r --arg bssid "$GUEST_BSSID" '[.[] | select(.bssid == $bssid)] | .[0].channel // ""')
+        [[ -z "$GUEST_CHANNEL" ]] && GUEST_CHANNEL=$(echo "$networks_json" | run_tool jq -r --arg ssid "$GUEST_SSID" '[.[] | select(.ssid == $ssid)] | .[0].channel // ""')
 
         log_success "Target set: ${GUEST_SSID} (${GUEST_BSSID:-unknown BSSID}) on channel ${GUEST_CHANNEL:-unknown}"
         target_found="true"
@@ -288,7 +312,7 @@ run_a1() {
             int_ssid_list+=("$ssid")
             int_bssid_list+=("$bssid")
             ((int_idx++))
-        done < <(echo "$networks_json" | ${TOOL_PATHS[jq]} -r '.[] | "\(.ssid)\t\(.bssid)"' | sort -u)
+        done < <(echo "$networks_json" | run_tool jq -r '.[] | "\(.ssid)\t\(.bssid)"' | sort -u)
 
         if [[ ${#int_ssid_list[@]} -gt 0 || -z "$GUEST_SSID" ]]; then
             echo ""
@@ -325,7 +349,7 @@ run_a1() {
                 # Manual entry
                 INTERNAL_SSID="$int_choice"
                 # Try to find BSSID for manually entered SSID
-                INTERNAL_BSSID=$(echo "$networks_json" | ${TOOL_PATHS[jq]} -r --arg ssid "$INTERNAL_SSID" '[.[] | select(.ssid == $ssid)] | .[0].bssid // ""')
+                INTERNAL_BSSID=$(echo "$networks_json" | run_tool jq -r --arg ssid "$INTERNAL_SSID" '[.[] | select(.ssid == $ssid)] | .[0].bssid // ""')
                 log_info "Internal reference set manually: ${INTERNAL_SSID} (${INTERNAL_BSSID:-unknown BSSID})"
                 export INTERNAL_SSID INTERNAL_BSSID
             fi
@@ -344,13 +368,13 @@ run_a1() {
     if [[ "$_prompt_cp" == "true" ]]; then
         echo ""
         echo -e "${C_CYAN}┌─────────────────────────────────────────────────────────────────┐${C_RESET}"
-        echo -e "${C_CYAN}│  CAPTIVE PORTAL                                                  │${C_RESET}"
+        echo -e "${C_CYAN}│  CAPTIVE PORTAL CONTEXT                                         │${C_RESET}"
         echo -e "${C_CYAN}│                                                                 │${C_RESET}"
-        echo -e "${C_CYAN}│  Does the target WiFi (${GUEST_SSID:-N/A}) require a${C_RESET}"
-        echo -e "${C_CYAN}│  login or splash page before granting internet access?           │${C_RESET}"
+        echo -e "${C_CYAN}│  Does the target WiFi (${GUEST_SSID:-N/A}) require a login      │${C_RESET}"
+        echo -e "${C_CYAN}│  or splash page before granting internet access?                │${C_RESET}"
         echo -e "${C_CYAN}│                                                                 │${C_RESET}"
-        echo -e "${C_CYAN}│  This will be noted for later testing phases.                    │${C_RESET}"
-        echo -e "${C_CYAN}│                                                                 │${C_RESET}"
+        echo -e "${C_CYAN}│  Setting this to 'no' will automatically skip related           │${C_RESET}"
+        echo -e "${C_CYAN}│  assessment modules (F3, F4) later in the audit.                │${C_RESET}"
         echo -e "${C_CYAN}└─────────────────────────────────────────────────────────────────┘${C_RESET}"
         echo ""
         get_or_request_param "cp_answer" "  Does the target WiFi use a captive portal? [Y/n]"
@@ -358,9 +382,23 @@ run_a1() {
         if [[ "${cp_answer,,}" == "n" ]]; then
             CAPTIVE_PORTAL="no"
             log_info "Captive portal: No"
+            # Pre-save skipped status for F3 and F4 to update the menu
+            save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1 context."}' "clean_run:1"
+            save_tc_result "F4" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1 context."}' "clean_run:1"
+            TC_STATUS["F3"]="done"
+            TC_STATUS["F4"]="done"
         else
             CAPTIVE_PORTAL="yes"
             log_info "Captive portal: Yes"
+            # Reset F3 and F4 if they were previously skipped
+            if [[ "${TC_STATUS["F3"]}" == "done" ]]; then
+                TC_STATUS["F3"]="not_run"
+                rm -f $(get_tc_result_file "F3") 2>/dev/null
+            fi
+            if [[ "${TC_STATUS["F4"]}" == "done" ]]; then
+                TC_STATUS["F4"]="not_run"
+                rm -f $(get_tc_result_file "F4") 2>/dev/null
+            fi
         fi
         export CAPTIVE_PORTAL
         save_session_state
@@ -382,7 +420,7 @@ run_a1() {
 
     # Count networks sharing OUI prefix (potential same infrastructure)
     local unique_ouis
-    local unique_ouis=$(echo "$networks_json" | ${TOOL_PATHS[jq]} -r '.[].bssid' | cut -d: -f1-3 | sort | uniq -c | sort -rn | head -5)
+    local unique_ouis=$(echo "$networks_json" | run_tool jq -r '.[].bssid' | cut -d: -f1-3 | sort | uniq -c | sort -rn | head -5)
     result_details+="\\nTop BSSID OUI prefixes (potential shared infrastructure):\\n${unique_ouis}\n"
 
     # Build result JSON
@@ -391,7 +429,7 @@ run_a1() {
     evidence_register_file "$cap_file"
     evidence_register_file "$summary_file"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "$(echo -e "$result_details")" \
@@ -431,7 +469,13 @@ run_a1() {
             )
         }')
 
-    save_tc_result "A1" "$result_json"
+    local has_tool_output=0
+    [[ -n "$csv_file" && -f "$csv_file" ]] && has_tool_output=1
+
+    local has_primary=0
+    [[ -n "$cap_file" && -f "$cap_file" ]] && has_primary=1
+
+    save_tc_result "A1" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 0
     save_session_state
 
     # Display summary

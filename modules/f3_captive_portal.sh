@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Captive Portal Pre-Auth Bypass"
+# CATEGORY="F"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="dig,curl"
+# DESC="Optional: Test for DNS and ICMP tunneling before authentication"
+# REQS="managed_iface"
+# PCAP="no"
+# DECODE="none"
+
 #===============================================================================
 #  modules/f3_captive_portal.sh
 #  F3: Captive Portal Pre-Auth Bypass
@@ -41,6 +52,12 @@ run_f3() {
     log_step 2 $total_steps "Confirming captive portal context"
     update_tc_progress 2 $total_steps "Confirming"
 
+    if [[ "${CAPTIVE_PORTAL:-}" == "no" ]]; then
+        log_info "Skipping F3: Session state confirmed no captive portal is present."
+        save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1/Session context."}' "clean_run:1"
+        return 0
+    fi
+
     echo ""
     echo -e "  This test MUST be run while in the pre-authenticated state"
     echo -e "  (connected to WiFi but not yet logged into the portal)."
@@ -50,7 +67,7 @@ run_f3() {
         get_or_request_param "has_cp" "  Is there a captive portal in the environment? [y/N]"
         if [[ "${has_cp,,}" != "y" ]]; then
             log_info "Skipping F3: No captive portal present."
-            save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present"}'
+            save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present","details":"User confirmed no portal."}' "clean_run:1"
             return 0
         fi
     fi
@@ -126,7 +143,7 @@ run_f3() {
     local result_json
     evidence_register_file "$txt"
 
-    result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_tool jq -n \
         --arg status "$status" \
         --arg summary "$summary" \
         --arg icmp "$icmp_bypass" \
@@ -142,6 +159,6 @@ run_f3() {
             recommendations: (if $status == "FINDING" then "Implement strict pre-auth ACLs to drop ALL traffic except DHCP and DNS to the portal itself." else "No action required." end),
                     }')
 
-    save_tc_result "F3" "$result_json"
+    save_tc_result "F3" "$result_json" "has_tool_output:1,clean_run:1"
     return 0
 }

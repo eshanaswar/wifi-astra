@@ -10,6 +10,13 @@
 
 set -uo pipefail
 
+# Ensure Readline is enabled for interactive input
+set -o emacs 2>/dev/null || true
+
+# Initialize terminal state
+stty sane 2>/dev/null
+stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
+
 #--- Resolve script root directory safely across all subshells/symlinks ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 export SCRIPT_DIR
@@ -41,32 +48,99 @@ source "${SCRIPT_DIR}/lib/hardware.sh"
 source "${SCRIPT_DIR}/lib/network_stack.sh"
 source "${SCRIPT_DIR}/lib/trap_handler.sh"
 source "${SCRIPT_DIR}/lib/session.sh"
+source "${SCRIPT_DIR}/lib/migration.sh"
 source "${SCRIPT_DIR}/lib/dependency.sh"
+source "${SCRIPT_DIR}/lib/discovery.sh"
 source "${SCRIPT_DIR}/lib/prereq_check.sh"
 source "${SCRIPT_DIR}/lib/report.sh"
 source "${SCRIPT_DIR}/lib/headless.sh"
 source "${SCRIPT_DIR}/lib/menu.sh"
 
 #--- Initialize framework ---
+usage() {
+    echo "Usage: sudo ./wifi-astra.sh [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --config <file.json>   Run in headless mode with specified config"
+    echo "  --check-only           Check prerequisites and exit (0 if OK, 1 if missing)"
+    echo "  --verbose, -v          Enable verbose output"
+    echo "  --help, -h             Show this help message"
+    echo ""
+}
+
 main() {
+    #--- Secure Temporary Workspace ---
+    # Create a restricted directory within the project root to keep the tool self-contained
+    mkdir -p "${SCRIPT_DIR}/.tmp"
+    export TMP_DIR=$(mktemp -d "${SCRIPT_DIR}/.tmp/work.XXXXXX")
+    
+    # Ensure human user has access for dropped-privilege parsing
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        local user_group
+        user_group=$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")
+        chown "${SUDO_USER}:${user_group}" "$TMP_DIR" 2>/dev/null || true
+    fi
+    chmod 700 "$TMP_DIR"
+
+    #--- Discover Assessment Modules ---
+    if declare -f discover_modules &>/dev/null; then
+        discover_modules
+    fi
+
     #--- Handle arguments ---
+
     local config_file=""
+    local check_only=false
+    export VERBOSE_MODE=0
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --config) config_file="$2"; shift 2 ;;
+            --check-only) check_only=true; shift ;;
+            --verbose|-v) export VERBOSE_MODE=1; shift ;;
             --help|-h)
-                echo "Usage: sudo ./wifi-astra.sh [--config <file.json>]"
+                usage
                 exit 0
                 ;;
             *) shift ;;
         esac
     done
 
+    #--- Handle non-interactive check ---
+    if [[ "$check_only" == "true" ]]; then
+        echo -e "\033[1;34m[*] Verifying core environment...\033[0m"
+        if ! quick_prereq_check; then
+            echo -e "\033[1;31m[✗] Prerequisite check FAILED.\033[0m"
+            exit 1
+        fi
+        echo -e "\033[1;32m[✓] Prerequisites OK.\033[0m"
+
+        echo -e "\033[1;34m[*] Validating framework syntax...\033[0m"
+        local failed=0
+        for file in "${SCRIPT_DIR}/lib/"*.sh "${SCRIPT_DIR}/wifi-astra.sh"; do
+            if ! bash -n "$file"; then
+                echo -e "\033[1;31m[✗] Syntax error in: $file\033[0m"
+                failed=1
+            fi
+        done
+        
+        if [[ $failed -eq 1 ]]; then
+            echo -e "\033[1;31m[✗] Framework validation FAILED.\033[0m"
+            exit 1
+        fi
+        
+        echo -e "\033[1;32m[✓] Framework validation PASSED.\033[0m"
+        exit 0
+    fi
+
     clear
     print_banner
 
-    #--- Populate Tool Paths ---
+    #--- Populate Tool Paths and verify core environment ---
     quick_prereq_check
+
+    #--- Migrate legacy sessions ---
+    migrate_legacy_sessions
 
     #--- Handle headless mode ---
     if [[ -n "$config_file" ]]; then
@@ -92,7 +166,7 @@ main() {
             load_session
             log_info "Resumed session: ${SESSION_ID}"
             check_hardware_capabilities
-            read -rep "  Press Enter to continue to Main Menu..." _
+            safe_read "Press Enter to continue to Main Menu..." _
             ;;
         "new"|"")
             init_new_session

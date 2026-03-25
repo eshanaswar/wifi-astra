@@ -105,9 +105,11 @@ stop_countdown() {
         echo ""  # Clean newline
     fi
     
-    # Flush stdin queue and restore echo
+    # Flush stdin queue and restore terminal sanity
     while read -r -t 0.1 -n 1; do :; done 2>/dev/null
-    stty echo 2>/dev/null
+    stty sane 2>/dev/null
+    stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
+    tput cnorm 2>/dev/null # Show cursor
 }
 
 
@@ -153,24 +155,30 @@ stop_spinner() {
         printf "\r%80s\r" ""  # Clear the line
     fi
     
-    # Flush stdin queue and restore echo
+    # Flush stdin queue and restore terminal sanity
     while read -r -t 0.1 -n 1; do :; done 2>/dev/null
-    stty echo 2>/dev/null
+    stty sane 2>/dev/null
+    stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
+    tput cnorm 2>/dev/null # Show cursor
 }
 
 
 #--- 4. COMBINED: Run command with spinner ---
-# Usage: run_with_spinner "${TOOL_PATHS[nmap]} -sV target" "Scanning target"
+# Usage: run_with_spinner "Scanning target" "${TOOL_PATHS[nmap]}" "-sV" "target"
 # Returns: command exit code. Output captured in $CMD_OUTPUT
 CMD_OUTPUT=""
 run_with_spinner() {
-    local cmd="$1"
-    local label="${2:-Running command}"
+    local label="$1"
+    shift
+    local cmd_array=("$@")
     
-    log_cmd "$cmd"
+    # We still log a string representation
+    local cmd_str="${cmd_array[*]}"
+    log_cmd "$cmd_str"
+    
     start_spinner "$label"
     
-    CMD_OUTPUT=$(eval "$cmd" 2>&1)
+    CMD_OUTPUT=$("${cmd_array[@]}" 2>&1)
     local exit_code=$?
     
     stop_spinner
@@ -180,7 +188,7 @@ run_with_spinner() {
         {
             echo "============================================================"
             echo "ts: $(date -Iseconds)"
-            echo "cmd: $cmd"
+            echo "cmd: $cmd_str"
             echo "exit_code: $exit_code"
             echo "------------------------------------------------------------"
             echo "$CMD_OUTPUT"

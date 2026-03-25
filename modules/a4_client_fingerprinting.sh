@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Client Fingerprinting & Profiling"
+# CATEGORY="A"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="tcpdump,tshark,python3"
+# DESC="Passive device profiling via probe requests, OUI lookup, signal mapping"
+# REQS="monitor_iface"
+# PCAP="no"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/a4_client_fingerprinting.sh
 #  A4: Client Fingerprinting & Profiling
@@ -6,12 +17,11 @@
 #  PURPOSE:
 #    Passively fingerprint wireless clients to identify device types, operating
 #    systems, and behavior patterns. Uses probe requests, OUI lookup, signal
-#    strength, and 802.11 capability flags to build device profiles. Inspired
-#    by WiFi Pineapple recon module and wifi-arsenal profiling tools.
+#    strength, and 802.11 capability flags to build device profiles.
 #
-#  TOOLS: ${TOOL_PATHS[tcpdump]}, ${TOOL_PATHS[tshark]}, ${TOOL_PATHS[airodump-ng]}
+#  TOOLS: tcpdump, tshark, iw
 #  PHASE: 1A — Passive Recon
-#  DEPENDENCIES: none (standalone passive module)
+#  DEPENDENCIES: none
 #
 #  EVIDENCE PRODUCED:
 #    - a4_client_profiles.txt         (detailed per-client profiles)
@@ -20,14 +30,9 @@
 #    - a4_signal_map.txt              (client signal strength map)
 #    - a4_capture.pcap                (raw capture)
 #    - a4_findings.txt                (analysis summary)
-#
-#  RESULT JSON FIELDS:
-#    - total_clients: int
-#    - unique_vendors: int
-#    - unique_probed_ssids: int
-#    - os_fingerprints: object (OS → count)
-#    - high_value_targets: int — devices probing corp/enterprise SSIDs
 #===============================================================================
+
+set -uo pipefail
 
 # --- OUI Vendor lookup ---
 _oui_lookup() {
@@ -61,59 +66,26 @@ _guess_os() {
 run_a4() {
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/a4"
+    local tc_id="A4"
 
     #--- Step 1: Verify tools ---
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    
-    local has_tshark=false
-    local has_airodump=false
-
-    command -v tshark &>/dev/null && has_tshark=true
-    command -v airodump-ng &>/dev/null && has_airodump=true
-
-    if [[ "$has_tshark" == "false" ]]; then
-        log_error "${TOOL_PATHS[tshark]} is required for client fingerprinting."
+    if ! check_module_dependencies "$tc_id"; then
         return 1
     fi
 
     log_success "Tools verified"
 
-    #--- Info banner (this is PASSIVE) ---
-    echo ""
-    echo -e "${C_CYAN}╔════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}║  ${C_BOLD}CLIENT FINGERPRINTING & PROFILING${C_RESET}${C_CYAN}                                ║${C_RESET}"
-    echo -e "${C_CYAN}║                                                                    ║${C_RESET}"
-    echo -e "${C_CYAN}║  This is a PASSIVE reconnaissance module. It will:                ║${C_RESET}"
-    echo -e "${C_CYAN}║    • Monitor all probe requests from nearby devices                ║${C_RESET}"
-    echo -e "${C_CYAN}║    • Identify device vendors via MAC OUI lookup                    ║${C_RESET}"
-    echo -e "${C_CYAN}║    • Fingerprint OS/device type from 802.11 capabilities           ║${C_RESET}"
-    echo -e "${C_CYAN}║    • Map saved WiFi networks per device                            ║${C_RESET}"
-    echo -e "${C_CYAN}║    • Track signal strength for proximity estimation                 ║${C_RESET}"
-    echo -e "${C_CYAN}║                                                                    ║${C_RESET}"
-    echo -e "${C_CYAN}║  Duration: ~120 seconds of passive monitoring                     ║${C_RESET}"
-    echo -e "${C_CYAN}╚════════════════════════════════════════════════════════════════════╝${C_RESET}"
-    echo ""
-
-    local total_clients=0
-    local unique_vendors=0
-    local unique_probed_ssids=0
-    local high_value_targets=0
-    local findings_file="${evidence_prefix}_findings.txt"
-    local profiles_file="${evidence_prefix}_client_profiles.txt"
-    local oui_file="${evidence_prefix}_oui_analysis.txt"
-    local probe_file="${evidence_prefix}_probe_ssids.txt"
-    local signal_file="${evidence_prefix}_signal_map.txt"
-    local cap_file="${evidence_prefix}_capture.pcap"
-
-    {
-        echo "============================================================"
-        echo "  A4: Client Fingerprinting & Profiling"
-        echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "============================================================"
-        echo ""
-    } > "$findings_file"
+    ui_banner "Client Fingerprinting & Profiling" \
+        "This is a PASSIVE reconnaissance module." \
+        "It monitors all probe requests from nearby devices." \
+        "Identifies device vendors via MAC OUI lookup." \
+        "Fingerprints OS/device type from 802.11 capabilities." \
+        "Maps saved WiFi networks per device." \
+        "Tracks signal strength for proximity estimation." \
+        "Duration: ~120 seconds of passive monitoring."
 
     #--- Step 2: Enable monitor mode ---
     log_step 2 $total_steps "Enabling monitor mode"
@@ -128,27 +100,26 @@ run_a4() {
     log_step 3 $total_steps "Capturing client probe requests (120s, all channels)"
     update_tc_progress 3 $total_steps "Probe capture"
 
-    # Capture probe requests, probe responses, and beacon responses
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$cap_file" \
-        "type mgt subtype probe-req or type mgt subtype probe-resp or type mgt subtype assoc-req" \
-        &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    local cap_file="${evidence_prefix}_capture.pcap"
+    rm -f "$cap_file" 2>/dev/null
 
-    # Channel hop in background for broader coverage
+    # Capture probe requests, responses, and associations
+    spawn_bg "a4_capture" "tcpdump" --log "/dev/null" \
+        -i "$mon_iface" -w "$cap_file" \
+        "type mgt subtype probe-req or type mgt subtype probe-resp or type mgt subtype assoc-req"
+
+    # Channel hop in background
     (
-        for ch in 1 6 11 2 3 4 5 7 8 9 10 12 13 36 40 44 48 52 56 60 64 149 153 157 161 165; do
-            iw dev "$mon_iface" set channel "$ch" 2>/dev/null || true
-            sleep 4
-        done
-        # Loop 2.4 GHz channels again
-        for ch in 1 6 11 1 6 11; do
-            iw dev "$mon_iface" set channel "$ch" 2>/dev/null || true
-            sleep 4
+        local channels=(1 6 11 2 3 4 5 7 8 9 10 12 13 36 40 44 48 52 56 60 64 149 153 157 161 165)
+        while true; do
+            for ch in "${channels[@]}"; do
+                run_fg --quiet "iw" dev "$mon_iface" set channel "$ch" 2>/dev/null || true
+                sleep 4
+            done
         done
     ) &
     local hop_pid=$!
-    register_cleanup "kill -TERM $hop_pid 2>/dev/null || true; sleep 0.5; kill -9 $hop_pid 2>/dev/null || true; wait $hop_pid 2>/dev/null || true"
+    register_cleanup "kill -TERM $hop_pid 2>/dev/null || true; wait $hop_pid 2>/dev/null || true"
 
     start_countdown 120 "Scanning all channels for client probes"
     sleep 120
@@ -156,15 +127,44 @@ run_a4() {
 
     # Stop hopping and capture
     kill -TERM $hop_pid 2>/dev/null; wait $hop_pid 2>/dev/null
-    kill -SIGINT $tcpdump_pid 2>/dev/null; wait $tcpdump_pid 2>/dev/null
+    stop_process "a4_capture"
 
-    validate_pcap "$cap_file" "Client probe capture"
+    if [[ ! -f "$cap_file" ]] || [[ ! -s "$cap_file" ]]; then
+        log_warn "No packets captured during A4 monitoring."
+    else
+        evidence_register_file "$cap_file" "Client probe capture"
+    fi
 
     check_abort || return 1
 
     #--- Step 4: Extract and profile clients ---
     log_step 4 $total_steps "Building client profiles"
     update_tc_progress 4 $total_steps "Profiling"
+
+    local -A vendor_counts_init
+    local -A client_os_map
+    local -A client_signal_map
+    local -A client_ssid_map
+    local -A vendor_counts
+    local -A os_counts
+
+    local total_clients=0
+    local unique_vendors=0
+    local unique_probed_ssids=0
+    local high_value_targets=0
+    local profiles_file="${evidence_prefix}_client_profiles.txt"
+    local oui_file="${evidence_prefix}_oui_analysis.txt"
+    local probe_file="${evidence_prefix}_probe_ssids.txt"
+    local signal_file="${evidence_prefix}_signal_map.txt"
+    local findings_file="${evidence_prefix}_findings.txt"
+
+    {
+        echo "============================================================"
+        echo "  A4: Client Fingerprinting & Profiling"
+        echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "============================================================"
+        echo ""
+    } > "$findings_file"
 
     {
         echo "============================================================"
@@ -174,87 +174,135 @@ run_a4() {
     } > "$profiles_file"
 
     if [[ -f "$cap_file" && -s "$cap_file" ]]; then
-        # Extract all unique client MACs from probe requests
-        local all_clients
-        local all_clients=$(${TOOL_PATHS[tshark]} -r "$cap_file" \
+        log_info "Analyzing capture data (single-pass optimized extraction)..."
+        
+        # Ensure user can read the capture file
+        ensure_user_ownership "$cap_file"
+
+        # Optimized single-pass extraction: MAC, SSID, Signal, HT Capabilities
+        # We stream this to avoid loading everything into a Bash variable
+        while IFS=$'\t' read -r client_mac ssid signal ht_caps; do
+            [[ -z "$client_mac" || "$client_mac" == "ff:ff:ff:ff:ff:ff" ]] && continue
+
+            # Track total unique clients (first time we see a MAC)
+            if [[ -z "${vendor_counts_init[$client_mac]:-}" ]]; then
+                ((total_clients++))
+                vendor_counts_init["$client_mac"]=1
+                
+                # Get vendor (OUI lookup)
+                local vendor
+                vendor=$(run_as_user python3 "${SCRIPT_DIR}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
+                vendor_counts["$vendor"]=$(( ${vendor_counts["$vendor"]:-0} + 1 ))
+                
+                # Initialize profile data
+                client_os_map["$client_mac"]="Unknown"
+                client_signal_map["$client_mac"]="-100"
+                client_ssid_map["$client_mac"]=""
+            fi
+
+            # Update best signal
+            if [[ -n "$signal" ]]; then
+                local sig_int="${signal%.*}"
+                local old_sig="${client_signal_map[$client_mac]}"
+                if [[ $sig_int -gt $old_sig ]]; then
+                    client_signal_map["$client_mac"]="$sig_int"
+                fi
+            fi
+
+            # Update probed SSIDs (comma-separated list)
+            if [[ -n "$ssid" ]]; then
+                if [[ ",${client_ssid_map[$client_mac]}," != *",$ssid,"* ]]; then
+                    client_ssid_map["$client_mac"]="${client_ssid_map[$client_mac]}$ssid,"
+                fi
+            fi
+
+            # Update HT capabilities/OS Guess (only if not already guessed)
+            if [[ "${client_os_map[$client_mac]}" == "Unknown" ]]; then
+                local os_guess
+                os_guess=$(_guess_os "$ssid" "$ht_caps")
+                if [[ "$os_guess" != "Unknown" ]]; then
+                    client_os_map["$client_mac"]="$os_guess"
+                fi
+            fi
+
+        done < <(run_as_user tshark -r "$cap_file" \
             -Y "wlan.fc.type_subtype == 0x04" \
             -T fields \
-            -e wlan.sa \
-            2>/dev/null | sort -u | grep -v "^$" | grep -v "ff:ff:ff:ff:ff:ff" || true)
+            -e wlan.sa -e wlan.ssid -e wlan_radio.signal_dbm -e wlan.ht.capabilities \
+            2>/dev/null)
 
-        if [[ -n "$all_clients" ]]; then
-            local total_clients=$(echo "$all_clients" | wc -l)
-            log_info "Found ${total_clients} unique client devices"
+        log_info "Profiling ${total_clients} unique devices..."
 
-            local -A vendor_counts
-            local -A os_counts
+        # Now build the final reports from the in-memory maps
+        for client_mac in "${!client_signal_map[@]}"; do
+            local ssids="${client_ssid_map[$client_mac]%,}"
+            local os_guess="${client_os_map[$client_mac]}"
+            local signal="${client_signal_map[$client_mac]}"
+            local vendor=$(run_as_user python3 "${SCRIPT_DIR}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
+            
+            local ssid_count=$(echo "$ssids" | tr ',' '\n' | grep -c . || echo "0")
+            
+            # Check for high-value targets
+            if echo "$ssids" | grep -qiE "corp|office|internal|enterprise|eduroam|radius|1x|vpn|secure"; then
+                ((high_value_targets++))
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "$profiles_file"
+                echo "  Client: ${client_mac} ★ HIGH VALUE" >> "$profiles_file"
+            else
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> "$profiles_file"
+                echo "  Client: ${client_mac}" >> "$profiles_file"
+            fi
 
-            while IFS= read -r client_mac; do
-                [[ -z "$client_mac" ]] && continue
-
-                # Get vendor
-                local vendor
-                local vendor=$(_oui_lookup "$client_mac")
-
-                # Count vendor
-                vendor_counts["$vendor"]=$(( ${vendor_counts["$vendor"]:-0} + 1 ))
-
-                # Get probed SSIDs for this client
-                local client_ssids
-                local client_ssids=$(${TOOL_PATHS[tshark]} -r "$cap_file" \
-                    -Y "wlan.sa == ${client_mac} && wlan.fc.type_subtype == 0x04" \
-                    -T fields -e wlan.ssid \
-                    2>/dev/null | sort -u | grep -v "^$" || true)
-
-                local ssid_count=0
-                [[ -n "$client_ssids" ]] && ssid_count=$(echo "$client_ssids" | wc -l)
-
-                # Get signal strength (best seen)
-                local signal
-                local signal=$(${TOOL_PATHS[tshark]} -r "$cap_file" \
-                    -Y "wlan.sa == ${client_mac}" \
-                    -T fields -e wlan_radio.signal_dbm \
-                    2>/dev/null | sort -rn | head -1 || true)
-
-                # Get HT capabilities
-                local ht_caps
-                local ht_caps=$(${TOOL_PATHS[tshark]} -r "$cap_file" \
-                    -Y "wlan.sa == ${client_mac}" \
-                    -T fields -e wlan.ht.capabilities \
-                    2>/dev/null | head -1 || true)
-
-                # Guess OS
-                local os_guess
-                local os_guess=$(_guess_os "$client_ssids" "$ht_caps")
-                os_counts["$os_guess"]=$(( ${os_counts["$os_guess"]:-0} + 1 ))
-
-                # Check for high-value probes (enterprise SSIDs)
-                local is_high_value="no"
-                if echo "$client_ssids" | grep -qiE "corp|office|internal|enterprise|eduroam|radius|1x|vpn|secure"; then
-                    local is_high_value="yes"
-                    ((high_value_targets++))
+            {
+                echo "  Vendor: ${vendor}"
+                echo "  OS/Type: ${os_guess}"
+                echo "  Best Signal: ${signal} dBm"
+                echo "  Probed SSIDs (${ssid_count}):"
+                if [[ -n "$ssids" ]]; then
+                    echo "$ssids" | tr ',' '\n' | sed 's/^/    • /'
+                else
+                    echo "    (broadcast probe only)"
                 fi
+                echo ""
+            } >> "$profiles_file"
+            
+            os_counts["$os_guess"]=$(( ${os_counts["$os_guess"]:-0} + 1 ))
+        done
 
-                # Write profile
-                {
-                    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                    echo "  Client: ${client_mac}"
-                    echo "  Vendor: ${vendor}"
-                    echo "  OS/Type: ${os_guess}"
-                    echo "  Signal: ${signal:-N/A} dBm"
-                    echo "  Probed SSIDs (${ssid_count}):"
-                    if [[ -n "$client_ssids" ]]; then
-                        echo "$client_ssids" | sed 's/^/    • /'
-                    else
-                        echo "    (broadcast probe only)"
-                    fi
-                    [[ "$is_high_value" == "yes" ]] && echo "  ★ HIGH VALUE: Probing enterprise/corporate SSIDs"
-                    echo ""
-                } >> "$profiles_file"
+        # --- Sync with Assessment Engine ---
+        log_info "Syncing discoveries with assessment engine..."
+        local clients_json_array
+        clients_json_array=$( (
+            echo "["
+            local first=1
+            for client_mac in "${!client_signal_map[@]}"; do
+                [[ $first -eq 0 ]] && echo ","
+                local ssids="${client_ssid_map[$client_mac]%,}"
+                local os_guess="${client_os_map[$client_mac]}"
+                local signal="${client_signal_map[$client_mac]}"
+                local vendor
+                vendor=$(run_as_user python3 "${SCRIPT_DIR}/utils/parsers/oui_lookup.py" "$client_mac" 2>/dev/null || echo "Unknown")
+                
+                # Convert comma SSIDs to JSON array
+                local probe_json
+                probe_json=$(echo "$ssids" | tr ',' '\n' | grep . | run_tool jq -R . | run_tool jq -s . -c || echo "[]")
+                
+                run_tool jq -n \
+                    --arg mac "$client_mac" \
+                    --arg vendor "$vendor" \
+                    --argjson sig "$signal" \
+                    --arg os "$os_guess" \
+                    --argjson probes "$probe_json" \
+                    '{mac: $mac, vendor: $vendor, last_signal: $sig, last_bssid: "", os_guess: $os, probes: $probes}' -c
+                first=0
+            done
+            echo "]"
+        ) | tr -d '\n' )
 
-            done <<< "$all_clients"
+        if [[ -n "${SESSION_DB_FILE:-}" && "$clients_json_array" != "[]" ]]; then
+            run_tool astra-engine --db "$SESSION_DB_FILE" ingest batch-clients --json "$clients_json_array"
+        fi
 
-            # Build vendor summary
+        # Build vendor summary
             {
                 echo "============================================================"
                 echo "  Vendor Breakdown (${total_clients} devices)"
@@ -262,34 +310,30 @@ run_a4() {
                 echo ""
             } > "$oui_file"
 
-            local unique_vendors=0
             for vendor in "${!vendor_counts[@]}"; do
                 ((unique_vendors++))
                 echo "  ${vendor_counts[$vendor]}x  ${vendor}" >> "$oui_file"
             done
             sort -t'x' -k1 -rn -o "$oui_file" "$oui_file" 2>/dev/null || true
 
-            # Build OS summary
-            echo "" >> "$oui_file"
-            echo "  OS/Type Breakdown:" >> "$oui_file"
+            echo -e "\n  OS/Type Breakdown:" >> "$oui_file"
             for os in "${!os_counts[@]}"; do
                 echo "    ${os_counts[$os]}x  ${os}" >> "$oui_file"
             done
         fi
 
-        # Extract all unique probed SSIDs
+        # Extract all unique probed SSIDs across all clients
         local all_ssids
-        local all_ssids=$(${TOOL_PATHS[tshark]} -r "$cap_file" \
+        all_ssids=$(run_fg --quiet "tshark" -r "$cap_file" \
             -Y "wlan.fc.type_subtype == 0x04" \
             -T fields -e wlan.ssid \
             2>/dev/null | sort | uniq -c | sort -rn | grep -v "^\s*$" || true)
 
         if [[ -n "$all_ssids" ]]; then
-            local unique_probed_ssids=$(echo "$all_ssids" | wc -l)
-
+            unique_probed_ssids=$(echo "$all_ssids" | wc -l)
             {
                 echo "============================================================"
-                echo "  All Probed SSIDs (by frequency)"
+                echo "  All Probed SSIDs"
                 echo "============================================================"
                 echo ""
                 echo "$all_ssids"
@@ -311,7 +355,7 @@ run_a4() {
 
     if [[ -f "$cap_file" && -s "$cap_file" ]]; then
         local signal_data
-        local signal_data=$(${TOOL_PATHS[tshark]} -r "$cap_file" \
+        signal_data=$(run_fg --quiet "tshark" -r "$cap_file" \
             -Y "wlan.fc.type_subtype == 0x04" \
             -T fields \
             -e wlan.sa \
@@ -323,20 +367,19 @@ run_a4() {
             while IFS=$'\t' read -r smac ssig; do
                 [[ -z "$smac" || -z "$ssig" ]] && continue
                 local proximity="far"
-                if [[ ${ssig%.*} -gt -50 ]]; then
-                    local proximity="CLOSE"
+                local sig_int="${ssig%.*}"
+                if [[ $sig_int -gt -50 ]]; then
+                    proximity="CLOSE"
                     ((close++))
-                elif [[ ${ssig%.*} -gt -70 ]]; then
-                    local proximity="medium"
+                elif [[ $sig_int -gt -70 ]]; then
+                    proximity="medium"
                     ((medium++))
                 else
                     ((far++))
                 fi
                 echo "  ${smac}  ${ssig} dBm  [${proximity}]" >> "$signal_file"
             done <<< "$signal_data"
-
-            echo "" >> "$signal_file"
-            echo "  Summary: ${close} close, ${medium} medium, ${far} far" >> "$signal_file"
+            echo -e "\n  Summary: ${close} close, ${medium} medium, ${far} far" >> "$signal_file"
         fi
     fi
 
@@ -345,7 +388,7 @@ run_a4() {
     update_tc_progress 6 $total_steps "Cleanup"
 
     disable_monitor_mode
-    sleep 3
+    sleep 2
 
     #--- Step 7: Save results ---
     log_step 7 $total_steps "Saving results"
@@ -356,36 +399,31 @@ run_a4() {
     local recommendations=""
 
     if [[ $high_value_targets -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="${total_clients} wireless clients fingerprinted. ${high_value_targets} device(s) are probing for corporate/enterprise SSIDs — "
-        result_summary+="these are high-value targets for evil twin/karma attacks. "
-        result_summary+="${unique_probed_ssids} unique SSIDs broadcast by ${unique_vendors} vendor types."
-        local recommendations="1) Configure managed devices to NOT broadcast probe requests for saved networks. "
-        recommendations+="2) Use MAC address randomization for probe requests (supported in iOS 14+, Android 10+). "
-        recommendations+="3) Remove old/unused WiFi profiles from managed devices via MDM. "
-        recommendations+="4) Deploy WIDS to detect probe-based recon. "
-        recommendations+="5) Use 802.1X with certificates — immune to probe-based attacks."
+        result_status="FINDING"
+        result_summary="${total_clients} clients profiled. ${high_value_targets} device(s) are probing for enterprise/corp SSIDs (High-Value targets)."
+        recommendations="1) Audit managed device saved WiFi profiles via MDM. 2) Enforce MAC randomization. 3) Deploy WIDS."
     elif [[ $total_clients -gt 0 ]]; then
-        local result_summary="${total_clients} wireless clients fingerprinted from ${unique_vendors} vendors. ${unique_probed_ssids} unique SSIDs broadcast. "
-        result_summary+="No devices probing for obviously corporate SSIDs."
-        local recommendations="Good client hygiene. Continue enforcing probe request randomization."
+        result_summary="${total_clients} clients profiled from ${unique_vendors} vendors. No obviously corporate SSID probes detected."
+        recommendations="Monitor for growth in client numbers or new vendor types."
     else
-        local result_summary="No wireless clients detected during the monitoring window."
-        local recommendations="Re-run during business hours for accurate client profiling."
+        result_summary="No wireless clients detected in this window."
+        recommendations="Re-run during active business hours."
     fi
 
-    echo "" >> "$findings_file"
-    echo "Summary: ${total_clients} clients, ${unique_vendors} vendors, ${unique_probed_ssids} SSIDs, ${high_value_targets} high-value" >> "$findings_file"
+    evidence_register_file "$profiles_file" "Client profiles"
+    evidence_register_file "$oui_file" "Vendor analysis"
+    evidence_register_file "$probe_file" "Probed SSIDs list"
+    evidence_register_file "$signal_file" "Signal strength map"
+    evidence_register_file "$findings_file" "Analysis summary"
+
+    # Build OS fingerprints JSON in one pass (optimized to avoid iterative jq forks)
+    local os_json
+    os_json=$(for os in "${!os_counts[@]}"; do
+        echo "$os:${os_counts[$os]}"
+    done | run_tool jq -R -s 'split("\n") | map(select(length > 0)) | map(split(":")) | map({(.[0]): (.[1]|tonumber)}) | add // {}')
 
     local result_json
-    evidence_register_file "a4_client_profiles.txt"
-    evidence_register_file "a4_oui_analysis.txt"
-    evidence_register_file "a4_probe_ssids.txt"
-    evidence_register_file "a4_signal_map.txt"
-    evidence_register_file "a4_capture.pcap"
-    evidence_register_file "a4_findings.txt"
-
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_fg --quiet "jq" -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Clients: ${total_clients}, Vendors: ${unique_vendors}, SSIDs: ${unique_probed_ssids}, High-value: ${high_value_targets}" \
@@ -394,6 +432,7 @@ run_a4() {
         --argjson unique_vendors "$unique_vendors" \
         --argjson unique_probed_ssids "${unique_probed_ssids:-0}" \
         --argjson high_value_targets "$high_value_targets" \
+        --argjson os_fingerprints "$os_json" \
         '{
             status: $status,
             summary: $summary,
@@ -403,17 +442,18 @@ run_a4() {
             unique_vendors: $unique_vendors,
             unique_probed_ssids: $unique_probed_ssids,
             high_value_targets: $high_value_targets,
-                    }')
+            os_fingerprints: $os_fingerprints
+        }')
 
-    save_tc_result "A4" "$result_json"
+    save_tc_result "A4" "$result_json" "pcap_required:1,has_tool_output:1,has_primary_artifact:1,clean_run:1"
 
     echo ""
     if [[ $high_value_targets -gt 0 ]]; then
         log_result "FINDING" "★ ${high_value_targets} device(s) probing corporate SSIDs (${total_clients} total clients)"
     elif [[ $total_clients -gt 0 ]]; then
-        log_result "INFO" "${total_clients} clients profiled (${unique_vendors} vendors, ${unique_probed_ssids} SSIDs)"
+        log_result "INFO" "${total_clients} clients profiled (${unique_vendors} vendors)"
     else
-        log_result "INFO" "No clients detected during monitoring window"
+        log_result "INFO" "No clients detected"
     fi
 
     return 0

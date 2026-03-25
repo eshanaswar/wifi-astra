@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Private Network Scan"
+# CATEGORY="C"
+# DEPS="none"
+# CRITICAL="yes"
+# TOOLS="nmap,masscan,nbtscan,fping"
+# DESC="Scan RFC1918 ranges for reachable corporate hosts from target WiFi"
+# REQS="managed_iface,gateway_ip"
+# PCAP="no"
+# DECODE="none"
+
 #===============================================================================
 #  modules/c2_private_network_scan.sh
 #  C2: Private Network Scan ★CRITICAL★
@@ -32,7 +43,7 @@
 #  RESULT JSON FIELDS:
 #    - total_hosts_reachable: count
 #    - hosts_outside_target_subnet: count
-#    - live_hosts[]: array of {${TOOL_PATHS[ip]}, ports[], services[], netbios_name}
+#    - live_hosts[]: array of {run_tool ip, ports[], services[], netbios_name}
 #    - segmentation_bypass: bool — can reach hosts outside target VLAN?
 #    - ranges_scanned: which RFC1918 ranges were tested
 #===============================================================================
@@ -61,10 +72,10 @@ run_c2() {
     fi
 
     if [[ -z "${MY_IP:-}" ]]; then
-        MY_IP=$(${TOOL_PATHS[ip]} -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | head -1)
+        MY_IP=$(run_tool ip -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | head -1)
     fi
     if [[ -z "${GATEWAY_IP:-}" ]]; then
-        GATEWAY_IP=$(${TOOL_PATHS[ip]} route 2>/dev/null | awk '/default/{print $3}' | head -1)
+        GATEWAY_IP=$(run_tool ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
     fi
 
     local our_subnet
@@ -209,9 +220,9 @@ run_c2() {
         fi
         local hosts_found
         hosts_found=$(_parse_scan_results "$parse_file" "$has_masscan")
-        live_hosts=$(echo "$live_hosts" | ${TOOL_PATHS[jq]} --argjson new "$hosts_found" '. + $new')
+        live_hosts=$(echo "$live_hosts" | run_tool jq --argjson new "$hosts_found" '. + $new')
         local range_count
-        range_count=$(echo "$hosts_found" | ${TOOL_PATHS[jq]} 'length')
+        range_count=$(echo "$hosts_found" | run_tool jq 'length')
         log_info "Hosts found in ${target_range}: ${range_count}"
 
         check_abort || return 1
@@ -223,21 +234,21 @@ run_c2() {
     update_tc_progress $step_num $total_steps "Classifying"
 
     # Deduplicate by IP
-    live_hosts=$(echo "$live_hosts" | ${TOOL_PATHS[jq]} '[group_by(.ip)[] | .[0]]')
+    live_hosts=$(echo "$live_hosts" | run_tool jq '[group_by(.ip)[] | .[0]]')
 
     local total_hosts
-    total_hosts=$(echo "$live_hosts" | ${TOOL_PATHS[jq]} 'length')
+    total_hosts=$(echo "$live_hosts" | run_tool jq 'length')
 
     # Separate into target subnet vs outside
     local outside_hosts
-    outside_hosts=$(echo "$live_hosts" | ${TOOL_PATHS[jq]} --arg subnet "$our_subnet_base" '[.[] | select(.ip | startswith($subnet) | not)]')
+    outside_hosts=$(echo "$live_hosts" | run_tool jq --arg subnet "$our_subnet_base" '[.[] | select(.ip | startswith($subnet) | not)]')
     local outside_count
-    outside_count=$(echo "$outside_hosts" | ${TOOL_PATHS[jq]} 'length')
+    outside_count=$(echo "$outside_hosts" | run_tool jq 'length')
 
     local target_hosts
-    target_hosts=$(echo "$live_hosts" | ${TOOL_PATHS[jq]} --arg subnet "$our_subnet_base" '[.[] | select(.ip | startswith($subnet))]')
+    target_hosts=$(echo "$live_hosts" | run_tool jq --arg subnet "$our_subnet_base" '[.[] | select(.ip | startswith($subnet))]')
     local target_count
-    target_count=$(echo "$target_hosts" | ${TOOL_PATHS[jq]} 'length')
+    target_count=$(echo "$target_hosts" | run_tool jq 'length')
 
     log_info "Total live hosts: ${total_hosts}"
     log_info "  On target subnet (${our_subnet}): ${target_count}"
@@ -257,10 +268,10 @@ run_c2() {
         echo "============================================================"
         echo ""
         echo "--- Outside target subnet (SEGMENTATION BYPASS) ---"
-        echo "$outside_hosts" | ${TOOL_PATHS[jq]} -r '.[] | "  \(.ip) (port: \(.port // "ping"))"'
+        echo "$outside_hosts" | run_tool jq -r '.[] | "  \(.ip) (port: \(.port // "ping"))"'
         echo ""
         echo "--- On target subnet (Expected) ---"
-        echo "$target_hosts" | ${TOOL_PATHS[jq]} -r '.[] | "  \(.ip) (port: \(.port // "ping"))"'
+        echo "$target_hosts" | run_tool jq -r '.[] | "  \(.ip) (port: \(.port // "ping"))"'
     } > "$live_hosts_file"
 
     ((step_num++))
@@ -275,13 +286,12 @@ run_c2() {
     if [[ $outside_count -gt 0 ]]; then
         # Get unique IPs of outside hosts (max 50 to avoid excessive scanning)
         local outside_ips
-        local outside_ips=$(echo "$outside_hosts" | ${TOOL_PATHS[jq]} -r '.[0:50] | .[].ip' | sort -u)
+        local outside_ips=$(echo "$outside_hosts" | run_tool jq -r '.[0:50] | .[].ip' | sort -u)
         local ip_list
         local ip_list=$(echo "$outside_ips" | paste -sd' ' -)
 
         log_cmd "${TOOL_PATHS[nmap]} -sT -sV --top-ports 100 ${NMAP_TIMING} ${ip_list}"
-        run_with_spinner "${TOOL_PATHS[nmap]} -sT -sV --top-ports 100 ${NMAP_TIMING} ${ip_list} -oA ${port_scan_file%.nmap}" \
-            "Detailed port scan of ${outside_count} reachable host(s)"
+        run_with_spinner "Detailed port scan of ${outside_count} reachable host(s)" "${TOOL_PATHS[nmap]}" -sT -sV --top-ports 100 $NMAP_TIMING $ip_list -oA "${port_scan_file%.nmap}"
 
         # Parse ${TOOL_PATHS[nmap]} results
         local current_host=""
@@ -291,7 +301,7 @@ run_c2() {
             if [[ "$line" =~ "Nmap scan report for" ]]; then
                 # Save previous host
                 if [[ -n "$current_host" ]]; then
-                    detailed_hosts=$(echo "$detailed_hosts" | ${TOOL_PATHS[jq]} \
+                    detailed_hosts=$(echo "$detailed_hosts" | run_tool jq \
                         --arg ip "$current_host" \
                         --argjson ports "$current_ports" \
                         '. += [{ip: $c_ip, ports: $ports}]')
@@ -304,7 +314,7 @@ run_c2() {
                 local service=$(echo "$line" | awk '{print $3}')
                 local version=$(echo "$line" | awk '{for(i=4;i<=NF;i++) printf "%s ", $i; print ""}' | xargs)
 
-                current_ports=$(echo "$current_ports" | ${TOOL_PATHS[jq]} \
+                current_ports=$(echo "$current_ports" | run_tool jq \
                     --arg port "$port" \
                     --arg service "$service" \
                     --arg version "$version" \
@@ -316,7 +326,7 @@ run_c2() {
 
         # Save last host
         if [[ -n "$current_host" ]]; then
-            detailed_hosts=$(echo "$detailed_hosts" | ${TOOL_PATHS[jq]} \
+            detailed_hosts=$(echo "$detailed_hosts" | run_tool jq \
                 --arg ip "$current_host" \
                 --argjson ports "$current_ports" \
                 '. += [{ip: $c_ip, ports: $ports}]')
@@ -335,7 +345,7 @@ run_c2() {
 
     if [[ $outside_count -gt 0 ]] && command -v nbtscan &>/dev/null; then
         local outside_ips_space
-        outside_ips_space=$(echo "$outside_hosts" | ${TOOL_PATHS[jq]} -r '.[0:50] | .[].ip' | sort -u)
+        outside_ips_space=$(echo "$outside_hosts" | run_tool jq -r '.[0:50] | .[].ip' | sort -u)
 
         log_cmd "${TOOL_PATHS[nbtscan]} on ${outside_count} hosts"
         {
@@ -356,7 +366,7 @@ run_c2() {
                 if [[ -n "$nbt_name" ]]; then
                     log_result "CRITICAL" "NetBIOS name: ${c_ip} = ${nbt_name}"
                     # Update detailed_hosts with netbios info
-                    detailed_hosts=$(echo "$detailed_hosts" | ${TOOL_PATHS[jq]} \
+                    detailed_hosts=$(echo "$detailed_hosts" | run_tool jq \
                         --arg ip "$c_ip" \
                         --arg name "$nbt_name" \
                         '[.[] | if .ip == $c_ip then .netbios_name = $name else . end]')
@@ -403,7 +413,7 @@ run_c2() {
     evidence_register_file "c2_port_scan.nmap"
     evidence_register_file "c2_netbios_scan.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Total: ${total_hosts}, target subnet: ${target_count}, Outside: ${outside_count}" \
@@ -427,7 +437,7 @@ run_c2() {
             live_hosts: $live_hosts,
                     }')
 
-    save_tc_result "C2" "$result_json"
+    save_tc_result "C2" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""
@@ -435,7 +445,7 @@ run_c2() {
         log_result "CRITICAL" "★ SEGMENTATION BYPASS: ${outside_count} internal host(s) reachable from target WiFi"
         echo ""
         echo -e "  ${C_RED}${C_BOLD}  Reachable internal hosts:${C_RESET}"
-        echo "$detailed_hosts" | ${TOOL_PATHS[jq]} -r '.[] | "    \(.ip) — Ports: \(.ports | map(.port + "/" + .service) | join(", ")) \(if .netbios_name then "(" + .netbios_name + ")" else "" end)"'
+        echo "$detailed_hosts" | run_tool jq -r '.[] | "    \(.ip) — Ports: \(.ports | map(.port + "/" + .service) | join(", ")) \(if .netbios_name then "(" + .netbios_name + ")" else "" end)"'
     else
         log_result "SECURE" "Network segmentation effective — no internal hosts reachable from target WiFi"
     fi
@@ -453,11 +463,11 @@ _parse_scan_results() {
 
     if [[ "$is_masscan" == "true" ]]; then
         # Masscan list format: open tcp PORT IP TIMESTAMP
-        while IFS=' ' read -r status proto port ${TOOL_PATHS[ip]} timestamp; do
+        while IFS=' ' read -r status proto port run_tool ip timestamp; do
             [[ "$status" != "open" ]] && continue
             [[ -z "$c_ip" ]] && continue
 
-            result=$(echo "$result" | ${TOOL_PATHS[jq]} \
+            result=$(echo "$result" | run_tool jq \
                 --arg ip "$c_ip" \
                 --arg port "$port" \
                 --arg proto "$proto" \
@@ -468,10 +478,10 @@ _parse_scan_results() {
         while IFS= read -r line; do
             if [[ "$line" =~ "Status: Up" ]] || [[ "$line" =~ "Ports:" ]]; then
                 local c_ip
-                ${TOOL_PATHS[ip]}=$(echo "$line" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+                run_tool ip=$(echo "$line" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
                 [[ -z "$c_ip" ]] && continue
 
-                result=$(echo "$result" | ${TOOL_PATHS[jq]} --arg ip "$c_ip" '. += [{ip: $c_ip, port: "ping", proto: "icmp"}]')
+                result=$(echo "$result" | run_tool jq --arg ip "$c_ip" '. += [{ip: $c_ip, port: "ping", proto: "icmp"}]')
             fi
         done < "$file"
     fi

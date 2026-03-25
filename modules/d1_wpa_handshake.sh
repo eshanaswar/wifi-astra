@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="WPA Handshake & PMKID Capture"
+# CATEGORY="D"
+# DEPS="A1"
+# CRITICAL="yes"
+# TOOLS="aireplay-ng,aircrack-ng,hcxdumptool,hcxpcapngtool"
+# DESC="Capture WPA PMKID and 4-way handshakes, test PSK strength"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/d1_wpa_handshake.sh
 #  D1: WPA Handshake & PMKID Capture
@@ -122,13 +133,13 @@ run_d1() {
 
     if [[ "$has_hcxdumptool" == "true" ]]; then
         # Create filter file for target BSSID
-        local filterlist="/tmp/d1_filter.txt"
+        local filterlist="$TMP_DIR/d1_filter.txt"
         echo "${GUEST_BSSID}" | tr -d ':' | tr '[:upper:]' '[:lower:]' > "$filterlist"
 
         log_cmd "${TOOL_PATHS[hcxdumptool]} -i ${mon_iface} --filterlist_ap=${filterlist} --filtermode=2 -o ${hcx_pcapng}"
 
         start_countdown "$PMKID_CAPTURE_TIME" "Capturing PMKID and handshakes with ${TOOL_PATHS[hcxdumptool]}"
-        run_attack_tool --timeout "$PMKID_CAPTURE_TIME" --cmd "${TOOL_PATHS[hcxdumptool]} -i \"$mon_iface\" --filterlist_ap=\"$filterlist\" --filtermode=2 --enable_status=1 -o \"$hcx_pcapng\""
+        timeout "$PMKID_CAPTURE_TIME" "${TOOL_PATHS[hcxdumptool]}" -i "$mon_iface" --filterlist_ap="$filterlist" --filtermode=2 --enable_status=1 -o "$hcx_pcapng" >/dev/null 2>&1 || true
         stop_countdown
 
         rm -f "$filterlist"
@@ -136,8 +147,9 @@ run_d1() {
         # Convert to hashcat format
         if [[ -f "$hcx_pcapng" && -s "$hcx_pcapng" ]] && [[ "$has_hcxpcapngtool" == "true" ]]; then
             log_info "Converting capture to hashcat 22000 format..."
+            ensure_user_ownership "$hcx_pcapng"
             local hcx_output
-            hcx_output=$(${TOOL_PATHS[hcxpcapngtool]} -o "$hash_file" "$hcx_pcapng" 2>&1 || true)
+            hcx_output=$(run_as_user hcxpcapngtool -o "$hash_file" "$hcx_pcapng" 2>&1 || true)
 
             echo "${TOOL_PATHS[hcxpcapngtool]} output:" >> "$findings_file"
             echo "$hcx_output" >> "$findings_file"
@@ -355,7 +367,7 @@ run_d1() {
     evidence_files+="]"
 
     local result_json
-    result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "PMKID: ${pmkid_captured}, Handshake: ${handshake_captured}, Cracked: ${psk_cracked}" \
@@ -379,7 +391,12 @@ run_d1() {
             evidence_files: $evidence_files
         }')
 
-    save_tc_result "D1" "$result_json"
+    local has_primary=0
+    [[ "$pmkid_captured" == "true" || "$handshake_captured" == "true" ]] && has_primary=1
+
+    local clean_run=1
+
+    save_tc_result "D1" "$result_json" 1 1 $has_primary 1 1 1 0 1 1 $clean_run 0
 
     # Display summary
     echo ""

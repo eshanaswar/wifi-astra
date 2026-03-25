@@ -33,31 +33,26 @@ WiFi-Astra is a comprehensive, modular Bash framework designed for end-to-end wi
 
 ---
 
-## 🛠️ Quick Start
+## 🚀 Quick Start
 
 ### 1. Installation
-The toolkit requires a Kali Linux or Debian-based environment with root privileges.
+The toolkit is designed for **Kali Linux**.
 ```bash
 sudo ./install.sh
 ```
 
-### 2. Launch
+### 2. Documentation
+- 📖 **[User Guide](docs/USER_GUIDE.md)**: Full workflow and report interpretation.
+- 🛠️ **[Developer Guide](docs/DEVELOPER_GUIDE.md)**: Library API and module creation.
+
+### 3. Launch
 Start the interactive framework launcher:
 ```bash
 sudo wifi-astra
-# OR
-sudo ./wifi-astra.sh
 ```
 
-### 3. Workflow
-1.  **Run A1**: Perform an initial scan to identify surrounding networks.
-2.  **Select Target**: Use the `[T] Select Target` option in any attack module to pull details from the A1 scan.
-3.  **Execute & Pivot**: Move through categories (B-G) to validate specific vulnerabilities.
-4.  **Generate Report**: Use `[R]` in the main menu to compile all evidence into a final report.
-
----
-
 ## 🛡️ Safety & Reliability
-*   **Process Tracking**: All background tools (tcpdump, hostapd, yersinia) are tracked via PID.
-*   **Safe Abort**: Press `Ctrl+\` to abort a single test case safely, or `Ctrl+C` to terminate the entire session and restore network interfaces.
-*   **Dependency Management**: Modules perform pre-flight checks to ensure all required binary tools are installed.
+- **Process Tracking**: All background tools are tracked via a centralized PID registry.
+- **Reliable Cleanup**: Automatic interface scrubbing and service restoration on exit.
+- **Data Integrity**: Atomic writes and rolling backups for all session data.
+- **Professional Reporting**: Standardized findings with automated confidence scoring.

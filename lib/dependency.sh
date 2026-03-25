@@ -177,7 +177,13 @@ handle_dependencies() {
     echo -e "${C_YELLOW}└─────────────────────────────────────────────────────────────────┘${C_RESET}"
     echo ""
     
-    read -rep "  Proceed? [Y/n]: " proceed
+    local proceed="y"
+    if [[ "${HEADLESS_MODE:-0}" == "0" ]]; then
+        safe_read "Proceed? [Y/n]: " proceed
+    else
+        log_info "Headless mode: Auto-proceeding with dependency resolution."
+    fi
+
     if [[ "${proceed,,}" == "n" ]]; then
         log_info "User cancelled dependency auto-run for ${tc_id}"
         return 1

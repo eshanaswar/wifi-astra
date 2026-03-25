@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Internal DNS Resolution"
+# CATEGORY="C"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="dig,nslookup"
+# DESC="Test if target WiFi DNS resolves internal hostnames"
+# REQS="managed_iface,dns_server"
+# PCAP="no"
+# DECODE="none"
+
 #===============================================================================
 #  modules/c1_dns_resolution.sh
 #  C1: Internal DNS Resolution
@@ -28,7 +39,7 @@
 #  RESULT JSON FIELDS:
 #    - dns_server: IP of DNS server assigned to guest
 #    - internal_resolves: bool — can resolve internal names?
-#    - resolved_hostnames[]: array of {hostname, ${TOOL_PATHS[ip]}, type}
+#    - resolved_hostnames[]: array of {hostname, run_tool ip, type}
 #    - zone_transfer_possible: bool
 #    - dns_is_internal: bool — is DNS server on RFC1918?
 #===============================================================================
@@ -269,7 +280,7 @@ run_c1() {
 
             echo "  ${hostname} → ${result}" >> "$resolution_file"
 
-            resolved_hostnames=$(echo "$resolved_hostnames" | ${TOOL_PATHS[jq]} \
+            resolved_hostnames=$(echo "$resolved_hostnames" | run_tool jq \
                 --arg hostname "$hostname" \
                 --arg ip "$result" \
                 --arg type "A" \
@@ -301,7 +312,7 @@ run_c1() {
 
                 echo "  ${fqdn} → ${result}" >> "$resolution_file"
 
-                resolved_hostnames=$(echo "$resolved_hostnames" | ${TOOL_PATHS[jq]} \
+                resolved_hostnames=$(echo "$resolved_hostnames" | run_tool jq \
                     --arg hostname "$fqdn" \
                     --arg ip "$result" \
                     --arg type "A" \
@@ -373,7 +384,7 @@ run_c1() {
                 local zt_name=$(echo "$zt_line" | awk '{print $1}')
                 local zt_ip=$(echo "$zt_line" | awk '/IN\s+A\s/{print $NF}')
                 if [[ -n "$zt_ip" ]] && [[ "$zt_ip" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.) ]]; then
-                    resolved_hostnames=$(echo "$resolved_hostnames" | ${TOOL_PATHS[jq]} \
+                    resolved_hostnames=$(echo "$resolved_hostnames" | run_tool jq \
                         --arg hostname "$zt_name" \
                         --arg ip "$zt_ip" \
                         --arg type "AXFR" \
@@ -427,7 +438,7 @@ run_c1() {
                 log_result "FINDING" "Reverse DNS: ${test_ip} → ${ptr_result}"
                 echo "  ${test_ip} → ${ptr_result}" >> "$reverse_file"
 
-                resolved_hostnames=$(echo "$resolved_hostnames" | ${TOOL_PATHS[jq]} \
+                resolved_hostnames=$(echo "$resolved_hostnames" | run_tool jq \
                     --arg hostname "$ptr_result" \
                     --arg ip "$test_ip" \
                     --arg type "PTR" \
@@ -496,7 +507,7 @@ run_c1() {
     update_tc_progress 7 $total_steps "Saving"
 
     local total_resolved
-    total_resolved=$(echo "$resolved_hostnames" | ${TOOL_PATHS[jq]} 'length')
+    total_resolved=$(echo "$resolved_hostnames" | run_tool jq 'length')
 
     local result_status="SECURE"
     local result_summary=""
@@ -519,7 +530,7 @@ run_c1() {
     evidence_register_file "c1_zone_transfer.txt"
     evidence_register_file "c1_reverse_dns.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "DNS: ${DNS_SERVER}, Internal resolves: ${internal_resolves}, Zone xfer: ${zone_transfer_possible}, Entries: ${total_resolved}" \
@@ -549,7 +560,7 @@ run_c1() {
             resolved_hostnames: $resolved_hostnames,
                     }')
 
-    save_tc_result "C1" "$result_json"
+    save_tc_result "C1" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""

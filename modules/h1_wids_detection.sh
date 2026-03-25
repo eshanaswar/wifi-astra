@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="WIDS/WIPS Detection"
+# CATEGORY="H"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="aireplay-ng,tcpdump,tshark,mdk4"
+# DESC="Test if infrastructure detects deauth, fake AP, and auth flood attacks"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel,injection_required"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/h1_wids_detection.sh
 #  H1: WIDS/WIPS Detection Testing
@@ -136,7 +147,8 @@ run_h1() {
 
         local new_deauths=0
         if command -v tshark &>/dev/null && [[ -f "$tmp_pcap" ]]; then
-            local new_deauths=$(${TOOL_PATHS[tshark]} -r "$tmp_pcap" -n -q -Y "wlan.fc.type_subtype == 0x0c" 2>/dev/null | wc -l) || true
+            ensure_user_ownership "$tmp_pcap"
+            local new_deauths=$(run_as_user tshark -r "$tmp_pcap" -n -q -Y "wlan.fc.type_subtype == 0x0c" 2>/dev/null | wc -l) || true
         fi
         local new_deauths=${new_deauths:-0}
         rm -f "$tmp_pcap"
@@ -336,7 +348,7 @@ run_h1() {
     evidence_register_file "h1_response_capture.pcap"
     evidence_register_file "h1_findings.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Detected: deauth=${deauth_detected}, fake_ap=${fake_ap_detected}, auth_flood=${auth_flood_detected}. WIDS=${wids_present}, WIPS=${wips_active}" \
@@ -362,7 +374,7 @@ run_h1() {
             detection_count: $detection_count,
                     }')
 
-    save_tc_result "H1" "$result_json"
+    save_tc_result "H1" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""

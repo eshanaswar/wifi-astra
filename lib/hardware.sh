@@ -3,6 +3,90 @@
 #  lib/hardware.sh — Universal Hardware Analysis
 #===============================================================================
 
+set -uo pipefail
+
+validate_injection() {
+    local iface="$1"
+    [[ -z "$iface" ]] && return 1
+
+    log_step 1 1 "Testing Packet Injection on ${iface}"
+    
+    # 1. Verify Mode First
+    local type=$(iw dev "$iface" info 2>/dev/null | awk '/type/{print $2}')
+    if [[ "$type" != "monitor" ]]; then
+        log_error "Interface ${iface} is not in monitor mode (current: ${type})."
+        log_info "Attempting to force monitor mode..."
+        if ! enable_monitor_mode; then
+            log_error "Failed to switch to monitor mode. Injection test aborted."
+            return 1
+        fi
+        # Re-check iface name as it might have changed (e.g. wlan0 -> wlan0mon)
+        iface="${MONITOR_INTERFACE:-$iface}"
+    fi
+
+    echo -e "  ${C_GRAY}Tuning to various channels and sending probe requests...${C_RESET}"
+    echo -e "  ${C_GRAY}This may take up to 30 seconds.${C_RESET}"
+    echo ""
+    
+    # Resolve tool path
+    local aireplay_path="${TOOL_PATHS[aireplay-ng]:-}"
+    if [[ -z "$aireplay_path" ]]; then
+        aireplay_path=$(command -v aireplay-ng)
+    fi
+
+    if [[ -z "$aireplay_path" ]] || [[ ! -x "$aireplay_path" ]]; then
+        log_error "aireplay-ng not found or not executable."
+        return 1
+    fi
+
+    # Create a temporary file to capture output for parsing while still showing it to the user
+    local tmp_out
+    tmp_out=$(mktemp)
+
+    # Run aireplay-ng --test and pipe to both console and temp file
+    # We use a 45s timeout to give the driver enough time to cycle channels
+    ( timeout 45s "$aireplay_path" --test "$iface" 2>&1 | tee "$tmp_out" ) || true
+    
+    local output
+    output=$(cat "$tmp_out")
+    rm -f "$tmp_out"
+    echo ""
+
+    # Parse for "Injection is working!"
+    if echo "$output" | grep -q "Injection is working!"; then
+        local percentage
+        percentage=$(echo "$output" | grep -oP "[0-9]+(?=%)" | head -1)
+        
+        log_success "Packet Injection is working on ${iface}!"
+        [[ -n "$percentage" ]] && log_info "Success Rate: ${percentage}%"
+        
+        # Threshold check
+        if [[ -n "$percentage" ]] && [[ "$percentage" -lt 50 ]]; then
+            log_warn "Injection success rate is low (${percentage}%)."
+            local force_choice="n"
+            safe_read "Minimum 50% recommended. Proceed anyway? [y/N]" force_choice "n"
+            [[ "${force_choice,,}" == "y" ]] || return 1
+        fi
+        return 0
+    else
+        log_critical "Packet Injection test FAILED on ${iface}."
+        echo -e "${C_YELLOW}  Possible causes:${C_RESET}"
+        echo -e "  1. No active Access Points nearby to respond to probes."
+        echo -e "  2. Wireless card driver does not support packet injection."
+        echo -e "  3. Interface is not properly in monitor mode."
+        echo ""
+        
+        local force_fail="n"
+        safe_read "Do you want to ignore this failure and FORCE active testing? [y/N]" force_fail "n"
+        if [[ "${force_fail,,}" == "y" ]]; then
+            log_warn "User forced injection mode. Expect potential tool failures."
+            HW_CAN_INJECT="yes"
+            return 0
+        fi
+        return 1
+    fi
+}
+
 check_hardware_capabilities() {
     local iface="${WIFI_INTERFACE:-}"
     [[ -z "$iface" ]] && return 0

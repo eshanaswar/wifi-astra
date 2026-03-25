@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="mDNS/Bonjour Information Leaks"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="tcpdump,tshark,avahi-browse"
+# DESC="Detect mDNS/Bonjour service announcements from corporate devices"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="dns"
+
 #===============================================================================
 #  modules/b4_mdns_leaks.sh
 #  B4: mDNS/Bonjour Information Leaks
@@ -20,7 +31,7 @@
 #  RESULT JSON FIELDS:
 #    - mdns_services_found: count
 #    - ssdp_devices_found: count
-#    - services[]: array of {name, type, host, ${TOOL_PATHS[ip]}, port}
+#    - services[]: array of {name, type, host, run_tool ip, port}
 #    - corporate_services_leaked: bool
 #===============================================================================
 
@@ -110,8 +121,9 @@ run_b4() {
 
     # Parse from ${TOOL_PATHS[tshark]}
     if [[ -f "$capture_file" ]]; then
+        ensure_user_ownership "$capture_file"
         local mdns_data
-        local mdns_data=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
+        local mdns_data=$(run_as_user tshark -r "$capture_file" \
             -Y "mdns && dns.resp.type == 33" \
             -T fields \
             -e ip.src \
@@ -135,7 +147,7 @@ run_b4() {
             echo "    Port: ${srv_port}" >> "$services_file"
             echo "" >> "$services_file"
 
-            services_json=$(echo "$services_json" | ${TOOL_PATHS[jq]} \
+            services_json=$(echo "$services_json" | run_tool jq \
                 --arg name "$srv_name" \
                 --arg host "$srv_target" \
                 --arg ip "${src_ip:-unknown}" \
@@ -147,7 +159,7 @@ run_b4() {
 
         # Also extract PTR records (service types)
         local ptr_data
-        local ptr_data=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
+        local ptr_data=$(run_as_user tshark -r "$capture_file" \
             -Y "mdns && dns.resp.type == 12" \
             -T fields \
             -e ip.src \
@@ -161,7 +173,7 @@ run_b4() {
 
             # Skip if already counted (avoid duplicates)
             local already_counted
-            local already_counted=$(echo "$services_json" | ${TOOL_PATHS[jq]} --arg n "$ptr_domain" '[.[] | select(.name == $n)] | length')
+            local already_counted=$(echo "$services_json" | run_tool jq --arg n "$ptr_domain" '[.[] | select(.name == $n)] | length')
             [[ $already_counted -gt 0 ]] && continue
 
             ((mdns_count++))
@@ -171,7 +183,7 @@ run_b4() {
             echo "    Source IP: ${src_ip}" >> "$services_file"
             echo "" >> "$services_file"
 
-            services_json=$(echo "$services_json" | ${TOOL_PATHS[jq]} \
+            services_json=$(echo "$services_json" | run_tool jq \
                 --arg name "$ptr_domain" \
                 --arg host "unknown" \
                 --arg ip "${src_ip:-unknown}" \
@@ -184,18 +196,18 @@ run_b4() {
 
     # Parse ${TOOL_PATHS[avahi-browse]} results
     if [[ -f "$avahi_file" && -s "$avahi_file" ]]; then
-        while IFS=';' read -r event iface ipver service_name service_type domain hostname ${TOOL_PATHS[ip]} port txt; do
+        while IFS=';' read -r event iface ipver service_name service_type domain hostname run_tool ip port txt; do
             [[ "$event" != "=" ]] && continue
             [[ -z "$service_name" ]] && continue
 
             # Check if not already in list
             local already
-            local already=$(echo "$services_json" | ${TOOL_PATHS[jq]} --arg n "$service_name" '[.[] | select(.name == $n)] | length')
+            local already=$(echo "$services_json" | run_tool jq --arg n "$service_name" '[.[] | select(.name == $n)] | length')
             [[ $already -gt 0 ]] && continue
 
             ((mdns_count++))
 
-            services_json=$(echo "$services_json" | ${TOOL_PATHS[jq]} \
+            services_json=$(echo "$services_json" | run_tool jq \
                 --arg name "$service_name" \
                 --arg host "${hostname:-unknown}" \
                 --arg ip "${c_ip:-unknown}" \
@@ -227,7 +239,7 @@ run_b4() {
 
     if [[ -f "$capture_file" ]]; then
         local ssdp_data
-        local ssdp_data=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
+        local ssdp_data=$(run_as_user tshark -r "$capture_file" \
             -Y "ssdp" \
             -T fields \
             -e ip.src \
@@ -249,7 +261,7 @@ run_b4() {
             echo "    Location: ${location:-unknown}" >> "$ssdp_file"
             echo "" >> "$ssdp_file"
 
-            services_json=$(echo "$services_json" | ${TOOL_PATHS[jq]} \
+            services_json=$(echo "$services_json" | run_tool jq \
                 --arg name "SSDP: ${server:-unknown}" \
                 --arg host "${src_ip}" \
                 --arg ip "$src_ip" \
@@ -293,21 +305,21 @@ run_b4() {
         "_ftp._tcp"            # FTP servers
     )
 
-    # Use index-based ${TOOL_PATHS[jq]} iteration to avoid shell word-splitting issues with ${TOOL_PATHS[jq]} -c output
+    # Use index-based run_tool jq iteration to avoid shell word-splitting issues with run_tool jq -c output
     local svc_count
-    svc_count=$(echo "$services_json" | ${TOOL_PATHS[jq]} 'length')
+    svc_count=$(echo "$services_json" | run_tool jq 'length')
     
     for (( si=0; si < svc_count; si++ )); do
         local svc_name svc_type
-        local svc_name=$(echo "$services_json" | ${TOOL_PATHS[jq]} -r ".[$si].name // \"\"")
-        local svc_type=$(echo "$services_json" | ${TOOL_PATHS[jq]} -r ".[$si].service_type // \"\"")
+        local svc_name=$(echo "$services_json" | run_tool jq -r ".[$si].name // \"\"")
+        local svc_type=$(echo "$services_json" | run_tool jq -r ".[$si].service_type // \"\"")
 
         for pattern in "${corp_patterns[@]}"; do
             if echo "${svc_name}${svc_type}" | grep -qi "$pattern"; then
                 local corporate_leak="true"
                 local svc_entry
-                local svc_entry=$(echo "$services_json" | ${TOOL_PATHS[jq]} ".[$si]")
-                sensitive_services=$(echo "$sensitive_services" | ${TOOL_PATHS[jq]} --argjson svc "$svc_entry" '. += [$svc]')
+                local svc_entry=$(echo "$services_json" | run_tool jq ".[$si]")
+                sensitive_services=$(echo "$sensitive_services" | run_tool jq --argjson svc "$svc_entry" '. += [$svc]')
                 log_result "FINDING" "Corporate service leaked: ${svc_name} (${svc_type})"
                 break
             fi
@@ -315,7 +327,7 @@ run_b4() {
     done
 
     local sensitive_count
-    sensitive_count=$(echo "$sensitive_services" | ${TOOL_PATHS[jq]} 'length')
+    sensitive_count=$(echo "$sensitive_services" | run_tool jq 'length')
 
     #--- Step 6: Save results ---
     log_step 6 $total_steps "Saving results"
@@ -347,7 +359,7 @@ run_b4() {
     evidence_register_file "b4_mdns_services.txt"
     evidence_register_file "b4_ssdp_devices.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "mDNS services: ${mdns_count}, SSDP devices: ${ssdp_count}, Sensitive leaks: ${sensitive_count}" \
@@ -369,7 +381,7 @@ run_b4() {
             corporate_services_leaked: ($corporate_services_leaked == "true"),
                     }')
 
-    save_tc_result "B4" "$result_json"
+    save_tc_result "B4" "$result_json" "has_tool_output:1,clean_run:1"
 
     # Display summary
     echo ""

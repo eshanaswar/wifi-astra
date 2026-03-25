@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="Broadcast & Multicast Leaks"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="tcpdump,tshark"
+# DESC="Analyze UDP traffic for SSDP/LLMNR/NetBIOS storms bleeding from corporate"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="l2_discovery"
+
 #===============================================================================
 #  modules/b8_broadcast_leaks.sh
 #  B8: Broadcast & Multicast Leaks
@@ -60,9 +71,9 @@ run_b8() {
     local bcast_filter="udp port 1900 or udp port 5355 or udp port 5353 or udp port 137 or udp port 138"
     log_cmd "${TOOL_PATHS[tcpdump]} -i ${iface} -nn '${bcast_filter}' -w ${pcap_file}"
 
-    # Run ${TOOL_PATHS[tcpdump]} via run_attack_tool
+    # Run ${TOOL_PATHS[tcpdump]}
     start_countdown "$capture_time" "Analyzing broadcast/multicast leaks"
-    run_attack_tool --timeout "$capture_time" --cmd "${TOOL_PATHS[tcpdump]} -i \"${iface}\" -nn '${bcast_filter}' -w \"${pcap_file}\""
+    timeout "$capture_time" "${TOOL_PATHS[tcpdump]}" -i "$iface" -nn -w "$pcap_file" udp port 1900 or udp port 5355 or udp port 5353 or udp port 137 or udp port 138 >/dev/null 2>&1 || true
     stop_countdown
     
     check_abort || return 1
@@ -88,10 +99,11 @@ run_b8() {
     local summary="No significant broadcast/multicast leakage from corporate VLANs."
 
     if [[ -f "$pcap_file" && -s "$pcap_file" ]]; then
-        ssdp_count=$(${TOOL_PATHS[tshark]} -r "$pcap_file" -Y "udp.port == 1900" 2>/dev/null | wc -l)
-        llmnr_count=$(${TOOL_PATHS[tshark]} -r "$pcap_file" -Y "udp.port == 5355" 2>/dev/null | wc -l)
-        mdns_count=$(${TOOL_PATHS[tshark]} -r "$pcap_file" -Y "udp.port == 5353" 2>/dev/null | wc -l)
-        nbtns_count=$(${TOOL_PATHS[tshark]} -r "$pcap_file" -Y "udp.port == 137 or udp.port == 138" 2>/dev/null | wc -l)
+        ensure_user_ownership "$pcap_file"
+        ssdp_count=$(run_as_user tshark -r "$pcap_file" -Y "udp.port == 1900" 2>/dev/null | wc -l)
+        llmnr_count=$(run_as_user tshark -r "$pcap_file" -Y "udp.port == 5355" 2>/dev/null | wc -l)
+        mdns_count=$(run_as_user tshark -r "$pcap_file" -Y "udp.port == 5353" 2>/dev/null | wc -l)
+        nbtns_count=$(run_as_user tshark -r "$pcap_file" -Y "udp.port == 137 or udp.port == 138" 2>/dev/null | wc -l)
         
         total_leaks=$((ssdp_count + llmnr_count + mdns_count + nbtns_count))
         
@@ -106,10 +118,12 @@ run_b8() {
             echo "  LLMNR (5355):   ${llmnr_count}"
             echo "  mDNS (5353):    ${mdns_count}"
             echo "  NetBIOS (137):  ${nbtns_count}"
-            echo "  TOTAL LEAKS:    ${total_leaks}"
+            echo "TOTAL LEAKS:    ${total_leaks}"
             echo ""
             echo "TOP SOURCES:"
-            ${TOOL_PATHS[tshark]} -r "$pcap_file" -T fields -e ip.src 2>/dev/null | sort | uniq -c | sort -rn | head -10
+            ensure_user_ownership "$pcap_file"
+            run_as_user tshark -r "$pcap_file" -T fields -e ip.src 2>/dev/null | sort | uniq -c | sort -rn | head -10
+
         } > "$analysis_file"
 
         if [[ $total_leaks -gt 50 ]]; then
@@ -133,7 +147,7 @@ run_b8() {
     evidence_register_file "$pcap"
     evidence_register_file "$txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$status" \
         --arg summary "$summary" \
         --argjson ssdp "$ssdp_count" \
@@ -151,6 +165,6 @@ run_b8() {
             recommendations: (if $status == "FINDING" then "Enable broadcast/multicast suppression on the WLC/AP. Ensure VLAN isolation is strictly enforced at Layer 2." else "No action required." end),
                     }')
 
-    save_tc_result "B8" "$result_json"
+    save_tc_result "B8" "$result_json" "has_tool_output:1,clean_run:1"
     return 0
 }

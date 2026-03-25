@@ -6,11 +6,13 @@
 #           saving/loading state, session resume
 #===============================================================================
 
+set -uo pipefail
+
 #--- Initialize a new session ---
 init_new_session() {
     # Ask for a session name
     echo ""
-    read -rep "  Enter a name for this session (or Enter for default): " session_name
+    safe_read "Enter a name for this session (or Enter for default): " session_name
     session_name=$(echo "$session_name" | tr -cs '[:alnum:]-_' '_' | sed 's/^_//;s/_$//')
     
     if [[ -n "$session_name" ]]; then
@@ -21,7 +23,8 @@ init_new_session() {
     
     export SESSION_NAME="${session_name:-Unnamed}"
     SESSION_DIR="${EVIDENCE_BASE}/${SESSION_ID}"
-    SESSION_STATE_FILE="${SESSION_DIR}/session.state"
+    SESSION_STATE_FILE="${SESSION_DIR}/session.state" # Keep for compatibility/migration if needed
+    SESSION_DB_FILE="${SESSION_DIR}/session.db"
     SESSION_LOG_DIR="${SESSION_DIR}/logs"
     SESSION_EVIDENCE_DIR="${SESSION_DIR}/evidence"
     SESSION_REPORT_DIR="${SESSION_DIR}/reports"
@@ -31,14 +34,26 @@ init_new_session() {
     mkdir -p "$SESSION_DIR" "$SESSION_LOG_DIR" "$SESSION_EVIDENCE_DIR" "$SESSION_REPORT_DIR" "$SESSION_RESULTS_DIR"
     mkdir -p "${SESSION_DIR}/.pids"
     
-    # Initialize all TC statuses
+    # Initialize SQLite database via Go engine
+    log_info "Initializing session database..."
+    ./astra-engine --db "$SESSION_DB_FILE" state set-config --key "session_id" --value "$SESSION_ID"
+    ./astra-engine --db "$SESSION_DB_FILE" state set-config --key "session_name" --value "$SESSION_NAME"
+    ./astra-engine --db "$SESSION_DB_FILE" state set-config --key "created_at" --value "$(date -Iseconds)"
+
+    # Initialize all TC statuses in DB
     for _tc in "${TC_ORDER[@]}"; do
         TC_STATUS["$_tc"]="not_run"
+        ./astra-engine --db "$SESSION_DB_FILE" state update-status --tc "$_tc" --status "not_run"
     done
     
-    # Save initial state
+    # Save initial state (also updates DB)
     save_session_state
     
+    # Ensure all session directories have correct permissions
+    if declare -f finalize_evidence_permissions &>/dev/null; then
+        finalize_evidence_permissions
+    fi
+
     log_info "Session initialized: ${SESSION_ID}"
     log_info "Session directory: ${SESSION_DIR}"
 }
@@ -47,10 +62,10 @@ init_new_session() {
 detect_previous_session() {
     local sessions=()
     
-    # Find session directories with state files
-    while IFS= read -r -d '' state_file; do
-        sessions+=("$(dirname "$state_file")")
-    done < <(find "$EVIDENCE_BASE" -maxdepth 2 -name "session.state" -print0 2>/dev/null | sort -z -r)
+    # Find session directories with database files
+    while IFS= read -r -d '' db_file; do
+        sessions+=("$(dirname "$db_file")")
+    done < <(find "$EVIDENCE_BASE" -maxdepth 2 -name "session.db" -print0 2>/dev/null | sort -z -r)
     
     if [[ ${#sessions[@]} -eq 0 ]]; then
         echo "new"
@@ -72,30 +87,18 @@ detect_previous_session() {
         
         local sid
         sid=$(basename "$session_dir")
-        local state_file="${session_dir}/session.state"
+        local db_file="${session_dir}/session.db"
         
-        # Read session name and count completed TCs
+        # Read session name and count completed TCs from SQLite via Go Engine
         local done_count=0
-        local total_count=0
+        local total_count=${#TC_ORDER[@]}
         local sname=""
-        if [[ -f "$state_file" ]]; then
-            if ${TOOL_PATHS[jq]} -e . "$state_file" >/dev/null 2>&1; then
-                total_count=$(${TOOL_PATHS[jq]} '.tc_status | length' "$state_file" 2>/dev/null || echo "0")
-                done_count=$(${TOOL_PATHS[jq]} '[.tc_status[] | select(. == "done")] | length' "$state_file" 2>/dev/null || echo "0")
-                sname=$(${TOOL_PATHS[jq]} -r '.session_name // ""' "$state_file" 2>/dev/null)
-            else
-                # Legacy fallback just in case
-                while IFS='=' read -r key value; do
-                    if [[ "$key" =~ ^[A-H][0-9]+$ ]]; then
-                        ((total_count++))
-                        if [[ "$value" == "done" ]]; then
-                            ((done_count++))
-                        fi
-                    elif [[ "$key" == "SESSION_NAME" ]]; then
-                        sname="$value"
-                    fi
-                done < "$state_file"
-            fi
+        
+        if [[ -f "$db_file" ]]; then
+            sname=$(./astra-engine --db "$db_file" state get-config --key "session_name" 2>/dev/null)
+            # Count statuses that are 'done'
+            # For simplicity in this shell loop, we'll just use astra-engine to get all statuses and count
+            done_count=$(./astra-engine --db "$db_file" state get-dashboard | grep -c ":done" || echo "0")
         fi
         
         local display_name="${sname:-$sid}"
@@ -113,7 +116,7 @@ detect_previous_session() {
     echo "" >&2
     
     while true; do
-        read -rep "  Select session [1-${count}, N, D]: " choice
+        safe_read "Select session [1-${count}, N, D]: " choice
         
         if [[ "${choice^^}" == "N" ]]; then
             echo "new"
@@ -121,17 +124,21 @@ detect_previous_session() {
         fi
         
         if [[ "${choice^^}" == "D" ]]; then
-            # Delete session sub-menu
-            read -rep "  Enter session number to delete [1-${count}]: " del_num
+            safe_read "Enter session number to delete [1-${count}]: " del_num
             if [[ "$del_num" =~ ^[0-9]+$ ]] && [[ $del_num -ge 1 ]] && [[ $del_num -le $count ]]; then
                 local del_idx=$((del_num - 1))
                 local del_dir="${session_paths[$del_idx]}"
                 local del_sid
                 del_sid=$(basename "$del_dir")
-                read -rep "  Delete session '${del_sid}' and all its data? [y/N]: " confirm_del
+                safe_read "Delete session '${del_sid}' and all its data? [y/N]: " confirm_del
                 if [[ "${confirm_del,,}" == "y" ]]; then
-                    rm -rf "$del_dir"
-                    echo -e "${C_GREEN}  Session deleted: ${del_sid}${C_RESET}" >&2
+                    # Safety check: Ensure we are only deleting within SESSION_BASE_DIR
+                    if [[ -n "$del_dir" && "$del_dir" == "$SESSION_BASE_DIR"/* ]]; then
+                        rm -rf "$del_dir"
+                        echo -e "${C_GREEN}  Session deleted: ${del_sid}${C_RESET}" >&2
+                    else
+                        log_error "Safety abort: Attempted to delete invalid path: $del_dir"
+                    fi
                 fi
             fi
             # Re-run detection
@@ -142,7 +149,7 @@ detect_previous_session() {
         if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le $count ]]; then
             local idx=$((choice - 1))
             # Write the resume path to a temp file since we're in a $() subshell
-            echo "${session_paths[$idx]}" > /tmp/.wifi_resume_path
+            echo "${session_paths[$idx]}" > $TMP_DIR/.wifi_resume_path
             echo "resume"
             return
         fi
@@ -158,13 +165,13 @@ _resume_session_path=""
 load_session() {
     # Read resume path from temp file (written by detect_previous_session in subshell)
     local session_dir="${_resume_session_path}"
-    if [[ -z "$session_dir" ]] && [[ -f /tmp/.wifi_resume_path ]]; then
-        session_dir=$(cat /tmp/.wifi_resume_path)
-        rm -f /tmp/.wifi_resume_path
+    if [[ -z "$session_dir" ]] && [[ -f $TMP_DIR/.wifi_resume_path ]]; then
+        session_dir=$(cat $TMP_DIR/.wifi_resume_path)
+        rm -f $TMP_DIR/.wifi_resume_path
     fi
     
     if [[ -z "$session_dir" || ! -d "$session_dir" ]]; then
-        log_error "Session directory not found: ${session_dir}"
+        log_error "Session directory not found: ${session_dir}. Falling back to new session initialization."
         init_new_session
         return
     fi
@@ -185,44 +192,83 @@ load_session() {
         TC_STATUS["$_tc"]="not_run"
     done
     
-    if [[ ! -f "$SESSION_STATE_FILE" ]]; then
-        return
+    # --- PRIMARY: Load from SQLite via Go Engine ---
+    if [[ -n "${SESSION_DB_FILE:-}" && -f "$SESSION_DB_FILE" ]]; then
+        log_info "Loading state from database..."
+        
+        # Load TC Statuses
+        for _tc in "${TC_ORDER[@]}"; do
+            TC_STATUS["$_tc"]=$(./astra-engine --db "$SESSION_DB_FILE" state get-status --tc "$_tc" 2>/dev/null || echo "not_run")
+        done
+        
+        # Load Config variables
+        for var_name in "${SESSION_VARS[@]}"; do
+            local key=$(echo "$var_name" | tr '[:upper:]' '[:lower:]')
+            local val=$(./astra-engine --db "$SESSION_DB_FILE" state get-config --key "$key" 2>/dev/null)
+            
+            # Handle default values
+            if [[ "$var_name" == "SESSION_NAME" && -z "$val" ]]; then
+                val="Unnamed"
+            elif [[ "$var_name" == "VPS_CONFIGURED" || "$var_name" == "PREFLIGHT_DONE" ]]; then
+                [[ -z "$val" ]] && val=0
+            fi
+            
+            export "$var_name"="$val"
+        done
+    else
+        # --- SECONDARY: Fallback to JSON (Migration/Legacy) ---
+        log_warn "Session database missing. Falling back to JSON state..."
+        
+        if [[ ! -f "$SESSION_STATE_FILE" ]] || ! validate_json "$(cat "$SESSION_STATE_FILE" 2>/dev/null || echo "")"; then
+            local is_corrupt=false
+            [[ -f "$SESSION_STATE_FILE" ]] && is_corrupt=true
+            
+            if [[ -f "${SESSION_STATE_FILE}.bak" ]] && validate_json "$(cat "${SESSION_STATE_FILE}.bak" 2>/dev/null || echo "")"; then
+                log_warn "Session state file missing or corrupt for ${SESSION_ID}, but valid backup exists."
+                safe_read "Session state is corrupt. Recover from backup? [y/N]: " recover
+                if [[ "${recover,,}" == "y" ]]; then
+                    cp "${SESSION_STATE_FILE}.bak" "$SESSION_STATE_FILE"
+                    log_success "Restored session state from backup."
+                else
+                    log_warn "Initializing empty state for ${SESSION_ID}."
+                    state_json="{}"
+                    echo "$state_json" > "$SESSION_STATE_FILE"
+                fi
+            else
+                if [[ "$is_corrupt" == "true" ]]; then
+                    log_error "Session state is corrupt or invalid JSON and no backup exists."
+                    return 1
+                else
+                    log_warn "Session state file missing. Initializing fresh state."
+                    state_json="{}"
+                    echo "$state_json" > "$SESSION_STATE_FILE"
+                fi
+            fi
+        fi
+        
+        if [[ -z "${state_json:-}" ]]; then
+            state_json=$(cat "$SESSION_STATE_FILE" 2>/dev/null || echo "{}")
+        fi
+        
+        if validate_json "$state_json"; then
+            for _tc in "${TC_ORDER[@]}"; do
+                TC_STATUS["$_tc"]=$(echo "$state_json" | run_tool jq -r ".tc_status[\"$_tc\"] // \"not_run\"")
+            done
+            for var_name in "${SESSION_VARS[@]}"; do
+                local key=$(echo "$var_name" | tr '[:upper:]' '[:lower:]')
+                local val=$(echo "$state_json" | run_tool jq -r ".config[\"$key\"] // .[\"$key\"] // \"\"")
+                
+                # Handle default values
+                if [[ "$var_name" == "SESSION_NAME" && -z "$val" ]]; then
+                    val="Unnamed"
+                elif [[ "$var_name" == "VPS_CONFIGURED" || "$var_name" == "PREFLIGHT_DONE" ]]; then
+                    [[ -z "$val" ]] && val=0
+                fi
+                
+                export "$var_name"="$val"
+            done
+        fi
     fi
-    
-    local state_json
-    state_json=$(cat "$SESSION_STATE_FILE")
-    
-    # Check if it's JSON or legacy format
-    if ! echo "$state_json" | ${TOOL_PATHS[jq]} . &>/dev/null; then
-        log_warn "Legacy session state detected. Converting..."
-        # Minimal legacy loader logic could go here if migration is critical
-        return
-    fi
-    
-    # Load TC Statuses
-    for _tc in "${TC_ORDER[@]}"; do
-        TC_STATUS["$_tc"]=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r ".tc_status[\"$_tc\"] // \"not_run\"")
-    done
-    
-    # Load Config
-    export SESSION_NAME=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.session_name // "Unnamed"')
-    export WIFI_INTERFACE=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.wifi_interface // ""')
-    export MONITOR_INTERFACE=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.monitor_interface // ""')
-    export GUEST_SSID=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.guest_ssid // ""')
-    export GUEST_BSSID=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.guest_bssid // ""')
-    export GUEST_CHANNEL=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.guest_channel // ""')
-    export INTERNAL_SSID=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.internal_ssid // ""')
-    export INTERNAL_BSSID=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.internal_bssid // ""')
-    export GATEWAY_IP=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.gateway_ip // ""')
-    export MY_IP=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.my_ip // ""')
-    export MY_MAC=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.my_mac // ""')
-    export DNS_SERVER=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.dns_server // ""')
-    export VPS_IP=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.vps_ip // ""')
-    export VPS_DOMAIN=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.vps_domain // ""')
-    export VPS_CONFIGURED=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.vps_configured // 0')
-    export CAPTIVE_PORTAL=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.captive_portal // ""')
-    export C2_SCOPE=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.c2_scope // ""')
-    export PREFLIGHT_DONE=$(echo "$state_json" | ${TOOL_PATHS[jq]} -r '.config.preflight_done // 0')
     
     # Reset any stale 'running' status
     for _tc in "${TC_ORDER[@]}"; do
@@ -231,75 +277,70 @@ load_session() {
         fi
     done
     
-    local done_count=$(get_completed_count)
+    local done_count
+    done_count=$(get_completed_count)
     local total=${#TC_ORDER[@]}
     log_success "Session loaded: ${SESSION_ID} (${done_count}/${total} completed)"
     
-    if [[ -n "$GUEST_SSID" ]]; then
+    if [[ -n "${GUEST_SSID:-}" ]]; then
         log_info "Restored network config: SSID=${GUEST_SSID}, Gateway=${GATEWAY_IP:-unknown}"
     fi
 }
 
-#--- Save session state to disk (JSON) ---
+#--- Save session state to disk (SQLite + JSON fallback) ---
 save_session_state() {
     [[ -z "${SESSION_STATE_FILE:-}" ]] && return
     
-    local state_json="{}"
-    
-    # Add TC Statuses
-    local tc_status_obj="{}"
-    for _tc in "${TC_ORDER[@]}"; do
-        tc_status_obj=$(echo "$tc_status_obj" | ${TOOL_PATHS[jq]} --arg tc "$_tc" --arg st "${TC_STATUS[$_tc]:-not_run}" '.[$tc] = $st')
+    # 1. Prepare data for batch update
+    local config_map="{}"
+    for var_name in "${SESSION_VARS[@]}"; do
+        local val="${!var_name:-}"
+        # Apply defaults if empty
+        if [[ "$var_name" == "SESSION_NAME" && -z "$val" ]]; then val="Unnamed"; fi
+        if [[ "$var_name" == "VPS_CONFIGURED" || "$var_name" == "PREFLIGHT_DONE" ]]; then
+            [[ -z "$val" ]] && val=0
+        fi
+        local key=$(echo "$var_name" | tr '[:upper:]' '[:lower:]')
+        config_map=$(echo "$config_map" | run_tool jq --arg k "$key" --arg v "$val" '.[$k] = $v')
     done
     
-    state_json=$(echo "$state_json" | ${TOOL_PATHS[jq]} \
-        --argjson tc_status "$tc_status_obj" \
+    local status_map="{}"
+    for _tc in "${TC_ORDER[@]}"; do
+        status_map=$(echo "$status_map" | run_tool jq --arg tc "$_tc" --arg st "${TC_STATUS[$_tc]:-not_run}" '.[$tc] = $st')
+    done
+    
+    # 2. Sync to SQLite via Go Engine
+    if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+        run_tool astra-engine --db "$SESSION_DB_FILE" state batch-set-config --json "$config_map" >/dev/null 2>&1
+        run_tool astra-engine --db "$SESSION_DB_FILE" state batch-update-status --json "$status_map" >/dev/null 2>&1
+        run_tool astra-engine --db "$SESSION_DB_FILE" state set-config --key "updated_at" --value "$(date '+%Y-%m-%d %H:%M:%S')" >/dev/null 2>&1
+    fi
+
+    # 3. JSON Fallback (for existing report generator logic)
+    local state_json
+    state_json=$(run_tool jq -n \
         --arg session_id "${SESSION_ID:-}" \
-        --arg session_name "${SESSION_NAME:-}" \
-        --arg wifi_iface "${WIFI_INTERFACE:-}" \
-        --arg mon_iface "${MONITOR_INTERFACE:-}" \
-        --arg g_ssid "${GUEST_SSID:-}" \
-        --arg g_bssid "${GUEST_BSSID:-}" \
-        --arg g_chan "${GUEST_CHANNEL:-}" \
-        --arg i_ssid "${INTERNAL_SSID:-}" \
-        --arg i_bssid "${INTERNAL_BSSID:-}" \
-        --arg gw_ip "${GATEWAY_IP:-}" \
-        --arg my_ip "${MY_IP:-}" \
-        --arg my_mac "${MY_MAC:-}" \
-        --arg dns "${DNS_SERVER:-}" \
-        --arg v_ip "${VPS_IP:-}" \
-        --arg v_dom "${VPS_DOMAIN:-}" \
-        --argjson v_conf "${VPS_CONFIGURED:-0}" \
-        --arg cp "${CAPTIVE_PORTAL:-}" \
-        --arg c2 "${C2_SCOPE:-}" \
-        --argjson preflight "${PREFLIGHT_DONE:-0}" \
-        '. + {
+        --argjson tc_status "$status_map" \
+        --argjson config "$config_map" \
+        '{
             session_id: $session_id,
-            session_name: $session_name,
             tc_status: $tc_status,
-            config: {
-                wifi_interface: $wifi_iface,
-                monitor_interface: $mon_iface,
-                guest_ssid: $g_ssid,
-                guest_bssid: $g_bssid,
-                guest_channel: $g_chan,
-                internal_ssid: $i_ssid,
-                internal_bssid: $i_bssid,
-                gateway_ip: $gw_ip,
-                my_ip: $my_ip,
-                my_mac: $my_mac,
-                dns_server: $dns,
-                vps_ip: $v_ip,
-                vps_domain: $v_dom,
-                vps_configured: $v_conf,
-                captive_portal: $cp,
-                c2_scope: $c2,
-                preflight_done: $preflight
-            },
+            config: $config,
             updated_at: (now | strflocaltime("%Y-%m-%d %H:%M:%S"))
         }')
     
-    echo "$state_json" > "$SESSION_STATE_FILE"
+    # Atomic write
+    if echo "$state_json" > "${SESSION_STATE_FILE}.tmp"; then
+        if validate_json "$(cat "${SESSION_STATE_FILE}.tmp")"; then
+            if [[ -f "$SESSION_STATE_FILE" ]]; then
+                cp "$SESSION_STATE_FILE" "${SESSION_STATE_FILE}.bak"
+            fi
+            mv "${SESSION_STATE_FILE}.tmp" "$SESSION_STATE_FILE"
+        else
+            log_error "Generated state JSON is invalid. Not saving."
+            rm -f "${SESSION_STATE_FILE}.tmp"
+        fi
+    fi
 }
 
 #--- Get completed TC count ---
@@ -323,10 +364,66 @@ get_tc_result_file() {
 save_tc_result() {
     local tc_id="$1"
     local json_data="$2"
+    shift 2 || true
+    
     local result_file
     result_file=$(get_tc_result_file "$tc_id")
     
-    echo "$json_data" > "$result_file"
+    # 1. Resolve Confidence
+    local confidence_obj="{\"label\": \"LOW\", \"score\": 0}"
+    if [[ $# -gt 0 ]]; then
+        local flags_array=()
+        local raw_input="$*"
+        # Standardize: replace commas with spaces
+        raw_input="${raw_input//,/ }"
+        
+        for part in $raw_input; do
+            if [[ "$part" == *:* ]]; then
+                # Extract value after colon: "key:1" -> "1"
+                flags_array+=("${part#*:}")
+            else
+                flags_array+=("$part")
+            fi
+        done
+        
+        if declare -f confidence_from_flags &>/dev/null; then
+            local conf_res
+            conf_res=$(confidence_from_flags "${flags_array[@]}")
+            local score="${conf_res%|*}"
+            local label="${conf_res#*|}"
+            confidence_obj="{\"label\": \"$label\", \"score\": $score}"
+            export TC_CONFIDENCE="$confidence_obj"
+        fi
+    fi
+
+    # 2. Build/Repair the JSON object to meet schema
+    # We do this FIRST to avoid the "Repairing" warning for standard flows
+    if ! validate_json "$json_data"; then
+        json_data="{}"
+    fi
+
+    # Extract or default required fields
+    local status=$(echo "$json_data" | run_tool jq -r '.status // "INFO"')
+    [[ "$status" == "null" ]] && status="INFO"
+    
+    # Assemble finalized JSON
+    local finalized_json
+    finalized_json=$(echo "$json_data" | run_tool jq \
+        --arg s "$status" \
+        --argjson c "$confidence_obj" \
+        '.status = ($s | ascii_upcase) |
+         .summary |= (. // "Assessment completed.") |
+         .details |= (. // "No additional details provided.") |
+         .confidence = $c |
+         .recommendations |= (. // "No specific recommendations.") |
+         if (.evidence_files | type != "array") then .evidence_files = [] else . end')
+
+    # 3. Final Validation (Silent unless truly broken)
+    if ! validate_tc_result "$finalized_json"; then
+        log_debug "Final JSON for ${tc_id} failed schema validation. Check lib/session.sh logic."
+    fi
+    
+    echo "$finalized_json" > "$result_file"
     TC_RESULTS_FILE["$tc_id"]="$result_file"
     _log_to_file "RESULT-SAVE" "Saved results for ${tc_id} to ${result_file}"
 }
@@ -354,7 +451,7 @@ enrich_tc_result_file() {
     tc_name=$(get_tc_field "$tc_id" "name" 2>/dev/null || echo "")
     category=$(get_tc_field "$tc_id" "category" 2>/dev/null || echo "")
 
-    ${TOOL_PATHS[jq]} \
+    run_tool jq \
       --arg tc_id "$tc_id" \
       --arg name "$tc_name" \
       --arg category "$category" \
@@ -383,7 +480,14 @@ enrich_tc_result_file() {
             gateway_ip: $gw,
             dns_server: $dns
          } | with_entries(select(.value | length > 0))}
-       + (if ($conf|length)>0 then {confidence:$conf} else {} end)
+       + (if ($conf|length)>0 then 
+            if ($conf == "HIGH") then {confidence: {label: "HIGH", score: 90}}
+            elif ($conf == "MEDIUM") then {confidence: {label: "MEDIUM", score: 50}}
+            elif ($conf == "LOW") then {confidence: {label: "LOW", score: 20}}
+            elif ($conf | startswith("{")) then {confidence: ($conf | fromjson)}
+            else {confidence: {label: "LOW", score: 0}}
+            end
+          else {} end)
        + (if (.evidence_files? and (.evidence_files|type) == "array") then {evidence_files:(.evidence_files + $ev | unique)} else {evidence_files:$ev} end)' "$result_file" >"${result_file}.tmp" && mv "${result_file}.tmp" "$result_file"
 
        # Ensure all evidence files generated in this TC have correct permissions
@@ -406,7 +510,8 @@ load_tc_result() {
     result_file=$(get_tc_result_file "$tc_id")
     
     if [[ -f "$result_file" ]]; then
-        local data=$(cat "$result_file")
+        local data
+        data=$(cat "$result_file")
         if validate_json "$data"; then
             echo "$data"
         else
@@ -429,7 +534,7 @@ select_target_network() {
     local a1_data
     a1_data=$(load_tc_result "A1")
     local network_count
-    network_count=$(echo "$a1_data" | ${TOOL_PATHS[jq]} '.networks | length' 2>/dev/null || echo "0")
+    network_count=$(echo "$a1_data" | run_tool jq '.networks | length' 2>/dev/null || echo "0")
 
     if [[ "$network_count" -eq 0 ]]; then
         log_warn "A1 results contain no networks. Run A1 again."
@@ -455,7 +560,7 @@ select_target_network() {
         ssid_list+=("$ssid")
         bssid_list+=("$bssid")
         chan_list+=("$channel")
-    done < <(echo "$a1_data" | ${TOOL_PATHS[jq]} -r '.networks[] | "\(.ssid)\t\(.bssid)\t\(.channel)\t\(.encryption)\t\(.signal)"')
+    done < <(echo "$a1_data" | run_tool jq -r '.networks[] | "\(.ssid)\t\(.bssid)\t\(.channel)\t\(.encryption)\t\(.signal)"')
 
     echo ""
     echo -e "    [${C_BOLD} M${C_RESET}]  Manual Entry"
@@ -464,16 +569,16 @@ select_target_network() {
     echo ""
 
     local choice
-    read -rep "  Selection: " choice
+    safe_read "Selection: " choice
 
     if [[ "${choice,,}" == "q" ]]; then
         return 1
     fi
 
     if [[ "${choice,,}" == "m" ]]; then
-        read -rep "  Enter SSID: " GUEST_SSID
-        read -rep "  Enter BSSID (optional): " GUEST_BSSID
-        read -rep "  Enter Channel (optional): " GUEST_CHANNEL
+        safe_read "Enter SSID: " GUEST_SSID
+        safe_read "Enter BSSID (optional): " GUEST_BSSID
+        safe_read "Enter Channel (optional): " GUEST_CHANNEL
         export GUEST_SSID GUEST_BSSID GUEST_CHANNEL
         save_session_state
         return 0
@@ -485,10 +590,9 @@ select_target_network() {
         GUEST_BSSID="${bssid_list[$idx]}"
         GUEST_CHANNEL="${chan_list[$idx]}"
         
-        # Clean up <HIDDEN> SSIDs
         if [[ "$GUEST_SSID" == "<HIDDEN>" ]]; then
             log_warn "Target SSID is hidden. Attempting to use BSSID: ${GUEST_BSSID}"
-            read -rep "  Do you know the real SSID? (optional): " real_ssid
+            safe_read "Do you know the real SSID? (optional): " real_ssid
             [[ -n "$real_ssid" ]] && GUEST_SSID="$real_ssid"
         fi
 
@@ -513,9 +617,9 @@ manage_sessions() {
 
         # Discover all sessions
         local -a session_dirs=()
-        while IFS= read -r -d '' state_file; do
-            session_dirs+=("$(dirname "$state_file")")
-        done < <(find "$EVIDENCE_BASE" -maxdepth 2 -name "session.state" -print0 2>/dev/null | sort -z -r)
+        while IFS= read -r -d '' db_file; do
+            session_dirs+=("$(dirname "$db_file")")
+        done < <(find "$EVIDENCE_BASE" -maxdepth 2 -name "session.db" -print0 2>/dev/null | sort -z -r)
 
         if [[ ${#session_dirs[@]} -eq 0 ]]; then
             echo -e "  ${C_GRAY}No saved sessions found.${C_RESET}"
@@ -527,23 +631,13 @@ manage_sessions() {
             for session_dir in "${session_dirs[@]}"; do
                 local sid
                 sid=$(basename "$session_dir")
-                local state_file="${session_dir}/session.state"
-                local done_count=0 total_count=0
+                local db_file="${session_dir}/session.db"
+                local done_count=0 total_count=${#TC_ORDER[@]}
                 local sname=""
 
-                if [[ -f "$state_file" ]]; then
-                    if ${TOOL_PATHS[jq]} -e . "$state_file" >/dev/null 2>&1; then
-                        total_count=$(${TOOL_PATHS[jq]} '.tc_status | length' "$state_file" 2>/dev/null || echo "0")
-                        done_count=$(${TOOL_PATHS[jq]} '[.tc_status[] | select(. == "done")] | length' "$state_file" 2>/dev/null || echo "0")
-                        sname=$(${TOOL_PATHS[jq]} -r '.session_name // ""' "$state_file" 2>/dev/null)
-                    else
-                        while IFS='=' read -r key value; do
-                            if [[ "$key" =~ ^[A-H][0-9]+$ ]]; then
-                                ((total_count++))
-                                [[ "$value" == "done" ]] && ((done_count++))
-                            fi
-                        done < "$state_file"
-                    fi
+                if [[ -f "$db_file" ]]; then
+                    sname=$(./astra-engine --db "$db_file" state get-config --key "session_name" 2>/dev/null)
+                    done_count=$(./astra-engine --db "$db_file" state get-dashboard | grep -c ":done" || echo "0")
                 fi
 
                 local session_date
@@ -564,7 +658,7 @@ manage_sessions() {
         echo ""
 
         local action
-        read -rep "  Select action [L/D/N/B]: " action
+        safe_read "Select action [L/D/N/B]: " action
 
         case "${action^^}" in
             "L")
@@ -572,7 +666,7 @@ manage_sessions() {
                     log_warn "No sessions to load."
                     continue
                 fi
-                read -rep "  Enter session number to load: " load_num
+                safe_read "Enter session number to load: " load_num
                 if [[ "$load_num" =~ ^[0-9]+$ ]] && [[ $load_num -ge 1 ]] && [[ $load_num -le ${#session_dirs[@]} ]]; then
                     local target_dir="${session_dirs[$((load_num - 1))]}"
                     local target_sid
@@ -600,7 +694,7 @@ manage_sessions() {
                     log_warn "No sessions to delete."
                     continue
                 fi
-                read -rep "  Enter session number to delete: " del_num
+                safe_read "Enter session number to delete: " del_num
                 if [[ "$del_num" =~ ^[0-9]+$ ]] && [[ $del_num -ge 1 ]] && [[ $del_num -le ${#session_dirs[@]} ]]; then
                     local del_dir="${session_dirs[$((del_num - 1))]}"
                     local del_sid
@@ -611,10 +705,15 @@ manage_sessions() {
                         continue
                     fi
 
-                    read -rep "  Delete session ${del_sid} and all its data? [y/N]: " confirm
+                    safe_read "Delete session ${del_sid} and all its data? [y/N]: " confirm
                     if [[ "${confirm,,}" == "y" ]]; then
-                        rm -rf "$del_dir"
-                        log_success "Session ${del_sid} deleted."
+                        # Safety check: Ensure we are only deleting within SESSION_BASE_DIR
+                        if [[ -n "$del_dir" && "$del_dir" == "$SESSION_BASE_DIR"/* ]]; then
+                            rm -rf "$del_dir"
+                            log_success "Session ${del_sid} deleted."
+                        else
+                            log_error "Safety abort: Attempted to delete invalid path: $del_dir"
+                        fi
                     else
                         log_info "Deletion cancelled."
                     fi
@@ -644,10 +743,32 @@ manage_sessions() {
 validate_json() {
     local json_str="$1"
     [[ -z "$json_str" ]] && return 1
-    if echo "$json_str" | ${TOOL_PATHS[jq]} -e . >/dev/null 2>&1; then
+    
+    # Use run_tool jq for safer execution
+    if echo "$json_str" | run_tool jq -e . >/dev/null 2>&1; then
         return 0
     else
         log_error "Invalid JSON detected."
         return 1
     fi
+}
+
+#--- TC Result Validation ---
+# Validates if a JSON string follows the unified result schema.
+# Usage: validate_tc_result "$json_str" || return 1
+validate_tc_result() {
+    local json_str="$1"
+    
+    # Must be valid JSON
+    validate_json "$json_str" || return 1
+    
+    # Combined JQ call for all validations
+    echo "$json_str" | run_tool jq -e '
+        . as $in |
+        all(("status", "summary", "details", "confidence", "evidence_files", "recommendations"); . as $f | $in | has($f)) and
+        ($in.status | ascii_upcase | . == "CRITICAL" or . == "FINDING" or . == "SECURE" or . == "INFO" or . == "FAIL") and
+        ($in.evidence_files | type == "array") and
+        ($in.confidence | type == "object") and
+        ($in.confidence | has("label") and has("score"))
+    ' >/dev/null 2>&1
 }

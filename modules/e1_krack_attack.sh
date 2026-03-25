@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="KRACK Attack Testing"
+# CATEGORY="E"
+# DEPS="A1"
+# CRITICAL="yes"
+# TOOLS="tshark,krack-test"
+# DESC="Test WPA2 key reinstallation (CVE-2017-13077), nonce reuse, GTK reinstall"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="yes"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/e1_krack_attack.sh
 #  E1: KRACK (Key Reinstallation Attack) Testing
@@ -27,14 +38,17 @@
 #    - gtk_reinstall_vulnerable: bool
 #===============================================================================
 
+set -uo pipefail
+
 run_e1() {
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/e1"
 
-    #--- Step 1: Verify tools ---
-    log_step 1 $total_steps "Verifying tools"
+    #--- Step 1: Verify tools & dependencies ---
+    log_step 1 $total_steps "Verifying tools & dependencies"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "E1" || return 1
     
     local has_krack_test=false
     local has_tshark=false
@@ -65,7 +79,7 @@ run_e1() {
     fi
 
     if [[ "$has_tshark" == "false" ]]; then
-        log_error "${TOOL_PATHS[tshark]} is required for nonce analysis."
+        log_error "tshark is required for nonce analysis."
         return 1
     fi
 
@@ -133,7 +147,7 @@ run_e1() {
     local mon_iface="${MONITOR_INTERFACE}"
 
     if [[ -n "${GUEST_CHANNEL:-}" ]]; then
-        iw dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
+        run_fg "iw" dev "$mon_iface" set channel "$GUEST_CHANNEL" 2>/dev/null || true
     fi
 
     check_abort || return 1
@@ -143,11 +157,9 @@ run_e1() {
     update_tc_progress 3 $total_steps "Nonce capture"
 
     # Capture all EAPOL traffic
-    ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$nonce_pcap" \
+    spawn_bg "e1_tcpdump" "tcpdump" -i "$mon_iface" -w "$nonce_pcap" \
         "ether proto 0x888e or (type mgt subtype deauth) or (type mgt subtype auth)" \
-        &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+        &>/dev/null
 
     # Send periodic deauths to trigger handshake re-negotiations
     if [[ "$has_aireplay" == "true" ]]; then
@@ -155,12 +167,13 @@ run_e1() {
         (
             for burst in $(seq 1 6); do
                 sleep 10
-                ${TOOL_PATHS[aireplay-ng]} --deauth 3 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
+                check_abort || break
+                run_fg "aireplay-ng" --deauth 3 -a "$GUEST_BSSID" "$mon_iface" &>/dev/null || true
                 sleep 5
             done
         ) &
         local deauth_pid=$!
-        register_cleanup "kill -TERM $deauth_pid 2>/dev/null || true; sleep 0.5; kill -9 $deauth_pid 2>/dev/null || true; wait $deauth_pid 2>/dev/null || true"
+        register_cleanup "kill -TERM $deauth_pid 2>/dev/null || true; wait $deauth_pid 2>/dev/null || true"
     fi
 
     start_countdown 90 "Capturing handshakes — analyzing nonce patterns"
@@ -169,9 +182,12 @@ run_e1() {
 
     # Stop deauth
     if [[ -n "${deauth_pid:-}" ]]; then
-            fi
+        kill -TERM "$deauth_pid" 2>/dev/null || true
+        wait "$deauth_pid" 2>/dev/null || true
+    fi
 
     # Stop capture
+    stop_process "e1_tcpdump"
     
     validate_pcap "$nonce_pcap" "EAPOL nonce capture"
 
@@ -189,10 +205,11 @@ run_e1() {
     } > "$client_analysis"
 
     if [[ -f "$nonce_pcap" && -s "$nonce_pcap" ]]; then
+        ensure_user_ownership "$nonce_pcap"
         # Extract EAPOL message 3 (from AP) — contains ANonce
         # If nonce repeats in msg3 retransmissions, client may not be patched
         local eapol_data
-        local eapol_data=$(${TOOL_PATHS[tshark]} -r "$nonce_pcap" \
+        eapol_data=$(run_as_user tshark -r "$nonce_pcap" \
             -Y "eapol && wlan.bssid == ${GUEST_BSSID}" \
             -T fields \
             -e wlan.sa \
@@ -207,11 +224,11 @@ run_e1() {
 
             # Count unique client MACs involved in EAPOL
             local client_macs
-            local client_macs=$(echo "$eapol_data" | awk '{print $2}' | sort -u | \
+            client_macs=$(echo "$eapol_data" | awk '{print $2}' | sort -u | \
                 grep -v "$GUEST_BSSID" | grep -v "ff:ff:ff:ff:ff:ff" || true)
 
             if [[ -n "$client_macs" ]]; then
-                local clients_tested=$(echo "$client_macs" | wc -l)
+                clients_tested=$(echo "$client_macs" | wc -l)
                 log_info "Analyzing ${clients_tested} client(s) for nonce reuse..."
 
                 while IFS= read -r client_mac; do
@@ -219,15 +236,15 @@ run_e1() {
 
                     # Extract nonces for this client's handshakes
                     local client_nonces
-                    local client_nonces=$(${TOOL_PATHS[tshark]} -r "$nonce_pcap" \
+                    client_nonces=$(run_as_user tshark -r "$nonce_pcap" \
                         -Y "eapol && (wlan.da == ${client_mac} || wlan.sa == ${client_mac})" \
                         -T fields \
                         -e eapol.keydes.nonce \
                         2>/dev/null | grep -v "^$" | sort || true)
 
                     local total_nonces unique_nonces
-                    local total_nonces=$(echo "$client_nonces" | wc -l) || true
-                    local unique_nonces=$(echo "$client_nonces" | sort -u | wc -l) || true
+                    total_nonces=$(echo "$client_nonces" | wc -l) || true
+                    unique_nonces=$(echo "$client_nonces" | sort -u | wc -l) || true
 
                     echo "Client: ${client_mac}" >> "$client_analysis"
                     echo "  Total nonces: ${total_nonces:-0}" >> "$client_analysis"
@@ -235,7 +252,7 @@ run_e1() {
 
                     if [[ ${total_nonces:-0} -gt ${unique_nonces:-0} && ${total_nonces:-0} -gt 1 ]]; then
                         local reused=$((total_nonces - unique_nonces))
-                        local nonce_reuse_detected="true"
+                        nonce_reuse_detected="true"
                         ((clients_vulnerable++))
                         echo "  STATUS: ★ NONCE REUSE DETECTED (${reused} reuses) — POTENTIALLY VULNERABLE" >> "$client_analysis"
                         log_result "FINDING" "Client ${client_mac}: nonce reuse detected (${reused} reuses) — potentially KRACK vulnerable"
@@ -249,7 +266,7 @@ run_e1() {
 
             # Check for GTK reinstallation (group key message replays)
             local gtk_msgs
-            local gtk_msgs=$(${TOOL_PATHS[tshark]} -r "$nonce_pcap" \
+            gtk_msgs=$(run_as_user tshark -r "$nonce_pcap" \
                 -Y "eapol && eapol.keydes.key_info == 0x1381" \
                 -T fields \
                 -e eapol.keydes.replay_counter \
@@ -257,12 +274,12 @@ run_e1() {
 
             if [[ -n "$gtk_msgs" ]]; then
                 local gtk_total gtk_unique
-                local gtk_total=$(echo "$gtk_msgs" | wc -l) || true
-                local gtk_unique=$(echo "$gtk_msgs" | sort -u | wc -l) || true
+                gtk_total=$(echo "$gtk_msgs" | wc -l) || true
+                gtk_unique=$(echo "$gtk_msgs" | sort -u | wc -l) || true
 
                 if [[ ${gtk_total:-0} -gt ${gtk_unique:-0} ]]; then
-                    local gtk_reinstall_vulnerable="true"
-                    local ap_vulnerable="true"
+                    gtk_reinstall_vulnerable="true"
+                    ap_vulnerable="true"
                     log_result "FINDING" "GTK reinstallation detected — AP may be vulnerable to group key attack"
                     echo "FINDING: GTK message replay detected — AP potentially vulnerable" >> "$findings_file"
                 fi
@@ -285,7 +302,7 @@ run_e1() {
         log_cmd "python3 ${krack_script} --interface ${mon_iface} --bssid ${GUEST_BSSID}"
 
         local krack_output
-        local krack_output=$(timeout 120 python3 "$krack_script" \
+        krack_output=$(timeout 120 python3 "$krack_script" \
             --interface "$mon_iface" \
             --bssid "$GUEST_BSSID" \
             2>&1 || true)
@@ -295,7 +312,7 @@ run_e1() {
         echo "$krack_output" >> "$results_file"
 
         if echo "$krack_output" | grep -qi "vulnerable"; then
-            local ap_vulnerable="true"
+            ap_vulnerable="true"
             log_result "CRITICAL" "★ KRACK vulnerability confirmed by test scripts!"
             echo "CRITICAL: KRACK vulnerability confirmed" >> "$findings_file"
         elif echo "$krack_output" | grep -qi "not vulnerable\|patched"; then
@@ -324,32 +341,32 @@ run_e1() {
     local recommendations=""
 
     if [[ "$ap_vulnerable" == "true" || $clients_vulnerable -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="KRACK vulnerability indicators detected. "
+        result_status="FINDING"
+        result_summary="KRACK vulnerability indicators detected. "
         [[ "$nonce_reuse_detected" == "true" ]] && result_summary+="${clients_vulnerable}/${clients_tested} client(s) show nonce reuse patterns. "
         [[ "$gtk_reinstall_vulnerable" == "true" ]] && result_summary+="GTK reinstallation vulnerability detected on AP. "
         [[ "$ap_vulnerable" == "true" ]] && result_summary+="AP may be vulnerable to key reinstallation."
-        local recommendations="1) Update ALL client device firmware/drivers — KRACK patches available since late 2017. "
+        recommendations="1) Update ALL client device firmware/drivers — KRACK patches available since late 2017. "
         recommendations+="2) Update AP firmware to include KRACK countermeasures. "
         recommendations+="3) Prioritize IoT devices which are often unpatched. "
         recommendations+="4) Enable 802.11w (MFP) to reduce deauth-based handshake triggering. "
         recommendations+="5) Consider WPA3-SAE which is not vulnerable to KRACK. "
         recommendations+="6) Deploy WIDS to detect repeated handshake retransmissions."
     elif [[ $clients_tested -gt 0 ]]; then
-        local result_summary="Tested ${clients_tested} client(s) for KRACK vulnerability — no nonce reuse patterns detected. Devices appear to be patched."
-        local recommendations="Continue monitoring for unpatched devices connecting to the network."
+        result_summary="Tested ${clients_tested} client(s) for KRACK vulnerability — no nonce reuse patterns detected. Devices appear to be patched."
+        recommendations="Continue monitoring for unpatched devices connecting to the network."
     else
-        local result_summary="No EAPOL handshakes captured for KRACK analysis. Network may have low client activity or uses WPA3."
-        local recommendations="Re-test during peak usage hours or with known test clients."
+        result_summary="No EAPOL handshakes captured for KRACK analysis. Network may have low client activity or uses WPA3."
+        recommendations="Re-test during peak usage hours or with known test clients."
     fi
 
     local result_json
-    evidence_register_file "e1_krack_results.txt"
-    evidence_register_file "e1_client_analysis.txt"
-    evidence_register_file "e1_nonce_capture.pcap"
-    evidence_register_file "e1_findings.txt"
+    evidence_register_file "$results_file"
+    evidence_register_file "$client_analysis"
+    evidence_register_file "$nonce_pcap"
+    evidence_register_file "$findings_file"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    result_json=$(run_fg "jq" -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "AP vulnerable: ${ap_vulnerable}, Clients tested: ${clients_tested}, Vulnerable: ${clients_vulnerable}, Nonce reuse: ${nonce_reuse_detected}, GTK reinstall: ${gtk_reinstall_vulnerable}" \
@@ -368,10 +385,15 @@ run_e1() {
             clients_tested: $clients_tested,
             clients_vulnerable: $clients_vulnerable,
             nonce_reuse_detected: ($nonce_reuse_detected == "true"),
-            gtk_reinstall_vulnerable: ($gtk_reinstall_vulnerable == "true"),
-                    }')
+            gtk_reinstall_vulnerable: ($gtk_reinstall_vulnerable == "true")
+        }')
 
-    save_tc_result "E1" "$result_json"
+    local has_tool_output=1
+    local has_primary=0
+    [[ -f "$nonce_pcap" && -s "$nonce_pcap" ]] && has_primary=1
+    
+    save_tc_result "E1" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 0
+    save_session_state
 
     echo ""
     if [[ "$ap_vulnerable" == "true" || $clients_vulnerable -gt 0 ]]; then

