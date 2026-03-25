@@ -395,6 +395,102 @@ func main() {
 	ingestNetworkCmd.Flags().String("json", "{}", "Network JSON object")
 	ingestCmd.AddCommand(ingestNetworkCmd)
 
+	var ingestCredentialCmd = &cobra.Command{
+		Use:   "credential",
+		Short: "Ingest a single credential as JSON",
+		Run: func(cmd *cobra.Command, args []string) {
+			jsonInput, _ := cmd.Flags().GetString("json")
+			var c db.Credential
+			if err := json.Unmarshal([]byte(jsonInput), &c); err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing JSON: %v\n", err)
+				os.Exit(1)
+			}
+
+			database, err := db.InitDB(dbPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			
+			_, err = database.Exec(`INSERT INTO credential (tc_id, client_mac, target_host, username, password, hash, proto)
+				VALUES (?, ?, ?, ?, ?, ?, ?);`,
+				c.TCID, c.ClientMAC, c.TargetHost, c.Username, c.Password, c.Hash, c.Proto)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		},
+	}
+	ingestCredentialCmd.Flags().String("json", "{}", "Credential JSON object")
+	ingestCmd.AddCommand(ingestCredentialCmd)
+
+	var ingestVulnerabilityCmd = &cobra.Command{
+		Use:   "vulnerability",
+		Short: "Ingest a single vulnerability as JSON",
+		Run: func(cmd *cobra.Command, args []string) {
+			jsonInput, _ := cmd.Flags().GetString("json")
+			var v db.Vulnerability
+			if err := json.Unmarshal([]byte(jsonInput), &v); err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing JSON: %v\n", err)
+				os.Exit(1)
+			}
+
+			database, err := db.InitDB(dbPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			
+			_, err = database.Exec(`INSERT INTO vulnerability (tc_id, client_mac, target_host, name, severity, description, remediation)
+				VALUES (?, ?, ?, ?, ?, ?, ?);`,
+				v.TCID, v.ClientMAC, v.TargetHost, v.Name, v.Severity, v.Description, v.Remediation)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		},
+	}
+	ingestVulnerabilityCmd.Flags().String("json", "{}", "Vulnerability JSON object")
+	ingestCmd.AddCommand(ingestVulnerabilityCmd)
+
+	var listCredentialsCmd = &cobra.Command{
+		Use:   "list-credentials",
+		Short: "List all ingested credentials as JSON",
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.InitDB(dbPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			creds, err := db.ListCredentials(database)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			json.NewEncoder(os.Stdout).Encode(creds)
+		},
+	}
+	ingestCmd.AddCommand(listCredentialsCmd)
+
+	var listVulnerabilitiesCmd = &cobra.Command{
+		Use:   "list-vulnerabilities",
+		Short: "List all ingested vulnerabilities as JSON",
+		Run: func(cmd *cobra.Command, args []string) {
+			database, err := db.InitDB(dbPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			vulns, err := db.ListVulnerabilities(database)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			json.NewEncoder(os.Stdout).Encode(vulns)
+		},
+	}
+	ingestCmd.AddCommand(listVulnerabilitiesCmd)
+
 	rootCmd.AddCommand(stateCmd, ingestCmd)
 
 	if err := rootCmd.Execute(); err != nil {

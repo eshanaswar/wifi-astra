@@ -56,6 +56,28 @@ func InitDB(path string) (*sql.DB, error) {
 			first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (mac, ssid)
 		);`,
+		`CREATE TABLE IF NOT EXISTS credential (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tc_id TEXT,
+			client_mac TEXT,
+			target_host TEXT,
+			username TEXT,
+			password TEXT,
+			hash TEXT,
+			proto TEXT,
+			captured_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS vulnerability (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tc_id TEXT,
+			client_mac TEXT,
+			target_host TEXT,
+			name TEXT,
+			severity TEXT,
+			description TEXT,
+			remediation TEXT,
+			detected_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, schema := range schemas {
@@ -108,6 +130,30 @@ type Client struct {
 	Probes     []string `json:"probes"`
 }
 
+type Credential struct {
+	ID         int    `json:"id"`
+	TCID       string `json:"tc_id"`
+	ClientMAC  string `json:"client_mac"`
+	TargetHost string `json:"target_host"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Hash       string `json:"hash"`
+	Proto      string `json:"proto"`
+	CapturedAt string `json:"captured_at"`
+}
+
+type Vulnerability struct {
+	ID          int    `json:"id"`
+	TCID        string `json:"tc_id"`
+	ClientMAC   string `json:"client_mac"`
+	TargetHost  string `json:"target_host"`
+	Name        string `json:"name"`
+	Severity    string `json:"severity"`
+	Description string `json:"description"`
+	Remediation string `json:"remediation"`
+	DetectedAt  string `json:"detected_at"`
+}
+
 func ListClients(d *sql.DB) ([]Client, error) {
 	rows, err := d.Query("SELECT mac, vendor, ip, hostname, last_signal, last_bssid, last_seen, os_guess FROM client")
 	if err != nil {
@@ -142,4 +188,54 @@ func ListClients(d *sql.DB) ([]Client, error) {
 		clients = append(clients, c)
 	}
 	return clients, nil
+}
+
+func ListCredentials(d *sql.DB) ([]Credential, error) {
+	rows, err := d.Query("SELECT id, tc_id, client_mac, target_host, username, password, hash, proto, captured_at FROM credential")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var creds []Credential
+	for rows.Next() {
+		var c Credential
+		var clientMac, targetHost, username, password, hash, proto sql.NullString
+		if err := rows.Scan(&c.ID, &c.TCID, &clientMac, &targetHost, &username, &password, &hash, &proto, &c.CapturedAt); err != nil {
+			return nil, err
+		}
+		c.ClientMAC = clientMac.String
+		c.TargetHost = targetHost.String
+		c.Username = username.String
+		c.Password = password.String
+		c.Hash = hash.String
+		c.Proto = proto.String
+		creds = append(creds, c)
+	}
+	return creds, nil
+}
+
+func ListVulnerabilities(d *sql.DB) ([]Vulnerability, error) {
+	rows, err := d.Query("SELECT id, tc_id, client_mac, target_host, name, severity, description, remediation, detected_at FROM vulnerability")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var vulns []Vulnerability
+	for rows.Next() {
+		var v Vulnerability
+		var clientMac, targetHost, name, severity, description, remediation sql.NullString
+		if err := rows.Scan(&v.ID, &v.TCID, &clientMac, &targetHost, &name, &severity, &description, &remediation, &v.DetectedAt); err != nil {
+			return nil, err
+		}
+		v.ClientMAC = clientMac.String
+		v.TargetHost = targetHost.String
+		v.Name = name.String
+		v.Severity = severity.String
+		v.Description = description.String
+		v.Remediation = remediation.String
+		vulns = append(vulns, v)
+	}
+	return vulns, nil
 }

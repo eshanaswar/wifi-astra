@@ -277,6 +277,32 @@ run_g3() {
     log_step 7 $total_steps "Saving results"
     update_tc_progress 7 $total_steps "Saving"
 
+    # Sync hashes with Assessment Engine
+    local hashes_file="${evidence_prefix}_captured_hashes.txt"
+    if [[ $hashes_captured -gt 0 && -f "$hashes_file" ]]; then
+        log_info "Syncing captured hashes with assessment engine..."
+        while IFS= read -r line; do
+            # Format usually: [TIME] [MODULE] IP: ... HASH: ...
+            local client_ip=$(echo "$line" | grep -oP 'IP: \K[0-9.]+')
+            local hash_val=$(echo "$line" | grep -oP 'HASH: \K.*')
+            local hash_type=$(echo "$line" | grep -oP '\[\K[^\]]+(?=\])' | head -2 | tail -1)
+            
+            # Try to get MAC for the IP
+            local client_mac
+            client_mac=$(run_tool ip neighbor show "$client_ip" 2>/dev/null | awk '{print $5}' | grep -E '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' | head -1 || echo "")
+
+            local cred_json=$(run_fg jq -n \
+                --arg tc "G3" \
+                --arg mac "$client_mac" \
+                --arg host "broadcast-poison" \
+                --arg h "$hash_val" \
+                --arg proto "$hash_type" \
+                '{tc_id: $tc, client_mac: $mac, target_host: $host, hash: $h, proto: $proto}')
+            
+            run_tool astra-engine --db "$SESSION_DB_FILE" ingest credential --json "$cred_json" >/dev/null 2>&1
+        done < "$hashes_file"
+    fi
+
     local result_status="SECURE"
     local result_summary=""
     local recommendations=""

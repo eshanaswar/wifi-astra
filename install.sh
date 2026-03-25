@@ -87,6 +87,7 @@ CORE_PACKAGES=(
     "procps"
     "coreutils"
     "dnsutils"
+    "golang"
 )
 
 # Extended (optional but recommended)
@@ -233,6 +234,24 @@ chmod +x "${INSTALL_DIR}/wifi-astra.sh" 2>/dev/null || true
 chmod +x "${INSTALL_DIR}/modules/"*.sh 2>/dev/null || true
 chmod +x "${INSTALL_DIR}/lib/"*.sh 2>/dev/null || true
 
+# Build Assessment Engine
+info "Building Assessment Engine..."
+if command -v go &>/dev/null; then
+    (
+        cd "${INSTALL_DIR}/engine"
+        go build -o astra-engine cmd/main.go
+    )
+    if [[ -f "${INSTALL_DIR}/engine/astra-engine" ]]; then
+        chmod +x "${INSTALL_DIR}/engine/astra-engine"
+        ln -sf "${INSTALL_DIR}/engine/astra-engine" "${INSTALL_DIR}/astra-engine"
+        ok "Assessment Engine built successfully."
+    else
+        err "Failed to build Assessment Engine binary."
+    fi
+else
+    warn "Go compiler not found. Assessment Engine will not be functional."
+fi
+
 # Create symlink
 ln -sf "${INSTALL_DIR}/wifi-astra.sh" "$BIN_LINK"
 ok "Symlink created: ${BIN_LINK} → ${INSTALL_DIR}/wifi-astra.sh"
@@ -281,6 +300,7 @@ declare -A TOOL_CHECK=(
     ["macchanger"]="macchanger"
     ["curl"]="curl"
     ["iw"]="iw"
+    ["astra-engine"]="${INSTALL_DIR}/engine/astra-engine"
 )
 
 tool_ok=0

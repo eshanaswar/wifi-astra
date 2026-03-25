@@ -106,6 +106,16 @@ _generate_txt_report() {
         echo "  Secure (Passed):       ${secure}"
         echo ""
         
+        # Assessment Engine Inventory Summary
+        if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+            local net_count client_count
+            net_count=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list 2>/dev/null | run_tool jq 'length' || echo "0")
+            client_count=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-clients 2>/dev/null | run_tool jq 'length' || echo "0")
+            echo "  Discovered Networks:   ${net_count}"
+            echo "  Discovered Clients:    ${client_count}"
+            echo ""
+        fi
+
         if [[ $critical -gt 0 ]]; then
             echo "  *** CRITICAL: Segmentation bypass or severe vulnerability detected. ***"
         elif [[ $findings -gt 0 ]]; then
@@ -154,6 +164,50 @@ _generate_txt_report() {
             fi
         done
         
+        # Discovered Credentials (TXT)
+        if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+            local creds_json
+            creds_json=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-credentials 2>/dev/null || echo "[]")
+            if [[ "$creds_json" != "[]" && "$creds_json" != "null" ]]; then
+                echo "==============================================================================="
+                echo "  DISCOVERED CREDENTIALS"
+                echo "==============================================================================="
+                echo ""
+                echo "$creds_json" | run_tool jq -r '.[] | "  [\(.tc_id)] [\(.proto)] Target: \(.target_host)\n  User: \(.username // "N/A"), Pass: \(.password // "N/A")\n  Hash: \(.hash // "N/A")\n"'
+                echo ""
+            fi
+        fi
+
+        # Identified Vulnerabilities (TXT)
+        if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+            local vulns_json
+            vulns_json=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-vulnerabilities 2>/dev/null || echo "[]")
+            if [[ "$vulns_json" != "[]" && "$vulns_json" != "null" ]]; then
+                echo "==============================================================================="
+                echo "  IDENTIFIED VULNERABILITIES"
+                echo "==============================================================================="
+                echo ""
+                echo "$vulns_json" | run_tool jq -r '.[] | "  [\(.tc_id)] [\(.severity)] \(.name)\n  Target: \(.target_host)\n  Desc:   \(.description)\n"'
+                echo ""
+            fi
+        fi
+
+        # Detailed Infrastructure Inventory
+        if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+            echo ""
+            echo "==============================================================================="
+            echo "  INFRASTRUCTURE INVENTORY (ASSESSMENT ENGINE)"
+            echo "==============================================================================="
+            
+            echo ""
+            echo "  --- Discovered Networks ---"
+            run_tool astra-engine --db "$SESSION_DB_FILE" ingest list 2>/dev/null | run_tool jq -r '.[] | "  \(.ssid // "<HIDDEN>") (\(.bssid)) - CH: \(.channel), ENC: \(.encryption), SIG: \(.signal) dBm"' || echo "  [No network data]"
+            
+            echo ""
+            echo "  --- Discovered Clients ---"
+            run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-clients 2>/dev/null | run_tool jq -r '.[] | "  \(.mac) (\(.vendor // "Unknown")) - IP: \(.ip // "N/A"), HOST: \(.hostname // "N/A"), SIG: \(.last_signal) dBm"' || echo "  [No client data]"
+        fi
+
         echo ""
         echo "==============================================================================="
         echo "  EVIDENCE FILES"
@@ -330,6 +384,67 @@ _generate_html_report() {
         .stat-card.secure .value { color: var(--secure); }
         .stat-card.info .value { color: var(--info); }
         
+        /* Inventory Styles */
+        .inventory-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+        .inventory-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+        }
+        .inventory-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+            margin-top: 1rem;
+        }
+        .inventory-table th {
+            text-align: left;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+            padding: 0.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .inventory-table td {
+            padding: 0.75rem 0.5rem;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .inventory-table tr:last-child td { border-bottom: none; }
+
+        /* Finding Card Styles (Credentials/Vulns) */
+        .findings-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .finding-mini-card {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            font-size: 0.8125rem;
+        }
+        .finding-mini-card .header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.25rem;
+        }
+        .finding-mini-card .label { font-weight: 700; color: var(--accent); }
+        .finding-mini-card .tc-id { color: var(--text-dim); font-family: monospace; }
+        .finding-mini-card .data-row { margin-bottom: 0.25rem; }
+        .finding-mini-card .data-label { color: var(--text-dim); }
+        .finding-mini-card .data-value { font-family: monospace; color: var(--text-main); }
+
         /* Sections */
         section { margin-bottom: 3rem; }
         h2 {
@@ -497,6 +612,79 @@ HTMLHEAD
         echo "        <div class='stat-card info'><div class='value'>${info}</div><div class='label'>Info/Fail</div></div>"
         echo "    </div>"
         
+        # Infrastructure Inventory
+        if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+            echo "    <section>"
+            echo "        <h2>📊 Infrastructure Inventory</h2>"
+            echo "        <div class='inventory-grid'>"
+            
+            # Networks
+            echo "            <div class='inventory-card'>"
+            echo "                <h3>Discovered Networks</h3>"
+            echo "                <table class='inventory-table'>"
+            echo "                    <thead><tr><th>SSID</th><th>BSSID</th><th>CH</th><th>ENC</th><th>SIG</th></tr></thead>"
+            echo "                    <tbody>"
+            run_tool astra-engine --db "$SESSION_DB_FILE" ingest list 2>/dev/null | run_tool jq -r '.[] | "<tr><td>\(.ssid // "&lt;HIDDEN&gt;")</td><td><code>\(.bssid)</code></td><td>\(.channel)</td><td>\(.encryption)</td><td>\(.signal) dBm</td></tr>"' || echo "<tr><td colspan='5'>No network data</td></tr>"
+            echo "                    </tbody>"
+            echo "                </table>"
+            echo "            </div>"
+            
+            # Clients
+            echo "            <div class='inventory-card'>"
+            echo "                <h3>Discovered Clients</h3>"
+            echo "                <table class='inventory-table'>"
+            echo "                    <thead><tr><th>MAC</th><th>Vendor</th><th>IP</th><th>Hostname</th><th>SIG</th></tr></thead>"
+            echo "                    <tbody>"
+            run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-clients 2>/dev/null | run_tool jq -r '.[] | "<tr><td><code>\(.mac)</code></td><td>\(.vendor // "Unknown")</td><td>\(.ip // "N/A")</td><td>\(.hostname // "N/A")</td><td>\(.last_signal) dBm</td></tr>"' || echo "<tr><td colspan='5'>No client data</td></tr>"
+            echo "                    </tbody>"
+            echo "                </table>"
+            echo "            </div>"
+            
+            echo "        </div>"
+            echo "    </section>"
+        fi
+
+        # Discovered Credentials
+        if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+            local creds_json
+            creds_json=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-credentials 2>/dev/null || echo "[]")
+            if [[ "$creds_json" != "[]" && "$creds_json" != "null" ]]; then
+                echo "    <section>"
+                echo "        <h2>🔑 Discovered Credentials</h2>"
+                echo "        <div class='findings-list'>"
+                echo "$creds_json" | run_tool jq -r '.[] | "
+                    <div class='finding-mini-card'>
+                        <div class='header'><span class='label'>\(.proto)</span><span class='tc-id'>\(.tc_id)</span></div>
+                        <div class='data-row'><span class='data-label'>Target:</span> <span class='data-value'>\(.target_host)</span></div>
+                        \(if .username != "" then "<div class='data-row'><span class='data-label'>User:</span> <span class='data-value'>\(.username)</span></div>" else "" end)
+                        \(if .password != "" then "<div class='data-row'><span class='data-label'>Pass:</span> <span class='data-value'>\(.password)</span></div>" else "" end)
+                        \(if .hash != "" then "<div class='data-row'><span class='data-label'>Hash:</span> <span class='data-value'>\(.hash | truncate(32))</span></div>" else "" end)
+                    </div>"'
+                echo "        </div>"
+                echo "    </section>"
+            fi
+        fi
+
+        # Identified Vulnerabilities
+        if [[ -n "${SESSION_DB_FILE:-}" && -f "${TOOL_PATHS[astra-engine]}" ]]; then
+            local vulns_json
+            vulns_json=$(run_tool astra-engine --db "$SESSION_DB_FILE" ingest list-vulnerabilities 2>/dev/null || echo "[]")
+            if [[ "$vulns_json" != "[]" && "$vulns_json" != "null" ]]; then
+                echo "    <section>"
+                echo "        <h2>⚠️ Identified Vulnerabilities</h2>"
+                echo "        <div class='findings-list'>"
+                echo "$vulns_json" | run_tool jq -r '.[] | "
+                    <div class='finding-mini-card' style='border-left: 4px solid \(if .severity == "CRITICAL" then "#ef4444" elif .severity == "HIGH" then "#f97316" else "#f59e0b" end)'>
+                        <div class='header'><span class='label'>\(.name)</span><span class='tc-id'>\(.tc_id)</span></div>
+                        <div class='data-row'><span class='data-label'>Severity:</span> <span class='data-value'>\(.severity)</span></div>
+                        <div class='data-row'><span class='data-label'>Target:</span> <span class='data-value'>\(.target_host)</span></div>
+                        <div class='data-row'><small>\(.description)</small></div>
+                    </div>"'
+                echo "        </div>"
+                echo "    </section>"
+            fi
+        fi
+
         # Render Function
         render_tc_card() {
             local tc_id="$1"

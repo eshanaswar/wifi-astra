@@ -264,6 +264,32 @@ CAPLET
     log_step 7 $total_steps "Saving results"
     update_tc_progress 7 $total_steps "Saving"
 
+    # Sync findings with Assessment Engine
+    if [[ $credentials_captured -gt 0 && -f "$creds_file" ]]; then
+        log_info "Syncing captured credentials with assessment engine..."
+        while IFS= read -r line; do
+            # Format: [2026-03-25 10:00:00] IP=... USER=... PASS=...
+            local client_ip=$(echo "$line" | grep -oP 'IP=\K[^ ]+')
+            local user=$(echo "$line" | grep -oP 'USER=\K[^ ]+')
+            local pass=$(echo "$line" | grep -oP 'PASS=\K.*')
+            
+            # Try to get MAC for the IP
+            local client_mac
+            client_mac=$(run_tool ip neighbor show "$client_ip" 2>/dev/null | awk '{print $5}' | grep -E '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' | head -1 || echo "")
+
+            local cred_json=$(run_fg jq -n \
+                --arg tc "G2" \
+                --arg mac "$client_mac" \
+                --arg host "intercepted" \
+                --arg u "$user" \
+                --arg p "$pass" \
+                --arg proto "http-stripped" \
+                '{tc_id: $tc, client_mac: $mac, target_host: $host, username: $u, password: $p, proto: $proto}')
+            
+            run_tool astra-engine --db "$SESSION_DB_FILE" ingest credential --json "$cred_json" >/dev/null 2>&1
+        done < "$creds_file"
+    fi
+
     local result_status="SECURE"
     local result_summary=""
     local recommendations=""
