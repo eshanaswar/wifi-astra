@@ -32,6 +32,7 @@
 #===============================================================================
 
 run_f3() {
+    set -euo pipefail
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/f3"
 
@@ -39,7 +40,10 @@ run_f3() {
     log_step 1 $total_steps "Verifying tools and network state"
     update_tc_progress 1 $total_steps "Checking"
 
-    
+    if ! check_module_dependencies "F3"; then
+        return 1
+    fi
+
     # Ensure monitor mode is globally disabled (we need to be connected)
     ensure_managed_mode || return 1
 
@@ -141,9 +145,9 @@ run_f3() {
     fi
 
     local result_json
-    evidence_register_file "$txt"
+    evidence_register_file "$txt_file"
 
-    result_json=$(run_tool jq -n \
+    result_json=$(run_fg --quiet jq -n \
         --arg status "$status" \
         --arg summary "$summary" \
         --arg icmp "$icmp_bypass" \
@@ -156,9 +160,14 @@ run_f3() {
             icmp_bypass: ($icmp == "true"),
             dns_external_bypass: ($dns_ext == "true"),
             dns_txt_bypass: ($dns_txt == "true"),
-            recommendations: (if $status == "FINDING" then "Implement strict pre-auth ACLs to drop ALL traffic except DHCP and DNS to the portal itself." else "No action required." end),
+            recommendations: (if $status == "FINDING" then "Implement strict pre-auth ACLs to drop ALL traffic except DHCP and DNS to the portal itself." else "No action required." end)
                     }')
 
-    save_tc_result "F3" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "$txt_file" ]] && has_tool_output=1
+
+    # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
+    save_tc_result "F3" "$result_json" 0 $has_tool_output 0 1 1 1 0 1 1 1 0
+    save_session_state
     return 0
 }

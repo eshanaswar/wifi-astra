@@ -32,6 +32,7 @@
 #===============================================================================
 
 run_b7() {
+    set -uo pipefail
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/b7"
 
@@ -39,6 +40,7 @@ run_b7() {
     log_step 1 $total_steps "Verifying tools and network state"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "B7" || return 1
     
     # Ensure monitor mode is globally disabled (we need to be connected)
     ensure_managed_mode || return 1
@@ -108,7 +110,7 @@ run_b7() {
             
             while IFS=$'\t' read -r src prefix; do
                 [[ -z "$src" ]] && continue
-                leaked_prefixes=$(echo "$leaked_prefixes" | run_tool jq --arg s "$src" --arg p "$prefix" '. += [{"src": $s, "prefix": $p}]')
+                leaked_prefixes=$(echo "$leaked_prefixes" | run_fg jq --arg s "$src" --arg p "$prefix" '. += [{"src": $s, "prefix": $p}]')
             done <<< "$raw_data"
             
             status="FINDING"
@@ -123,11 +125,10 @@ run_b7() {
     log_step 6 $total_steps "Saving results"
     update_tc_progress 6 $total_steps "Saving"
 
-    local result_json
-    evidence_register_file "$pcap"
-    evidence_register_file "$txt"
+    evidence_register_file "$pcap_file"
+    evidence_register_file "$txt_file"
 
-    result_json=$(run_tool jq -n \
+    local result_json=$(run_fg jq -n \
         --arg status "$status" \
         --arg summary "$summary" \
         --argjson ra_count "$ra_count" \
@@ -143,6 +144,15 @@ run_b7() {
             recommendations: (if $status == "FINDING" then "Enable RA Guard on switches. Filter ICMPv6 type 134 (Router Advertisements) at the WLC/Gateway for the target VLAN." else "No action required." end),
                     }')
 
-    save_tc_result "B7" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "$txt_file" ]] && has_tool_output=1
+    local has_primary=0
+    [[ -f "$pcap_file" && -s "$pcap_file" ]] && has_primary=1
+
+    local is_secure_claim=0
+    [[ "$status" == "SECURE" ]] && is_secure_claim=1
+
+    save_tc_result "B7" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 $is_secure_claim
+    save_session_state
     return 0
 }

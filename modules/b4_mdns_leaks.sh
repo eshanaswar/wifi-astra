@@ -31,11 +31,13 @@
 #  RESULT JSON FIELDS:
 #    - mdns_services_found: count
 #    - ssdp_devices_found: count
-#    - services[]: array of {name, type, host, run_tool ip, port}
+#    - services[]: array of {name, type, host, ip, port}
 #    - corporate_services_leaked: bool
 #===============================================================================
 
 run_b4() {
+    set -uo pipefail
+    local tc_id="B4"
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/b4"
 
@@ -43,6 +45,7 @@ run_b4() {
     log_step 1 $total_steps "Verifying tools and connectivity"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "$tc_id" || return 1
     
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
         disable_monitor_mode
@@ -77,7 +80,7 @@ run_b4() {
     local tcpdump_pid=$!
     register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
 
-    # Also run ${TOOL_PATHS[avahi-browse]} in parallel if available
+    # Also run avahi-browse in parallel if available
     local avahi_file="${evidence_prefix}_avahi_browse.txt"
     local avahi_pid=""
     if command -v avahi-browse &>/dev/null; then
@@ -92,7 +95,7 @@ run_b4() {
     stop_countdown
 
     # Stop captures
-        if [[ -n "$avahi_pid" ]]; then
+    if [[ -n "$avahi_pid" ]]; then
         kill -TERM "$avahi_pid" 2>/dev/null
         wait "$avahi_pid" 2>/dev/null
     fi
@@ -119,11 +122,11 @@ run_b4() {
         echo ""
     } > "$services_file"
 
-    # Parse from ${TOOL_PATHS[tshark]}
+    # Parse from tshark
     if [[ -f "$capture_file" ]]; then
         ensure_user_ownership "$capture_file"
         local mdns_data
-        local mdns_data=$(run_as_user tshark -r "$capture_file" \
+        mdns_data=$(run_as_user tshark -r "$capture_file" \
             -Y "mdns && dns.resp.type == 33" \
             -T fields \
             -e ip.src \
@@ -138,8 +141,8 @@ run_b4() {
             ((mdns_count++))
 
             srv_name=$(echo "$srv_name" | xargs)
-            local srv_target=$(echo "$srv_target" | xargs)
-            local srv_port=$(echo "$srv_port" | xargs)
+            srv_target=$(echo "$srv_target" | xargs)
+            srv_port=$(echo "$srv_port" | xargs)
 
             echo "  Service: ${srv_name}" >> "$services_file"
             echo "    Host: ${srv_target}" >> "$services_file"
@@ -147,19 +150,19 @@ run_b4() {
             echo "    Port: ${srv_port}" >> "$services_file"
             echo "" >> "$services_file"
 
-            services_json=$(echo "$services_json" | run_tool jq \
+            services_json=$(echo "$services_json" | run_fg jq \
                 --arg name "$srv_name" \
                 --arg host "$srv_target" \
                 --arg ip "${src_ip:-unknown}" \
                 --arg port "${srv_port:-0}" \
                 --arg type "mDNS" \
-                '. += [{name: $name, host: $host, ip: $c_ip, port: $port, protocol: $type}]')
+                '. += [{name: $name, host: $host, ip: $ip, port: $port, protocol: $type}]')
 
         done <<< "$mdns_data"
 
         # Also extract PTR records (service types)
         local ptr_data
-        local ptr_data=$(run_as_user tshark -r "$capture_file" \
+        ptr_data=$(run_as_user tshark -r "$capture_file" \
             -Y "mdns && dns.resp.type == 12" \
             -T fields \
             -e ip.src \
@@ -173,7 +176,7 @@ run_b4() {
 
             # Skip if already counted (avoid duplicates)
             local already_counted
-            local already_counted=$(echo "$services_json" | run_tool jq --arg n "$ptr_domain" '[.[] | select(.name == $n)] | length')
+            already_counted=$(echo "$services_json" | run_fg jq --arg n "$ptr_domain" '[.[] | select(.name == $n)] | length')
             [[ $already_counted -gt 0 ]] && continue
 
             ((mdns_count++))
@@ -183,38 +186,38 @@ run_b4() {
             echo "    Source IP: ${src_ip}" >> "$services_file"
             echo "" >> "$services_file"
 
-            services_json=$(echo "$services_json" | run_tool jq \
+            services_json=$(echo "$services_json" | run_fg jq \
                 --arg name "$ptr_domain" \
                 --arg host "unknown" \
                 --arg ip "${src_ip:-unknown}" \
                 --arg port "0" \
                 --arg type "mDNS-PTR" \
                 --arg service_type "${query_name}" \
-                '. += [{name: $name, host: $host, ip: $c_ip, port: $port, protocol: $type, service_type: $service_type}]')
+                '. += [{name: $name, host: $host, ip: $ip, port: $port, protocol: $type, service_type: $service_type}]')
         done <<< "$ptr_data"
     fi
 
-    # Parse ${TOOL_PATHS[avahi-browse]} results
+    # Parse avahi-browse results
     if [[ -f "$avahi_file" && -s "$avahi_file" ]]; then
-        while IFS=';' read -r event iface ipver service_name service_type domain hostname run_tool ip port txt; do
+        while IFS=';' read -r event iface ipver service_name service_type domain hostname a_ip port txt; do
             [[ "$event" != "=" ]] && continue
             [[ -z "$service_name" ]] && continue
 
             # Check if not already in list
             local already
-            local already=$(echo "$services_json" | run_tool jq --arg n "$service_name" '[.[] | select(.name == $n)] | length')
+            already=$(echo "$services_json" | run_fg jq --arg n "$service_name" '[.[] | select(.name == $n)] | length')
             [[ $already -gt 0 ]] && continue
 
             ((mdns_count++))
 
-            services_json=$(echo "$services_json" | run_tool jq \
+            services_json=$(echo "$services_json" | run_fg jq \
                 --arg name "$service_name" \
                 --arg host "${hostname:-unknown}" \
-                --arg ip "${c_ip:-unknown}" \
+                --arg ip "${a_ip:-unknown}" \
                 --arg port "${port:-0}" \
                 --arg type "avahi" \
                 --arg service_type "${service_type}" \
-                '. += [{name: $name, host: $host, ip: $c_ip, port: $port, protocol: $type, service_type: $service_type}]')
+                '. += [{name: $name, host: $host, ip: $ip, port: $port, protocol: $type, service_type: $service_type}]')
         done < "$avahi_file"
     fi
 
@@ -239,7 +242,7 @@ run_b4() {
 
     if [[ -f "$capture_file" ]]; then
         local ssdp_data
-        local ssdp_data=$(run_as_user tshark -r "$capture_file" \
+        ssdp_data=$(run_as_user tshark -r "$capture_file" \
             -Y "ssdp" \
             -T fields \
             -e ip.src \
@@ -261,14 +264,14 @@ run_b4() {
             echo "    Location: ${location:-unknown}" >> "$ssdp_file"
             echo "" >> "$ssdp_file"
 
-            services_json=$(echo "$services_json" | run_tool jq \
+            services_json=$(echo "$services_json" | run_fg jq \
                 --arg name "SSDP: ${server:-unknown}" \
                 --arg host "${src_ip}" \
                 --arg ip "$src_ip" \
                 --arg port "1900" \
                 --arg type "SSDP" \
                 --arg location "${location:-}" \
-                '. += [{name: $name, host: $host, ip: $c_ip, port: $port, protocol: $type, location: $location}]')
+                '. += [{name: $name, host: $host, ip: $ip, port: $port, protocol: $type, location: $location}]')
         done <<< "$ssdp_data"
     fi
 
@@ -305,21 +308,21 @@ run_b4() {
         "_ftp._tcp"            # FTP servers
     )
 
-    # Use index-based run_tool jq iteration to avoid shell word-splitting issues with run_tool jq -c output
+    # Use index-based jq iteration to avoid shell word-splitting issues
     local svc_count
-    svc_count=$(echo "$services_json" | run_tool jq 'length')
+    svc_count=$(echo "$services_json" | run_fg jq 'length')
     
     for (( si=0; si < svc_count; si++ )); do
         local svc_name svc_type
-        local svc_name=$(echo "$services_json" | run_tool jq -r ".[$si].name // \"\"")
-        local svc_type=$(echo "$services_json" | run_tool jq -r ".[$si].service_type // \"\"")
+        svc_name=$(echo "$services_json" | run_fg jq -r ".[$si].name // \"\"")
+        svc_type=$(echo "$services_json" | run_fg jq -r ".[$si].service_type // \"\"")
 
         for pattern in "${corp_patterns[@]}"; do
             if echo "${svc_name}${svc_type}" | grep -qi "$pattern"; then
-                local corporate_leak="true"
+                corporate_leak="true"
                 local svc_entry
-                local svc_entry=$(echo "$services_json" | run_tool jq ".[$si]")
-                sensitive_services=$(echo "$sensitive_services" | run_tool jq --argjson svc "$svc_entry" '. += [$svc]')
+                svc_entry=$(echo "$services_json" | run_fg jq ".[$si]")
+                sensitive_services=$(echo "$sensitive_services" | run_fg jq --argjson svc "$svc_entry" '. += [$svc]')
                 log_result "FINDING" "Corporate service leaked: ${svc_name} (${svc_type})"
                 break
             fi
@@ -327,7 +330,7 @@ run_b4() {
     done
 
     local sensitive_count
-    sensitive_count=$(echo "$sensitive_services" | run_tool jq 'length')
+    sensitive_count=$(echo "$sensitive_services" | run_fg jq 'length')
 
     #--- Step 6: Save results ---
     log_step 6 $total_steps "Saving results"
@@ -337,29 +340,30 @@ run_b4() {
     local result_status="SECURE"
     local result_summary=""
     local recommendations=""
+    local is_secure_claim=1
 
     if [[ "$corporate_leak" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="${total_services} service(s) discovered via mDNS/SSDP on target WiFi. ${sensitive_count} appear to be corporate/internal services (printers, file shares, AirPlay, etc.) that should not be visible to target clients."
-        local recommendations="1) Enable mDNS/IGMP filtering on the target VLAN to block multicast 224.0.0.251 and 239.255.255.250. "
+        result_status="FINDING"
+        is_secure_claim=0
+        result_summary="${total_services} service(s) discovered via mDNS/SSDP on target WiFi. ${sensitive_count} appear to be corporate/internal services (printers, file shares, AirPlay, etc.) that should not be visible to target clients."
+        recommendations="1) Enable mDNS/IGMP filtering on the target VLAN to block multicast 224.0.0.251 and 239.255.255.250. "
         recommendations+="2) Configure the wireless controller to suppress multicast/broadcast on the target SSID. "
         recommendations+="3) Use a Bonjour gateway to control service advertisement across VLANs. "
         recommendations+="4) Ensure IGMP snooping is enabled to prevent multicast flooding to target ports."
     elif [[ $total_services -gt 0 ]]; then
-        local result_status="INFO"
-        local result_summary="${total_services} service(s) discovered but none appear to be sensitive corporate services."
-        local recommendations="Monitor for new service announcements. Consider mDNS filtering as defence-in-depth."
+        result_status="INFO"
+        is_secure_claim=0
+        result_summary="${total_services} service(s) discovered but none appear to be sensitive corporate services."
+        recommendations="Monitor for new service announcements. Consider mDNS filtering as defence-in-depth."
     else
-        local result_summary="No mDNS/Bonjour/SSDP service announcements detected on target WiFi. Multicast is properly filtered."
-        local recommendations="No action needed. Multicast filtering is effective."
+        result_summary="No mDNS/Bonjour/SSDP service announcements detected on target WiFi. Multicast is properly filtered."
+        recommendations="No action needed. Multicast filtering is effective."
     fi
 
-    local result_json
-    evidence_register_file "b4_mdns_capture.pcap"
-    evidence_register_file "b4_mdns_services.txt"
-    evidence_register_file "b4_ssdp_devices.txt"
+    local evidence_files='["b4_mdns_capture.pcap", "b4_mdns_services.txt", "b4_ssdp_devices.txt"]'
 
-    local result_json=$(run_tool jq -n \
+    local result_json
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "mDNS services: ${mdns_count}, SSDP devices: ${ssdp_count}, Sensitive leaks: ${sensitive_count}" \
@@ -369,6 +373,7 @@ run_b4() {
         --argjson services "$services_json" \
         --argjson sensitive_services "$sensitive_services" \
         --arg corporate_services_leaked "$corporate_leak" \
+        --argjson evidence_files "$evidence_files" \
         '{
             status: $status,
             summary: $summary,
@@ -379,9 +384,12 @@ run_b4() {
             services: $services,
             sensitive_services: $sensitive_services,
             corporate_services_leaked: ($corporate_services_leaked == "true"),
-                    }')
+            evidence_files: $evidence_files
+        }')
 
-    save_tc_result "B4" "$result_json" "has_tool_output:1,clean_run:1"
+    # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
+    save_tc_result "$tc_id" "$result_json" 1 1 1 1 1 1 0 1 1 1 "$is_secure_claim"
+    save_session_state
 
     # Display summary
     echo ""

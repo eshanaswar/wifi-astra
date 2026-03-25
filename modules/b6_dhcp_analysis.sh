@@ -40,6 +40,7 @@
 #===============================================================================
 
 run_b6() {
+    set -uo pipefail
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/b6"
 
@@ -47,6 +48,7 @@ run_b6() {
     log_step 1 $total_steps "Verifying tools and connectivity"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "B6" || return 1
     
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
         disable_monitor_mode
@@ -177,7 +179,7 @@ if [[ -f "$capture_file" ]]; then
             if [[ -n "$dns_val" ]]; then
                 for dns in $(echo "$dns_val" | tr ',' ' '); do
                     dns=$(echo "$dns" | xargs)
-                    [[ -n "$dns" ]] && dns_servers=$(echo "$dns_servers" | run_tool jq --arg d "$dns" '. += [$d]')
+                    [[ -n "$dns" ]] && dns_servers=$(echo "$dns_servers" | run_fg jq --arg d "$dns" '. += [$d]')
                 done
             fi
 
@@ -185,7 +187,7 @@ if [[ -f "$capture_file" ]]; then
             if [[ -n "$wins_val" ]]; then
                 for wins in $(echo "$wins_val" | tr ',' ' '); do
                     wins=$(echo "$wins" | xargs)
-                    [[ -n "$wins" ]] && wins_servers=$(echo "$wins_servers" | run_tool jq --arg w "$wins" '. += [$w]')
+                    [[ -n "$wins" ]] && wins_servers=$(echo "$wins_servers" | run_fg jq --arg w "$wins" '. += [$w]')
                 done
             fi
 
@@ -193,7 +195,7 @@ if [[ -f "$capture_file" ]]; then
             if [[ -n "$ntp_val" ]]; then
                 for ntp in $(echo "$ntp_val" | tr ',' ' '); do
                     ntp=$(echo "$ntp" | xargs)
-                    [[ -n "$ntp" ]] && ntp_servers=$(echo "$ntp_servers" | run_tool jq --arg n "$ntp" '. += [$n]')
+                    [[ -n "$ntp" ]] && ntp_servers=$(echo "$ntp_servers" | run_fg jq --arg n "$ntp" '. += [$n]')
                 done
             fi
 
@@ -205,9 +207,9 @@ if [[ -f "$capture_file" ]]; then
                 echo "Gateway:          ${gateway}"
                 echo "Broadcast:        ${broadcast_val}"
                 echo "Domain Name:      ${domain_name}"
-                echo "DNS Servers:      $(echo "$dns_servers" | run_tool jq -r 'join(", ")')"
-                echo "WINS Servers:     $(echo "$wins_servers" | run_tool jq -r 'join(", ")')"
-                echo "NTP Servers:      $(echo "$ntp_servers" | run_tool jq -r 'join(", ")')"
+                echo "DNS Servers:      $(echo "$dns_servers" | run_fg jq -r 'join(", ")')"
+                echo "WINS Servers:     $(echo "$wins_servers" | run_fg jq -r 'join(", ")')"
+                echo "NTP Servers:      $(echo "$ntp_servers" | run_fg jq -r 'join(", ")')"
                 echo "Lease Time:       ${lease_time}s"
                 echo "Renewal Time:     ${renewal_val}s"
                 echo "Rebinding Time:   ${rebind_val}s"
@@ -270,18 +272,18 @@ if [[ -f "$capture_file" ]]; then
         fi
         log_result "FINDING" "$finding"
         echo "FINDING: ${finding}" >> "$findings_file"
-        findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
+        findings=$(echo "$findings" | run_fg jq --arg f "$finding" '. += [$f]')
     fi
 
     # Check: WINS servers provided? (indicates Windows/AD environment)
     local wins_count
-    wins_count=$(echo "$wins_servers" | run_tool jq 'length')
+    wins_count=$(echo "$wins_servers" | run_fg jq 'length')
     if [[ $wins_count -gt 0 ]]; then
         local information_leaked="true"
-        local finding="WINS/NetBIOS name servers provided: $(echo "$wins_servers" | run_tool jq -r 'join(", ")'). This reveals Windows/AD infrastructure."
+        local finding="WINS/NetBIOS name servers provided: $(echo "$wins_servers" | run_fg jq -r 'join(", ")'). This reveals Windows/AD infrastructure."
         log_result "FINDING" "$finding"
         echo "FINDING: ${finding}" >> "$findings_file"
-        findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
+        findings=$(echo "$findings" | run_fg jq --arg f "$finding" '. += [$f]')
     fi
 
     # Check: DNS servers are internal?
@@ -292,9 +294,9 @@ if [[ -f "$capture_file" ]]; then
             local finding="Internal DNS server provided via DHCP: ${dns}"
             log_result "FINDING" "$finding"
             echo "FINDING: ${finding}" >> "$findings_file"
-            findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
+            findings=$(echo "$findings" | run_fg jq --arg f "$finding" '. += [$f]')
         fi
-    done < <(echo "$dns_servers" | run_tool jq -r '.[]')
+    done < <(echo "$dns_servers" | run_fg jq -r '.[]')
 
     # Check: NTP servers are internal?
     while IFS= read -r ntp; do
@@ -304,9 +306,9 @@ if [[ -f "$capture_file" ]]; then
             local finding="Internal NTP server provided via DHCP: ${ntp}"
             log_result "FINDING" "$finding"
             echo "FINDING: ${finding}" >> "$findings_file"
-            findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
+            findings=$(echo "$findings" | run_fg jq --arg f "$finding" '. += [$f]')
         fi
-    done < <(echo "$ntp_servers" | run_tool jq -r '.[]')
+    done < <(echo "$ntp_servers" | run_fg jq -r '.[]')
 
     # Check: Subnet too large? (/16 or larger could allow scanning)
     if [[ -n "$subnet_mask" ]]; then
@@ -317,7 +319,7 @@ if [[ -f "$capture_file" ]]; then
             local finding="target subnet is /${cidr_bits} (mask: ${subnet_mask}). Large subnets increase attack surface."
             log_result "FINDING" "$finding"
             echo "FINDING: ${finding}" >> "$findings_file"
-            findings=$(echo "$findings" | run_tool jq --arg f "$finding" '. += [$f]')
+            findings=$(echo "$findings" | run_fg jq --arg f "$finding" '. += [$f]')
         fi
     fi
 
@@ -361,12 +363,12 @@ if [[ -f "$capture_file" ]]; then
     local recommendations=""
 
     local findings_count
-    findings_count=$(echo "$findings" | run_tool jq 'length')
+    findings_count=$(echo "$findings" | run_fg jq 'length')
 
     if [[ "$information_leaked" == "true" ]]; then
         local result_status="FINDING"
         local result_summary="DHCP configuration leaks internal infrastructure information. ${findings_count} finding(s): "
-        result_summary+=$(echo "$findings" | run_tool jq -r 'join("; ")')
+        result_summary+=$(echo "$findings" | run_fg jq -r 'join("; ")')
         local recommendations="1) Remove organization domain name from DHCP options for target VLAN (Option 15). "
         recommendations+="2) Use public DNS servers (8.8.8.8, 1.1.1.1) or a dedicated target DNS for DHCP Option 6. "
         recommendations+="3) Remove WINS server options (Option 44/46) from target DHCP scope. "
@@ -383,7 +385,7 @@ if [[ -f "$capture_file" ]]; then
     evidence_register_file "b6_dhcp_options.txt"
     evidence_register_file "b6_dhcp_findings.txt"
 
-    local result_json=$(run_tool jq -n \
+    local result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Server: ${dhcp_server}, Domain: ${domain_name:-none}, Findings: ${findings_count}" \
@@ -415,7 +417,16 @@ if [[ -f "$capture_file" ]]; then
             findings: $findings,
                     }')
 
-    save_tc_result "B6" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "$options_file" || -f "$findings_file" ]] && has_tool_output=1
+    local has_primary=0
+    [[ -f "$capture_file" ]] && has_primary=1
+
+    local is_secure_claim=0
+    [[ "$result_status" == "SECURE" ]] && is_secure_claim=1
+
+    save_tc_result "B6" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 $is_secure_claim
+    save_session_state
 
     # Display summary
     echo ""
@@ -424,7 +435,7 @@ if [[ -f "$capture_file" ]]; then
     else
         log_result "SECURE" "DHCP configuration appropriate for target WiFi"
     fi
-    log_result "INFO" "DHCP Server: ${dhcp_server}, Domain: ${domain_name:-none}, DNS: $(echo "$dns_servers" | run_tool jq -r 'join(", ")')"
+    log_result "INFO" "DHCP Server: ${dhcp_server}, Domain: ${domain_name:-none}, DNS: $(echo "$dns_servers" | run_fg jq -r 'join(", ")')"
 
     return 0
 }

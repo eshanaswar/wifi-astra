@@ -41,6 +41,7 @@
 #===============================================================================
 
 run_f2() {
+    set -euo pipefail
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/f2"
 
@@ -48,7 +49,10 @@ run_f2() {
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    
+    if ! check_module_dependencies "F2"; then
+        return 1
+    fi
+
     local has_hostapd_mana=false
     local has_hostapd=false
     local has_mdk4=false
@@ -60,8 +64,7 @@ run_f2() {
     command -v aireplay-ng &>/dev/null && has_aireplay=true
 
     if [[ "$has_hostapd_mana" == "false" && "$has_hostapd" == "false" && "$has_mdk4" == "false" ]]; then
-        log_error "At least one of ${TOOL_PATHS[hostapd]}-mana, ${TOOL_PATHS[hostapd]}, or ${TOOL_PATHS[mdk4]} is required."
-        log_error "Install: apt install -y ${TOOL_PATHS[hostapd]} ${TOOL_PATHS[mdk4]}"
+        log_error "At least one of hostapd-mana, hostapd, or mdk4 is required."
         return 1
     fi
 
@@ -73,6 +76,7 @@ run_f2() {
     log_success "Target: ${GUEST_SSID} (${GUEST_BSSID:-unknown}) CH ${GUEST_CHANNEL:-auto}"
 
     export KARMA_SSID="${GUEST_SSID}"
+    save_session_state
 
     #--- Attack Mode Selection (PineAP-style menu) ---
     echo ""
@@ -474,7 +478,7 @@ HOSTAPD_CONF
     evidence_register_file "f2_captured_traffic.pcap"
     evidence_register_file "f2_findings.txt"
 
-    local result_json=$(run_tool jq -n \
+    local result_json=$(run_fg --quiet jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Mode: ${attack_mode}, Clients lured: ${clients_lured}, Probed SSIDs: ${probed_ssids}, Unique clients: ${unique_clients}" \
@@ -493,10 +497,18 @@ HOSTAPD_CONF
             clients_lured: $clients_lured,
             probed_ssids: $probed_ssids,
             unique_clients: $unique_clients,
-            credentials_captured: $credentials_captured,
+            credentials_captured: $credentials_captured
                     }')
 
-    save_tc_result "F2" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "$probe_log" || -f "$beacon_log" || -f "$karma_clients" ]] && has_tool_output=1
+
+    local has_primary=0
+    [[ -f "$traffic_pcap" ]] && has_primary=1
+
+    # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
+    save_tc_result "F2" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 0
+    save_session_state
 
     echo ""
     if [[ $clients_lured -gt 0 ]]; then

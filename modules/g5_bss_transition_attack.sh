@@ -21,11 +21,14 @@
 #===============================================================================
 
 run_g5() {
+    set -uo pipefail
     local total_steps=5
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/g5"
     
     log_step 1 $total_steps "Detecting 802.11v/k Support"
     update_tc_progress 1 $total_steps "Detection"
+
+    check_module_dependencies "G5" || return 1
 
     check_abort || return 1
 
@@ -114,6 +117,7 @@ EOF
             details: $details
         }')
     
-    save_tc_result "G5" "$result_json" "has_tool_output:1,clean_run:1"
+    save_tc_result "G5" "$result_json" 1 1 1 1 1 1 0 1 1 1 0
+    save_session_state
     return 0
 }

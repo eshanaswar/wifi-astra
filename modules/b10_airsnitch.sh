@@ -39,6 +39,8 @@
 #    - evidence_files: list
 #===============================================================================
 
+set -uo pipefail
+
 run_b10() {
     local total_steps=5
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/b10"
@@ -47,6 +49,7 @@ run_b10() {
     log_step 1 $total_steps "Checking for AirSnitch and network setup"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "B10" || return 1
     
     # Resolve ${TOOL_PATHS[airsnitch]} binary: PATH, AIRSNITCH_PATH, or common build locations
     local AIRSNITCH_CMD=""
@@ -90,10 +93,9 @@ run_b10() {
         } > "$out_file"
 
         local result_json
-        evidence_register_file "b10_airsnitch_output.txt"
-        evidence_register_file "b10_airsnitch_summary.txt"
+        evidence_register_file "$(basename "$out_file")"
 
-        local result_json=$(run_tool jq -n \
+        result_json=$(run_fg jq -n \
             --arg status "INFO" \
             --arg summary "B10 skipped: AirSnitch not installed. Install from https://github.com/vanhoefm/airsnitch to test client isolation bypass (GTK abuse, gateway bouncing, port stealing)." \
             --arg details "Tool not found in PATH or AIRSNITCH_PATH. No bypass test performed." \
@@ -107,8 +109,11 @@ run_b10() {
                 recommendations: $recommendations,
                 tool_available: $tool_available,
                 bypass_detected: $bypass_detected,
-                            }')
-        save_tc_result "B10" "$result_json" "has_tool_output:1,clean_run:1"
+            }')
+        
+        # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
+        save_tc_result "B10" "$result_json" 1 0 0 1 1 1 0 0 0 1 0
+        save_session_state
         log_result "INFO" "B10 skipped — install AirSnitch to test client isolation bypass"
         return 0
     fi
@@ -133,8 +138,8 @@ run_b10() {
     ensure_managed_mode || return 1
 
     local my_ip gateway_ip
-    local my_ip=$(run_tool ip -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
-    local gateway_ip="${GATEWAY_IP:-$(run_tool ip route show dev "$WIFI_INTERFACE" 2>/dev/null | awk '/default/{print $3}' | head -1)}"
+    my_ip=$(run_fg ip -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
+    gateway_ip="${GATEWAY_IP:-$(run_fg ip route show dev "$WIFI_INTERFACE" 2>/dev/null | awk '/default/{print $3}' | head -1)}"
 
     if [[ -z "$my_ip" ]]; then
         log_error "No IP on ${WIFI_INTERFACE}. Connect to the target WiFi first."
@@ -167,7 +172,7 @@ run_b10() {
     # Common patterns: -i interface, -b bssid; run and capture. If tool has different CLI, output will show usage.
     local airsnitch_exit=0
     if ! "$AIRSNITCH_CMD" -i "$run_iface" >> "$out_file" 2>&1; then
-        local airsnitch_exit=$?
+        airsnitch_exit=$?
         echo "[Exit code: ${airsnitch_exit}]" >> "$out_file"
     fi
 
@@ -181,13 +186,13 @@ run_b10() {
     local result_details=""
     if [[ -f "$out_file" ]]; then
         if grep -qiE "bypass|vulnerable|success|inject|GTK|gateway bounce|port steal" "$out_file" 2>/dev/null; then
-            local bypass_detected="true"
-            local result_status="FINDING"
-            local result_summary="AirSnitch indicated a possible client isolation bypass. Review b10_airsnitch_output.txt."
-            local result_details="Tool output contained keywords suggesting bypass (GTK abuse, gateway bouncing, or port stealing)."
+            bypass_detected="true"
+            result_status="FINDING"
+            result_summary="AirSnitch indicated a possible client isolation bypass. Review b10_airsnitch_output.txt."
+            result_details="Tool output contained keywords suggesting bypass (GTK abuse, gateway bouncing, or port stealing)."
         fi
         if [[ $airsnitch_exit -ne 0 ]]; then
-            local result_details="${result_details} Exit code: ${airsnitch_exit}. Tool may need different arguments or environment."
+            result_details="${result_details} Exit code: ${airsnitch_exit}. Tool may need different arguments or environment."
         fi
     fi
 
@@ -218,10 +223,14 @@ run_b10() {
 
     local recommendations="Review b10_airsnitch_output.txt. If a bypass was found, harden AP/client isolation and gateway forwarding."
     if [[ "$bypass_detected" == "true" ]]; then
-        local recommendations="Client isolation bypass detected. Harden wireless controller: enforce key separation, disable gateway bouncing where possible, and review port/VLAN mapping."
+        recommendations="Client isolation bypass detected. Harden wireless controller: enforce key separation, disable gateway bouncing where possible, and review port/VLAN mapping."
     fi
 
-    local result_json=$(run_tool jq -n \
+    evidence_register_file "$(basename "$out_file")"
+    evidence_register_file "$(basename "$summary_file")"
+
+    local result_json
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "${result_details:-AirSnitch executed. See evidence.}" \
@@ -236,7 +245,12 @@ run_b10() {
             tool_available: $tool_available,
             bypass_detected: $bypass_detected,
         }')
-    save_tc_result "B10" "$result_json" "has_tool_output:1,clean_run:1"
+    
+    # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
+    local is_secure=0
+    [[ "$result_status" == "SECURE" ]] && is_secure=1
+    save_tc_result "B10" "$result_json" 1 1 0 1 1 1 0 1 1 1 "$is_secure"
+    save_session_state
 
     if [[ "$bypass_detected" == "true" ]]; then
         log_result "FINDING" "Client isolation bypass indicated by AirSnitch"

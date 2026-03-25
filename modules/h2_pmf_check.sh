@@ -22,11 +22,14 @@
 #===============================================================================
 
 run_h2() {
+    set -uo pipefail
     local total_steps=5
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/h2"
     
     log_step 1 $total_steps "Detecting PMF Support"
     update_tc_progress 1 $total_steps "Detection"
+
+    check_module_dependencies "H2" || return 1
 
     check_abort || return 1
 
@@ -94,6 +97,12 @@ run_h2() {
             details: $details
         }')
     
-    save_tc_result "H2" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "$log_file" ]] && has_tool_output=1
+    local is_secure_claim=0
+    [[ "$vulnerability" == "SECURE" ]] && is_secure_claim=1
+
+    save_tc_result "H2" "$result_json" 1 $has_tool_output 1 1 1 1 0 1 1 1 $is_secure_claim
+    save_session_state
     return 0
 }

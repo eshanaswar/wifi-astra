@@ -39,6 +39,7 @@
 #===============================================================================
 
 run_g3() {
+    set -uo pipefail
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/g3"
 
@@ -46,22 +47,7 @@ run_g3() {
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    
-    local has_responder=false
-    local has_tcpdump=false
-    local has_tshark=false
-    local has_dig=false
-
-    command -v responder &>/dev/null && has_responder=true
-    command -v tcpdump &>/dev/null && has_tcpdump=true
-    command -v tshark &>/dev/null && has_tshark=true
-    command -v dig &>/dev/null && has_dig=true
-
-    if [[ "$has_responder" == "false" && "$has_tcpdump" == "false" ]]; then
-        log_error "Either ${TOOL_PATHS[responder]} or ${TOOL_PATHS[tcpdump]} is required."
-        log_error "Install: apt install -y ${TOOL_PATHS[responder]} ${TOOL_PATHS[tcpdump]}"
-        return 1
-    fi
+    check_module_dependencies "G3" || return 1
 
     ensure_managed_mode || return 1
 
@@ -354,7 +340,13 @@ run_g3() {
             dns_spoof_possible: ($dns_spoof_possible == "true"),
                     }')
 
-    save_tc_result "G3" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "$findings_file" ]] && has_tool_output=1
+    local has_primary=0
+    [[ $hashes_captured -gt 0 || "$dns_spoof_possible" == "true" ]] && has_primary=1
+
+    save_tc_result "G3" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 0
+    save_session_state
 
     echo ""
     if [[ $hashes_captured -gt 0 ]]; then

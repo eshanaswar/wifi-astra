@@ -36,13 +36,16 @@
 #===============================================================================
 
 run_g4() {
+    set -uo pipefail
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/g4"
-#--- Step 1: Verify tools ---
-log_step 1 $total_steps "Verifying tools"
-update_tc_progress 1 $total_steps "Checking"
 
-local has_nmap=false
+    #--- Step 1: Verify tools ---
+    log_step 1 $total_steps "Verifying tools"
+    update_tc_progress 1 $total_steps "Checking"
+
+    check_module_dependencies "G4" || return 1
+
     ensure_managed_mode || return 1
 
     local iface="${WIFI_INTERFACE:-wlan0}"
@@ -360,7 +363,13 @@ local has_nmap=false
             vlan_assignment_changed: ($vlan_assignment_changed == "true"),
                     }')
 
-    save_tc_result "G4" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "$findings_file" ]] && has_tool_output=1
+    local has_primary=0
+    [[ "$mac_bypass_possible" == "true" || "$vlan_assignment_changed" == "true" ]] && has_primary=1
+
+    save_tc_result "G4" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 0
+    save_session_state
 
     echo ""
     if [[ "$mac_bypass_possible" == "true" ]]; then

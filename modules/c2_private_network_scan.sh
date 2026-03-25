@@ -43,10 +43,12 @@
 #  RESULT JSON FIELDS:
 #    - total_hosts_reachable: count
 #    - hosts_outside_target_subnet: count
-#    - live_hosts[]: array of {run_tool ip, ports[], services[], netbios_name}
+#    - live_hosts[]: array of {ip, ports[], services[], netbios_name}
 #    - segmentation_bypass: bool — can reach hosts outside target VLAN?
 #    - ranges_scanned: which RFC1918 ranges were tested
 #===============================================================================
+
+set -uo pipefail
 
 run_c2() {
     local total_steps=8
@@ -56,15 +58,16 @@ run_c2() {
     log_step 1 $total_steps "Verifying tools and connectivity"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "C2" || return 1
+
     local has_masscan=true
     if ! command -v masscan &>/dev/null; then
         has_masscan=false
-        log_warn "${TOOL_PATHS[masscan]} not available — will use ${TOOL_PATHS[nmap]} (significantly slower)"
+        log_warn "masscan not available — will use nmap (significantly slower)"
     fi
 
-        # Ensure monitor mode is globally disabled (we need to be connected)
+    # Ensure monitor mode is globally disabled (we need to be connected)
     ensure_managed_mode || return 1
-
 
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
         disable_monitor_mode
@@ -72,10 +75,10 @@ run_c2() {
     fi
 
     if [[ -z "${MY_IP:-}" ]]; then
-        MY_IP=$(run_tool ip -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | head -1)
+        MY_IP=$(run_fg --quiet ip -4 addr show "${WIFI_INTERFACE:-wlan0}" 2>/dev/null | awk '/inet/{print $2}' | head -1)
     fi
     if [[ -z "${GATEWAY_IP:-}" ]]; then
-        GATEWAY_IP=$(run_tool ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
+        GATEWAY_IP=$(run_fg --quiet ip route 2>/dev/null | awk '/default/{print $3}' | head -1)
     fi
 
     local our_subnet
@@ -101,24 +104,11 @@ run_c2() {
     echo ""
 
     # Ask user for target subnets
-    echo -e "${C_CYAN}┌─────────────────────────────────────────────────────────────────┐${C_RESET}"
-    echo -e "${C_CYAN}│  TARGET SUBNET SELECTION                                        │${C_RESET}"
-    echo -e "${C_CYAN}│                                                                 │${C_RESET}"
-    echo -e "${C_CYAN}│  Do you know which subnet(s) to target?                         │${C_RESET}"
-    echo -e "${C_CYAN}│                                                                 │${C_RESET}"
-    echo -e "${C_CYAN}│  Enter one or more subnets in CIDR notation, one per line.      │${C_RESET}"
-    echo -e "${C_CYAN}│  Examples: 10.10.0.0/16, 172.16.5.0/24, 192.168.1.0/24         │${C_RESET}"
-    echo -e "${C_CYAN}│                                                                 │${C_RESET}"
-    echo -e "${C_CYAN}│  Press Enter on empty line when done.                           │${C_RESET}"
-    echo -e "${C_CYAN}│  Press Enter immediately (no input) to scan ALL RFC1918 ranges. │${C_RESET}"
-    echo -e "${C_CYAN}│                                                                 │${C_RESET}"
-    echo -e "${C_CYAN}└─────────────────────────────────────────────────────────────────┘${C_RESET}"
     echo ""
-
     local -a user_subnets=()
     local subnet_input=""
     while true; do
-        get_or_request_param "subnet_input" "  Subnet (or Enter to finish)"
+        get_or_request_param "subnet_input" "  Enter target subnet CIDR (or Enter to finish)"
         [[ -z "$subnet_input" ]] && break
         # Basic validation: must contain /
         if [[ "$subnet_input" == *"/"* ]]; then
@@ -127,6 +117,7 @@ run_c2() {
         else
             log_warn "Invalid format. Use CIDR notation (e.g. 10.0.0.0/24)"
         fi
+        subnet_input="" # Reset for next loop
     done
 
     local scan_mode="all"
@@ -143,8 +134,8 @@ run_c2() {
     fi
 
     echo ""
-    get_or_request_param "confirm" "  Proceed with scan? [Y/n]"
-    [[ "${confirm,,}" == "n" ]] && return 1
+    get_or_request_param "confirm_scan" "  Proceed with scan? [Y/n]"
+    [[ "${confirm_scan,,}" == "n" ]] && return 1
 
     #--- Steps 2+: Scan target ranges ---
     local live_hosts="[]"
@@ -152,7 +143,7 @@ run_c2() {
     local -a ranges_scanned=()
 
     if [[ "$scan_mode" == "targeted" ]]; then
-        local scan_targets=("${user_subnets[@]}")
+        scan_targets=("${user_subnets[@]}")
     else
         scan_targets=("10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16")
     fi
@@ -173,13 +164,13 @@ run_c2() {
         local mass_file="${evidence_prefix}_scan_${range_label}.txt"
 
         if [[ "$has_masscan" == "true" ]]; then
-            log_cmd "${TOOL_PATHS[masscan]} ${target_range} --ports 22,80,443,445,3389,8080 --rate ${MASSCAN_RATE} --exclude ${our_subnet}"
-            start_spinner "Scanning ${target_range} with ${TOOL_PATHS[masscan]} (rate: ${MASSCAN_RATE} pps)"
+            log_cmd "masscan ${target_range} --ports 22,80,443,445,3389,8080 --rate ${MASSCAN_RATE} --exclude ${our_subnet}"
+            start_spinner "Scanning ${target_range} with masscan (rate: ${MASSCAN_RATE} pps)"
 
             local exclude_arg=""
             [[ -n "${our_subnet}" ]] && exclude_arg="--exclude ${our_subnet}"
 
-            ${TOOL_PATHS[masscan]} "$target_range" \
+            run_fg --quiet masscan "$target_range" \
                 --ports 22,80,443,445,3389,8080 \
                 --rate "$MASSCAN_RATE" \
                 $exclude_arg \
@@ -192,11 +183,11 @@ run_c2() {
             # Nmap fallback — sample subnets for large ranges, scan directly for /24s or smaller
             local mask="${target_range##*/}"
             if [[ $mask -le 24 ]]; then
-                log_cmd "${TOOL_PATHS[nmap]} -sn -PE -PP ${target_range}"
-                start_spinner "Scanning ${target_range} with ${TOOL_PATHS[nmap]}"
+                log_cmd "nmap -sn -PE -PP ${target_range}"
+                start_spinner "Scanning ${target_range} with nmap"
                 local nmap_exclude_arg=""
                 [[ -n "${our_subnet}" ]] && nmap_exclude_arg="--exclude ${our_subnet}"
-                ${TOOL_PATHS[nmap]} -sn -PE -PP "$target_range" $nmap_exclude_arg -oA "${mass_file%.txt}" 2>/dev/null || true
+                run_fg --quiet nmap -sn -PE -PP "$target_range" $nmap_exclude_arg -oA "${mass_file%.txt}" 2>/dev/null || true
                 stop_spinner
             else
                 # Large range — sample common subnets
@@ -204,25 +195,25 @@ run_c2() {
                 range_base=$(echo "$target_range" | cut -d. -f1)
                 local sample_ranges="${range_base}.0.0.0/24 ${range_base}.0.1.0/24 ${range_base}.1.0.0/24 ${range_base}.1.1.0/24 ${range_base}.10.0.0/24 ${range_base}.10.10.0/24 ${range_base}.100.0.0/24"
                 log_info "Large range — sampling common subnets in ${target_range}"
-                log_cmd "${TOOL_PATHS[nmap]} -sn -PE -PP (sampled subnets)"
-                start_spinner "Scanning sample subnets in ${target_range} with ${TOOL_PATHS[nmap]}"
+                log_cmd "nmap -sn -PE -PP (sampled subnets)"
+                start_spinner "Scanning sample subnets in ${target_range} with nmap"
                 nmap_exclude_arg=""
                 [[ -n "${our_subnet}" ]] && nmap_exclude_arg="--exclude ${our_subnet}"
-                ${TOOL_PATHS[nmap]} -sn -PE -PP $sample_ranges $nmap_exclude_arg -oA "${mass_file%.txt}" 2>/dev/null || true
+                run_fg --quiet nmap -sn -PE -PP $sample_ranges $nmap_exclude_arg -oA "${mass_file%.txt}" 2>/dev/null || true
                 stop_spinner
             fi
         fi
 
-        # Parse results — ${TOOL_PATHS[masscan]} reads .txt (list format), ${TOOL_PATHS[nmap]} reads .gnmap
+        # Parse results
         local parse_file="$mass_file"
         if [[ "$has_masscan" != "true" ]]; then
             parse_file="${mass_file%.txt}.gnmap"
         fi
         local hosts_found
         hosts_found=$(_parse_scan_results "$parse_file" "$has_masscan")
-        live_hosts=$(echo "$live_hosts" | run_tool jq --argjson new "$hosts_found" '. + $new')
+        live_hosts=$(echo "$live_hosts" | run_fg jq --argjson new "$hosts_found" '. + $new')
         local range_count
-        range_count=$(echo "$hosts_found" | run_tool jq 'length')
+        range_count=$(echo "$hosts_found" | run_fg jq 'length')
         log_info "Hosts found in ${target_range}: ${range_count}"
 
         check_abort || return 1
@@ -234,21 +225,21 @@ run_c2() {
     update_tc_progress $step_num $total_steps "Classifying"
 
     # Deduplicate by IP
-    live_hosts=$(echo "$live_hosts" | run_tool jq '[group_by(.ip)[] | .[0]]')
+    live_hosts=$(echo "$live_hosts" | run_fg jq '[group_by(.ip)[] | .[0]]')
 
     local total_hosts
-    total_hosts=$(echo "$live_hosts" | run_tool jq 'length')
+    total_hosts=$(echo "$live_hosts" | run_fg jq 'length')
 
     # Separate into target subnet vs outside
     local outside_hosts
-    outside_hosts=$(echo "$live_hosts" | run_tool jq --arg subnet "$our_subnet_base" '[.[] | select(.ip | startswith($subnet) | not)]')
+    outside_hosts=$(echo "$live_hosts" | run_fg jq --arg subnet "$our_subnet_base" '[.[] | select(.ip | startswith($subnet) | not)]')
     local outside_count
-    outside_count=$(echo "$outside_hosts" | run_tool jq 'length')
+    outside_count=$(echo "$outside_hosts" | run_fg jq 'length')
 
     local target_hosts
-    target_hosts=$(echo "$live_hosts" | run_tool jq --arg subnet "$our_subnet_base" '[.[] | select(.ip | startswith($subnet))]')
+    target_hosts=$(echo "$live_hosts" | run_fg jq --arg subnet "$our_subnet_base" '[.[] | select(.ip | startswith($subnet))]')
     local target_count
-    target_count=$(echo "$target_hosts" | run_tool jq 'length')
+    target_count=$(echo "$target_hosts" | run_fg jq 'length')
 
     log_info "Total live hosts: ${total_hosts}"
     log_info "  On target subnet (${our_subnet}): ${target_count}"
@@ -268,10 +259,10 @@ run_c2() {
         echo "============================================================"
         echo ""
         echo "--- Outside target subnet (SEGMENTATION BYPASS) ---"
-        echo "$outside_hosts" | run_tool jq -r '.[] | "  \(.ip) (port: \(.port // "ping"))"'
+        echo "$outside_hosts" | run_fg jq -r '.[] | "  \(.ip) (port: \(.port // "ping"))"'
         echo ""
         echo "--- On target subnet (Expected) ---"
-        echo "$target_hosts" | run_tool jq -r '.[] | "  \(.ip) (port: \(.port // "ping"))"'
+        echo "$target_hosts" | run_fg jq -r '.[] | "  \(.ip) (port: \(.port // "ping"))"'
     } > "$live_hosts_file"
 
     ((step_num++))
@@ -286,14 +277,14 @@ run_c2() {
     if [[ $outside_count -gt 0 ]]; then
         # Get unique IPs of outside hosts (max 50 to avoid excessive scanning)
         local outside_ips
-        local outside_ips=$(echo "$outside_hosts" | run_tool jq -r '.[0:50] | .[].ip' | sort -u)
+        outside_ips=$(echo "$outside_hosts" | run_fg jq -r '.[0:50] | .[].ip' | sort -u)
         local ip_list
-        local ip_list=$(echo "$outside_ips" | paste -sd' ' -)
+        ip_list=$(echo "$outside_ips" | paste -sd' ' -)
 
-        log_cmd "${TOOL_PATHS[nmap]} -sT -sV --top-ports 100 ${NMAP_TIMING} ${ip_list}"
-        run_with_spinner "Detailed port scan of ${outside_count} reachable host(s)" "${TOOL_PATHS[nmap]}" -sT -sV --top-ports 100 $NMAP_TIMING $ip_list -oA "${port_scan_file%.nmap}"
+        log_cmd "nmap -sT -sV --top-ports 100 ${NMAP_TIMING} ${ip_list}"
+        run_fg nmap -sT -sV --top-ports 100 $NMAP_TIMING $ip_list -oA "${port_scan_file%.nmap}"
 
-        # Parse ${TOOL_PATHS[nmap]} results
+        # Parse nmap results
         local current_host=""
         local current_ports="[]"
 
@@ -301,20 +292,20 @@ run_c2() {
             if [[ "$line" =~ "Nmap scan report for" ]]; then
                 # Save previous host
                 if [[ -n "$current_host" ]]; then
-                    detailed_hosts=$(echo "$detailed_hosts" | run_tool jq \
+                    detailed_hosts=$(echo "$detailed_hosts" | run_fg jq \
                         --arg ip "$current_host" \
                         --argjson ports "$current_ports" \
-                        '. += [{ip: $c_ip, ports: $ports}]')
+                        '. += [{ip: $ip, ports: $ports}]')
                 fi
-                current_host=$(echo "$line" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+                current_host=$(echo "$line" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
                 current_ports="[]"
             elif [[ "$line" =~ ^[0-9]+/ ]] && [[ "$line" =~ "open" ]]; then
                 local port service version
-                local port=$(echo "$line" | awk -F'/' '{print $1}')
-                local service=$(echo "$line" | awk '{print $3}')
-                local version=$(echo "$line" | awk '{for(i=4;i<=NF;i++) printf "%s ", $i; print ""}' | xargs)
+                port=$(echo "$line" | awk -F'/' '{print $1}')
+                service=$(echo "$line" | awk '{print $3}')
+                version=$(echo "$line" | awk '{for(i=4;i<=NF;i++) printf "%s ", $i; print ""}' | xargs)
 
-                current_ports=$(echo "$current_ports" | run_tool jq \
+                current_ports=$(echo "$current_ports" | run_fg jq \
                     --arg port "$port" \
                     --arg service "$service" \
                     --arg version "$version" \
@@ -326,10 +317,10 @@ run_c2() {
 
         # Save last host
         if [[ -n "$current_host" ]]; then
-            detailed_hosts=$(echo "$detailed_hosts" | run_tool jq \
+            detailed_hosts=$(echo "$detailed_hosts" | run_fg jq \
                 --arg ip "$current_host" \
                 --argjson ports "$current_ports" \
-                '. += [{ip: $c_ip, ports: $ports}]')
+                '. += [{ip: $ip, ports: $ports}]')
         fi
     else
         echo "No hosts outside target subnet to scan." > "$port_scan_file"
@@ -345,9 +336,9 @@ run_c2() {
 
     if [[ $outside_count -gt 0 ]] && command -v nbtscan &>/dev/null; then
         local outside_ips_space
-        outside_ips_space=$(echo "$outside_hosts" | run_tool jq -r '.[0:50] | .[].ip' | sort -u)
+        outside_ips_space=$(echo "$outside_hosts" | run_fg jq -r '.[0:50] | .[].ip' | sort -u)
 
-        log_cmd "${TOOL_PATHS[nbtscan]} on ${outside_count} hosts"
+        log_cmd "nbtscan on ${outside_count} hosts"
         {
             echo "============================================================"
             echo "  C2: NetBIOS Name Scan"
@@ -355,26 +346,26 @@ run_c2() {
             echo ""
         } > "$netbios_file"
 
-        while IFS= read -r c_ip; do
-            [[ -z "$c_ip" ]] && continue
+        while IFS= read -r scan_ip; do
+            [[ -z "$scan_ip" ]] && continue
             local nbt_result
-            local nbt_result=$(timeout 5 ${TOOL_PATHS[nbtscan]} -s '|' "$c_ip" 2>/dev/null | grep -v "^$" || true)
+            nbt_result=$(timeout 5 run_fg --quiet nbtscan -s '|' "$scan_ip" 2>/dev/null | grep -v "^$" || true)
             if [[ -n "$nbt_result" ]]; then
                 echo "$nbt_result" >> "$netbios_file"
                 local nbt_name
-                local nbt_name=$(echo "$nbt_result" | awk -F'|' '{print $2}' | xargs)
+                nbt_name=$(echo "$nbt_result" | awk -F'|' '{print $2}' | xargs)
                 if [[ -n "$nbt_name" ]]; then
-                    log_result "CRITICAL" "NetBIOS name: ${c_ip} = ${nbt_name}"
+                    log_result "CRITICAL" "NetBIOS name: ${scan_ip} = ${nbt_name}"
                     # Update detailed_hosts with netbios info
-                    detailed_hosts=$(echo "$detailed_hosts" | run_tool jq \
-                        --arg ip "$c_ip" \
+                    detailed_hosts=$(echo "$detailed_hosts" | run_fg jq \
+                        --arg ip "$scan_ip" \
                         --arg name "$nbt_name" \
-                        '[.[] | if .ip == $c_ip then .netbios_name = $name else . end]')
+                        '[.[] | if .ip == $ip then .netbios_name = $name else . end]')
                 fi
             fi
         done <<< "$outside_ips_space"
     else
-        echo "${TOOL_PATHS[nbtscan]} not available or no outside hosts to scan." > "$netbios_file"
+        echo "nbtscan not available or no outside hosts to scan." > "$netbios_file"
     fi
 
     ((step_num++))
@@ -387,33 +378,33 @@ run_c2() {
     local recommendations=""
 
     if [[ $outside_count -gt 0 ]]; then
-        local segmentation_bypass="true"
-        local result_status="FINDING"
-        local result_summary="CRITICAL SEGMENTATION BYPASS: ${outside_count} host(s) outside the target subnet (${our_subnet}) are reachable from target WiFi. This means the target WiFi is NOT properly segregated from corporate/internal networks. "
+        segmentation_bypass="true"
+        result_status="FINDING"
+        result_summary="CRITICAL SEGMENTATION BYPASS: ${outside_count} host(s) outside the target subnet (${our_subnet}) are reachable from target WiFi. This means the target WiFi is NOT properly segregated from corporate/internal networks. "
         local scanned_str
-        local scanned_str=$(printf '%s, ' "${ranges_scanned[@]}")
-        local scanned_str=${scanned_str%, }
+        scanned_str=$(printf '%s, ' "${ranges_scanned[@]}")
+        scanned_str=${scanned_str%, }
         result_summary+="Ranges scanned: ${scanned_str}. "
         result_summary+="Detailed port scan reveals services accessible to target WiFi clients."
-        local recommendations="IMMEDIATE ACTION REQUIRED: 1) Review and fix VLAN ACLs to block ALL traffic from target VLAN to internal RFC1918 ranges. 2) Implement inter-VLAN routing restrictions on the core switch/firewall. 3) Ensure the target VLAN can only reach the Internet (default route), not internal subnets. 4) Verify firewall rules between Target and internal zones. 5) Consider placing target WiFi on a completely separate network segment with its own Internet breakout."
+        recommendations="IMMEDIATE ACTION REQUIRED: 1) Review and fix VLAN ACLs to block ALL traffic from target VLAN to internal RFC1918 ranges. 2) Implement inter-VLAN routing restrictions on the core switch/firewall. 3) Ensure the target VLAN can only reach the Internet (default route), not internal subnets. 4) Verify firewall rules between Target and internal zones. 5) Consider placing target WiFi on a completely separate network segment with its own Internet breakout."
     else
         local scanned_str
-        local scanned_str=$(printf '%s, ' "${ranges_scanned[@]}")
-        local scanned_str=${scanned_str%, }
-        local result_summary="No hosts outside the target subnet are reachable. Network segmentation appears effective. Scanned: ${scanned_str}."
-        local recommendations="Segmentation is working. Re-test periodically, especially after network changes."
+        scanned_str=$(printf '%s, ' "${ranges_scanned[@]}")
+        scanned_str=${scanned_str%, }
+        result_summary="No hosts outside the target subnet are reachable. Network segmentation appears effective. Scanned: ${scanned_str}."
+        recommendations="Segmentation is working. Re-test periodically, especially after network changes."
     fi
 
     local ranges_str_jq
-    local ranges_str_jq=$(printf '%s,' "${ranges_scanned[@]}")
-    local ranges_str_jq=${ranges_str_jq%,}
+    ranges_str_jq=$(printf '%s,' "${ranges_scanned[@]}")
+    ranges_str_jq=${ranges_str_jq%,}
+
+    evidence_register_file "$(basename "$live_hosts_file")"
+    evidence_register_file "$(basename "$port_scan_file")"
+    evidence_register_file "$(basename "$netbios_file")"
 
     local result_json
-    evidence_register_file "c2_live_hosts.txt"
-    evidence_register_file "c2_port_scan.nmap"
-    evidence_register_file "c2_netbios_scan.txt"
-
-    local result_json=$(run_tool jq -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "Total: ${total_hosts}, target subnet: ${target_count}, Outside: ${outside_count}" \
@@ -435,9 +426,13 @@ run_c2() {
             our_subnet: $our_subnet,
             ranges_scanned: ($ranges_str | split(",") | map(ltrimstr(" "))),
             live_hosts: $live_hosts,
-                    }')
+        }')
 
-    save_tc_result "C2" "$result_json" "has_tool_output:1,clean_run:1"
+    # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
+    local is_secure=0
+    [[ "$result_status" == "SECURE" ]] && is_secure=1
+    save_tc_result "C2" "$result_json" 0 1 0 1 1 1 0 1 1 1 "$is_secure"
+    save_session_state
 
     # Display summary
     echo ""
@@ -445,7 +440,7 @@ run_c2() {
         log_result "CRITICAL" "★ SEGMENTATION BYPASS: ${outside_count} internal host(s) reachable from target WiFi"
         echo ""
         echo -e "  ${C_RED}${C_BOLD}  Reachable internal hosts:${C_RESET}"
-        echo "$detailed_hosts" | run_tool jq -r '.[] | "    \(.ip) — Ports: \(.ports | map(.port + "/" + .service) | join(", ")) \(if .netbios_name then "(" + .netbios_name + ")" else "" end)"'
+        echo "$detailed_hosts" | run_fg jq -r '.[] | "    \(.ip) — Ports: \(.ports | map(.port + "/" + .service) | join(", ")) \(if .netbios_name then "(" + .netbios_name + ")" else "" end)"'
     else
         log_result "SECURE" "Network segmentation effective — no internal hosts reachable from target WiFi"
     fi
@@ -453,7 +448,7 @@ run_c2() {
     return 0
 }
 
-#--- Helper: Parse ${TOOL_PATHS[masscan]} or ${TOOL_PATHS[nmap]} results into JSON array ---
+#--- Helper: Parse results into JSON array ---
 _parse_scan_results() {
     local file="$1"
     local is_masscan="$2"
@@ -463,25 +458,25 @@ _parse_scan_results() {
 
     if [[ "$is_masscan" == "true" ]]; then
         # Masscan list format: open tcp PORT IP TIMESTAMP
-        while IFS=' ' read -r status proto port run_tool ip timestamp; do
+        while IFS=' ' read -r status proto port skip_val scan_ip timestamp; do
             [[ "$status" != "open" ]] && continue
-            [[ -z "$c_ip" ]] && continue
+            [[ -z "$scan_ip" ]] && continue
 
-            result=$(echo "$result" | run_tool jq \
-                --arg ip "$c_ip" \
+            result=$(echo "$result" | run_fg jq \
+                --arg ip "$scan_ip" \
                 --arg port "$port" \
                 --arg proto "$proto" \
-                '. += [{ip: $c_ip, port: $port, proto: $proto}]')
+                '. += [{ip: $ip, port: $port, proto: $proto}]')
         done < "$file"
     else
         # Nmap greppable format
         while IFS= read -r line; do
             if [[ "$line" =~ "Status: Up" ]] || [[ "$line" =~ "Ports:" ]]; then
-                local c_ip
-                run_tool ip=$(echo "$line" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-                [[ -z "$c_ip" ]] && continue
+                local scan_ip
+                scan_ip=$(echo "$line" | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+                [[ -z "$scan_ip" ]] && continue
 
-                result=$(echo "$result" | run_tool jq --arg ip "$c_ip" '. += [{ip: $c_ip, port: "ping", proto: "icmp"}]')
+                result=$(echo "$result" | run_fg jq --arg ip "$scan_ip" '. += [{ip: $ip, port: "ping", proto: "icmp"}]')
             fi
         done < "$file"
     fi

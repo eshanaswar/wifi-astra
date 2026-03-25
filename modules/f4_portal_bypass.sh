@@ -37,6 +37,7 @@
 #===============================================================================
 
 run_f4() {
+    set -uo pipefail
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/f4"
 
@@ -44,7 +45,10 @@ run_f4() {
     log_step 1 $total_steps "Verifying tools and prerequisites"
     update_tc_progress 1 $total_steps "Checking"
 
-    
+    if ! check_module_dependencies "F4"; then
+        return 1
+    fi
+
     local has_macchanger=false
     local has_iodine=false
     local has_ptunnel=false
@@ -57,7 +61,7 @@ run_f4() {
 
     if [[ "${CAPTIVE_PORTAL:-}" == "no" ]]; then
         log_info "Skipping F4: Session state confirmed no captive portal is present."
-        save_tc_result "F4" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1/Session context."}' "clean_run:1"
+        save_tc_result "F4" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1/Session context."}' 0 0 0 0 0 0 0 0 0 1 0
         return 0
     fi
 
@@ -65,10 +69,10 @@ run_f4() {
         local f3_data
         f3_data=$(load_tc_result "F3")
         local f3_status
-        f3_status=$(echo "$f3_data" | run_tool jq -r '.status // "INFO"')
-        if [[ "$f3_status" == "INFO" && $(echo "$f3_data" | run_tool jq -r '.summary // ""') == *"No portal present"* ]]; then
+        f3_status=$(echo "$f3_data" | run_fg jq -r '.status // "INFO"')
+        if [[ "$f3_status" == "INFO" && $(echo "$f3_data" | run_fg jq -r '.summary // ""') == *"No portal present"* ]]; then
             log_info "Skipping F4: F3 confirmed no captive portal is present."
-            save_tc_result "F4" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from F3 results."}' "clean_run:1"
+            save_tc_result "F4" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from F3 results."}' 0 0 0 0 0 0 0 0 0 1 0
             return 0
         fi
     fi
@@ -244,7 +248,7 @@ run_f4() {
 
             if [[ "$clone_response" == *"$expected_response"* ]]; then
                 local mac_clone_bypass="true"
-                bypass_methods=$(echo "$bypass_methods" | run_tool jq '. += ["MAC cloning"]')
+                bypass_methods=$(echo "$bypass_methods" | run_fg jq '. += ["MAC cloning"]')
                 log_result "CRITICAL" "★ MAC cloning BYPASSED captive portal!"
                 echo "CRITICAL: MAC cloning bypassed captive portal (cloned: ${target_mac})" >> "$findings_file"
             else
@@ -281,7 +285,7 @@ run_f4() {
             local ip_body=$(timeout 10 ${TOOL_PATHS[curl]} -s "http://${test_ip}" 2>/dev/null) || true
             if [[ "$ip_body" != *"login"* && "$ip_body" != *"captive"* && "$ip_body" != *"portal"* ]]; then
                 local direct_ip_bypass="true"
-                bypass_methods=$(echo "$bypass_methods" | run_tool jq '. += ["Direct IP access"]')
+                bypass_methods=$(echo "$bypass_methods" | run_fg jq '. += ["Direct IP access"]')
                 log_result "FINDING" "Direct IP access bypasses captive portal (${test_ip})"
                 echo "FINDING: Direct IP access bypass via ${test_ip}" >> "$findings_file"
                 break
@@ -315,7 +319,7 @@ run_f4() {
         # Check if dns0 interface was created
         if run_tool ip link show dns0 &>/dev/null; then
             local dns_tunnel_bypass="true"
-            bypass_methods=$(echo "$bypass_methods" | run_tool jq '. += ["DNS tunnel (iodine)"]')
+            bypass_methods=$(echo "$bypass_methods" | run_fg jq '. += ["DNS tunnel (iodine)"]')
             log_result "CRITICAL" "★ DNS tunnel established — captive portal bypassed!"
             echo "CRITICAL: DNS tunnel (iodine) bypassed captive portal" >> "$findings_file"
         else
@@ -361,7 +365,7 @@ run_f4() {
 
             if [[ "$tunnel_test" == "200" ]]; then
                 local icmp_tunnel_bypass="true"
-                bypass_methods=$(echo "$bypass_methods" | run_tool jq '. += ["ICMP tunnel (ptunnel-ng)"]')
+                bypass_methods=$(echo "$bypass_methods" | run_fg jq '. += ["ICMP tunnel (ptunnel-ng)"]')
                 log_result "CRITICAL" "★ ICMP tunnel established — captive portal bypassed!"
                 echo "CRITICAL: ICMP tunnel (ptunnel-ng) bypassed captive portal" >> "$findings_file"
             else
@@ -386,7 +390,7 @@ run_f4() {
     update_tc_progress 7 $total_steps "Saving"
 
     local bypass_count
-    bypass_count=$(echo "$bypass_methods" | run_tool jq 'length')
+    bypass_count=$(echo "$bypass_methods" | run_fg jq 'length')
 
     local result_status="SECURE"
     local result_summary=""
@@ -395,7 +399,7 @@ run_f4() {
     if [[ $bypass_count -gt 0 ]]; then
         local result_status="FINDING"
         local methods_str
-        local methods_str=$(echo "$bypass_methods" | run_tool jq -r 'join(", ")')
+        local methods_str=$(echo "$bypass_methods" | run_fg jq -r 'join(", ")')
         local result_summary="Captive portal bypass successful using ${bypass_count} method(s): ${methods_str}."
         local recommendations=""
 
@@ -422,7 +426,7 @@ run_f4() {
     evidence_register_file "f4_auth_clients.txt"
     evidence_register_file "f4_findings.txt"
 
-    local result_json=$(run_tool jq -n \
+    local result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "MAC clone: ${mac_clone_bypass}, DNS tunnel: ${dns_tunnel_bypass}, ICMP tunnel: ${icmp_tunnel_bypass}, Direct IP: ${direct_ip_bypass}" \
@@ -444,12 +448,15 @@ run_f4() {
             bypass_methods: $bypass_methods,
                     }')
 
-    save_tc_result "F4" "$result_json" "has_tool_output:1,clean_run:1"
+    local is_secure=0
+    [[ "$result_status" == "SECURE" ]] && is_secure=1
+    save_tc_result "F4" "$result_json" 0 1 0 1 1 1 0 1 1 1 "$is_secure"
+    save_session_state
 
     # Display summary
     echo ""
     if [[ $bypass_count -gt 0 ]]; then
-        log_result "FINDING" "Captive portal bypassed via: $(echo "$bypass_methods" | run_tool jq -r 'join(", ")')"
+        log_result "FINDING" "Captive portal bypassed via: $(echo "$bypass_methods" | run_fg jq -r 'join(", ")')"
     else
         log_result "SECURE" "Captive portal bypass unsuccessful — enforcement appears effective"
     fi

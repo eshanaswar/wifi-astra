@@ -41,30 +41,14 @@
 #===============================================================================
 
 run_f1() {
+    set -uo pipefail
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/f1"
 
     #--- Step 1: Verify tools and select interface ---
     log_step 1 10 "Verifying tools and requirements"
     update_tc_progress 1 10 "Checking"
 
-    
-    local has_hostapd=false
-    local has_dnsmasq=false
-    local has_aireplay=false
-    local has_python3=false
-    local has_iptables=false
-
-    command -v hostapd &>/dev/null && has_hostapd=true
-    command -v dnsmasq &>/dev/null && has_dnsmasq=true
-    command -v aireplay-ng &>/dev/null && has_aireplay=true
-    command -v python3 &>/dev/null && has_python3=true
-    command -v iptables &>/dev/null && has_iptables=true
-
-    if [[ "$has_hostapd" == "false" ]]; then
-        log_error "${TOOL_PATHS[hostapd]} is required for rogue AP test."
-        log_error "Install: apt install -y ${TOOL_PATHS[hostapd]}"
-        return 1
-    fi
+    check_module_dependencies "F1" || return 1
 
     if [[ -z "${GUEST_SSID:-}" ]]; then
         log_error "Target SSID not set. Run A1 first."
@@ -567,7 +551,13 @@ EOF
             evidence_files: $evidence_files
         }')
 
-    save_tc_result "F1" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "${evidence_prefix}_mana.log" || -f "$findings_file" ]] && has_tool_output=1
+    local has_primary=0
+    [[ $clients_connected -gt 0 || $credentials_captured -gt 0 ]] && has_primary=1
+
+    save_tc_result "F1" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 0
+    save_session_state
 
     # Display summary
     echo ""

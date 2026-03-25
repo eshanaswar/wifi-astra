@@ -46,6 +46,8 @@
 #===============================================================================
 
 run_b3() {
+    set -uo pipefail
+    local tc_id="B3"
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/b3"
 
@@ -53,6 +55,8 @@ run_b3() {
     log_step 1 $total_steps "Verifying tools and connectivity"
     update_tc_progress 1 $total_steps "Checking"
 
+    # Check dependencies and tools
+    check_module_dependencies "$tc_id" || return 1
     
     # Ensure we're connected (not in monitor mode)
     if [[ -n "${MONITOR_INTERFACE:-}" ]]; then
@@ -95,13 +99,12 @@ run_b3() {
     sleep "$CDP_CAPTURE_TIME"
     stop_countdown
 
-    
     check_abort || return 1
 
     # Validate capture file
     if ! validate_pcap "$capture_file" "CDP/LLDP frame capture (${CDP_CAPTURE_TIME}s listen)"; then
         local result_json
-        result_json=$(run_tool jq -n \
+        result_json=$(run_fg jq -n \
             '{
                 status: "SECURE",
                 summary: "No CDP or LLDP frames captured on target WiFi. The network does not leak infrastructure discovery protocol data to target clients.",
@@ -115,12 +118,13 @@ run_b3() {
                 native_vlans: [],
                 evidence_files: []
             }')
-        save_tc_result "B3" "$result_json" "has_tool_output:1,clean_run:1"
+        save_tc_result "$tc_id" "$result_json" 1 1 0 1 1 1 0 1 1 1 1
+        save_session_state
         return 0
     fi
 
     local capture_size
-    local capture_size=$(stat -c%s "$capture_file" 2>/dev/null || echo "unknown")
+    capture_size=$(stat -c%s "$capture_file" 2>/dev/null || echo "unknown")
     log_success "Capture complete: $(basename "$capture_file") (${capture_size} bytes)"
 
     #--- Step 3: Parse CDP frames ---
@@ -146,7 +150,7 @@ run_b3() {
 
     # Extract CDP frames using ${TOOL_PATHS[tshark]}
     local cdp_data
-    local cdp_data=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
+    cdp_data=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
         -Y "cdp" \
         -T fields \
         -e eth.src \
@@ -166,11 +170,11 @@ run_b3() {
 
             # Clean up fields
             device_id=$(echo "$device_id" | xargs)
-            local platform=$(echo "$platform" | xargs)
-            local port_id=$(echo "$port_id" | xargs)
-            local native_vlan=$(echo "$native_vlan" | xargs)
-            local mgmt_ip=$(echo "$mgmt_ip" | xargs)
-            local software_ver=$(echo "$software_ver" | xargs)
+            platform=$(echo "$platform" | xargs)
+            port_id=$(echo "$port_id" | xargs)
+            native_vlan=$(echo "$native_vlan" | xargs)
+            mgmt_ip=$(echo "$mgmt_ip" | xargs)
+            software_ver=$(echo "$software_ver" | xargs)
 
             log_result "FINDING" "CDP leak from ${src_mac}:"
             log_output "  Device: ${device_id}"
@@ -192,7 +196,7 @@ run_b3() {
             } >> "$cdp_parsed_file"
 
             # Add to JSON arrays
-            leaked_info=$(echo "$leaked_info" | run_tool jq \
+            leaked_info=$(echo "$leaked_info" | run_fg jq \
                 --arg proto "CDP" \
                 --arg src "$src_mac" \
                 --arg device "$device_id" \
@@ -203,9 +207,9 @@ run_b3() {
                 --arg software "$software_ver" \
                 '. += [{protocol: $proto, source_mac: $src, device_id: $device, platform: $platform, port_id: $port, native_vlan: $vlan, management_ip: $mgmt_ip, software_version: $software}]')
 
-            [[ -n "$device_id" ]] && switch_names=$(echo "$switch_names" | run_tool jq --arg n "$device_id" 'if (. | index($n)) then . else . += [$n] end')
-            [[ -n "$mgmt_ip" ]] && management_ips=$(echo "$management_ips" | run_tool jq --arg n "$mgmt_ip" 'if (. | index($n)) then . else . += [$n] end')
-            [[ -n "$native_vlan" ]] && native_vlans=$(echo "$native_vlans" | run_tool jq --arg n "$native_vlan" 'if (. | index($n)) then . else . += [$n] end')
+            [[ -n "$device_id" ]] && switch_names=$(echo "$switch_names" | run_fg jq --arg n "$device_id" 'if (. | index($n)) then . else . += [$n] end')
+            [[ -n "$mgmt_ip" ]] && management_ips=$(echo "$management_ips" | run_fg jq --arg n "$mgmt_ip" 'if (. | index($n)) then . else . += [$n] end')
+            [[ -n "$native_vlan" ]] && native_vlans=$(echo "$native_vlans" | run_fg jq --arg n "$native_vlan" 'if (. | index($n)) then . else . += [$n] end')
 
         done <<< "$cdp_data"
     fi
@@ -230,7 +234,7 @@ run_b3() {
     } > "$lldp_parsed_file"
 
     local lldp_data
-    local lldp_data=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
+    lldp_data=$(${TOOL_PATHS[tshark]} -r "$capture_file" \
         -Y "lldp" \
         -T fields \
         -e eth.src \
@@ -250,12 +254,12 @@ run_b3() {
             ((lldp_count++))
 
             chassis_id=$(echo "$chassis_id" | xargs)
-            local port_id=$(echo "$port_id" | xargs)
-            local port_desc=$(echo "$port_desc" | xargs)
-            local sys_name=$(echo "$sys_name" | xargs)
-            local sys_desc=$(echo "$sys_desc" | xargs)
-            local mgmt_ip=$(echo "$mgmt_ip" | xargs)
-            local vlan_id=$(echo "$vlan_id" | xargs)
+            port_id=$(echo "$port_id" | xargs)
+            port_desc=$(echo "$port_desc" | xargs)
+            sys_name=$(echo "$sys_name" | xargs)
+            sys_desc=$(echo "$sys_desc" | xargs)
+            mgmt_ip=$(echo "$mgmt_ip" | xargs)
+            vlan_id=$(echo "$vlan_id" | xargs)
 
             log_result "FINDING" "LLDP leak from ${src_mac}:"
             log_output "  System: ${sys_name}"
@@ -277,7 +281,7 @@ run_b3() {
                 echo ""
             } >> "$lldp_parsed_file"
 
-            leaked_info=$(echo "$leaked_info" | run_tool jq \
+            leaked_info=$(echo "$leaked_info" | run_fg jq \
                 --arg proto "LLDP" \
                 --arg src "$src_mac" \
                 --arg device "${sys_name:-${chassis_id}}" \
@@ -288,9 +292,9 @@ run_b3() {
                 --arg port_desc "$port_desc" \
                 '. += [{protocol: $proto, source_mac: $src, device_id: $device, platform: $platform, port_id: $port, native_vlan: $vlan, management_ip: $mgmt_ip, port_description: $port_desc}]')
 
-            [[ -n "$sys_name" ]] && switch_names=$(echo "$switch_names" | run_tool jq --arg n "$sys_name" 'if (. | index($n)) then . else . += [$n] end')
-            [[ -n "$mgmt_ip" ]] && management_ips=$(echo "$management_ips" | run_tool jq --arg n "$mgmt_ip" 'if (. | index($n)) then . else . += [$n] end')
-            [[ -n "$vlan_id" ]] && native_vlans=$(echo "$native_vlans" | run_tool jq --arg n "$vlan_id" 'if (. | index($n)) then . else . += [$n] end')
+            [[ -n "$sys_name" ]] && switch_names=$(echo "$switch_names" | run_fg jq --arg n "$sys_name" 'if (. | index($n)) then . else . += [$n] end')
+            [[ -n "$mgmt_ip" ]] && management_ips=$(echo "$management_ips" | run_fg jq --arg n "$mgmt_ip" 'if (. | index($n)) then . else . += [$n] end')
+            [[ -n "$vlan_id" ]] && native_vlans=$(echo "$native_vlans" | run_fg jq --arg n "$vlan_id" 'if (. | index($n)) then . else . += [$n] end')
 
         done <<< "$lldp_data"
     fi
@@ -303,16 +307,16 @@ run_b3() {
 
     check_abort || return 1
 
-    local dtp_count=0
-    local dtp_count=$(${TOOL_PATHS[tshark]} -r "$capture_file" -Y "dtp" 2>/dev/null | wc -l) || true
+    local dtp_count
+    dtp_count=$(${TOOL_PATHS[tshark]} -r "$capture_file" -Y "dtp" 2>/dev/null | wc -l) || dtp_count=0
 
     if [[ $dtp_count -gt 0 ]]; then
         log_result "CRITICAL" "DTP (Dynamic Trunking Protocol) frames detected! Port may be trunk-negotiable — VLAN hopping risk."
-        leaked_info=$(echo "$leaked_info" | run_tool jq '. += [{protocol: "DTP", device_id: "N/A", platform: "Trunk negotiation detected", port_id: "N/A", native_vlan: "N/A", management_ip: "N/A"}]')
+        leaked_info=$(echo "$leaked_info" | run_fg jq '. += [{protocol: "DTP", device_id: "N/A", platform: "Trunk negotiation detected", port_id: "N/A", native_vlan: "N/A", management_ip: "N/A"}]')
     fi
 
-    local vtp_count=0
-    local vtp_count=$(${TOOL_PATHS[tshark]} -r "$capture_file" -Y "vtp" 2>/dev/null | wc -l) || true
+    local vtp_count
+    vtp_count=$(${TOOL_PATHS[tshark]} -r "$capture_file" -Y "vtp" 2>/dev/null | wc -l) || vtp_count=0
 
     if [[ $vtp_count -gt 0 ]]; then
         log_result "FINDING" "VTP (VLAN Trunking Protocol) frames detected — VLAN database information leaking."
@@ -335,13 +339,13 @@ run_b3() {
         echo "VTP Frames:           ${vtp_count}"
         echo ""
         echo "--- Discovered Switch/Device Names ---"
-        echo "$switch_names" | run_tool jq -r '.[]' 2>/dev/null | sed 's/^/  /'
+        echo "$switch_names" | run_fg jq -r '.[]' 2>/dev/null | sed 's/^/  /'
         echo ""
         echo "--- Discovered Management IPs ---"
-        echo "$management_ips" | run_tool jq -r '.[]' 2>/dev/null | sed 's/^/  /'
+        echo "$management_ips" | run_fg jq -r '.[]' 2>/dev/null | sed 's/^/  /'
         echo ""
         echo "--- Discovered VLAN IDs ---"
-        echo "$native_vlans" | run_tool jq -r '.[]' 2>/dev/null | sed 's/^/  /'
+        echo "$native_vlans" | run_fg jq -r '.[]' 2>/dev/null | sed 's/^/  /'
         echo ""
         echo "--- Risk Assessment ---"
         if [[ $cdp_count -gt 0 || $lldp_count -gt 0 ]]; then
@@ -365,34 +369,36 @@ run_b3() {
     local result_status="SECURE"
     local result_summary=""
     local recommendations=""
+    local is_secure_claim=1
 
-    if [[ $total_leaks -gt 0 || $dtp_count -gt 0 ]]; then
-        local result_status="FINDING"
+    if [[ $total_leaks -gt 0 || $dtp_count -gt 0 || $vtp_count -gt 0 ]]; then
+        result_status="FINDING"
+        is_secure_claim=0
         local switch_count
-        switch_count=$(echo "$switch_names" | run_tool jq 'length')
+        switch_count=$(echo "$switch_names" | run_fg jq 'length')
         local mgmt_ip_count
-        local mgmt_ip_count=$(echo "$management_ips" | run_tool jq 'length')
+        mgmt_ip_count=$(echo "$management_ips" | run_fg jq 'length')
         local vlan_count
-        local vlan_count=$(echo "$native_vlans" | run_tool jq 'length')
+        vlan_count=$(echo "$native_vlans" | run_fg jq 'length')
 
-        local result_summary="Infrastructure protocol leaks detected: ${cdp_count} CDP frames, ${lldp_count} LLDP frames. "
+        result_summary="Infrastructure protocol leaks detected: ${cdp_count} CDP frames, ${lldp_count} LLDP frames. "
         result_summary+="Leaked: ${switch_count} device name(s), ${mgmt_ip_count} management IP(s), ${vlan_count} VLAN ID(s). "
         [[ $dtp_count -gt 0 ]] && result_summary+="CRITICAL: DTP frames detected — trunk negotiation possible. "
 
-        local recommendations="1) Disable CDP on all target-facing switch ports: 'no cdp enable' (interface level). "
+        recommendations="1) Disable CDP on all target-facing switch ports: 'no cdp enable' (interface level). "
         recommendations+="2) Disable LLDP on target-facing ports: 'no lldp transmit' / 'no lldp receive'. "
         recommendations+="3) Set target ports to 'switchport mode access' and 'switchport nonegotiate' to prevent DTP/trunk negotiation. "
         recommendations+="4) Apply BPDU guard and port security on target-facing ports. "
         recommendations+="5) Consider using a separate physical infrastructure for target access."
     else
-        local result_summary="No CDP, LLDP, or DTP frames captured on target WiFi. Discovery protocols are properly filtered on target-facing ports."
-        local recommendations="No action needed. Continue to verify that this filtering persists after switch/firmware updates."
+        result_summary="No CDP, LLDP, or DTP frames captured on target WiFi. Discovery protocols are properly filtered on target-facing ports."
+        recommendations="No action needed. Continue to verify that this filtering persists after switch/firmware updates."
     fi
 
     local evidence_files='["b3_cdp_lldp_capture.pcap", "b3_cdp_parsed.txt", "b3_lldp_parsed.txt", "b3_infrastructure_info.txt"]'
 
     local result_json
-    local result_json=$(run_tool jq -n \
+    result_json=$(run_fg jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "CDP: ${cdp_count}, LLDP: ${lldp_count}, DTP: ${dtp_count}, VTP: ${vtp_count}" \
@@ -420,15 +426,17 @@ run_b3() {
             evidence_files: $evidence_files
         }')
 
-    save_tc_result "B3" "$result_json" "has_tool_output:1,clean_run:1"
+    # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
+    save_tc_result "$tc_id" "$result_json" 1 1 1 1 1 1 0 1 1 1 "$is_secure_claim"
+    save_session_state
 
     # Display summary
     echo ""
     if [[ $total_leaks -gt 0 ]]; then
         log_result "FINDING" "CDP/LLDP leaking infrastructure details to target WiFi"
-        log_result "INFO" "  Devices: $(echo "$switch_names" | run_tool jq -r 'join(", ")')"
-        log_result "INFO" "  Mgmt IPs: $(echo "$management_ips" | run_tool jq -r 'join(", ")')"
-        log_result "INFO" "  VLANs: $(echo "$native_vlans" | run_tool jq -r 'join(", ")')"
+        log_result "INFO" "  Devices: $(echo "$switch_names" | run_fg jq -r 'join(", ")')"
+        log_result "INFO" "  Mgmt IPs: $(echo "$management_ips" | run_fg jq -r 'join(", ")')"
+        log_result "INFO" "  VLANs: $(echo "$native_vlans" | run_fg jq -r 'join(", ")')"
         [[ $dtp_count -gt 0 ]] && log_result "CRITICAL" "DTP detected — trunk negotiation possible!"
     else
         log_result "SECURE" "No CDP/LLDP/DTP frames captured on target WiFi"

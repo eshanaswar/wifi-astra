@@ -31,7 +31,10 @@
 #    - leakage_detected: bool
 #===============================================================================
 
+set -uo pipefail
+
 run_b8() {
+    local tc_id="B8"
     local total_steps=6
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/b8"
 
@@ -39,6 +42,7 @@ run_b8() {
     log_step 1 $total_steps "Verifying tools and network state"
     update_tc_progress 1 $total_steps "Checking"
 
+    check_module_dependencies "$tc_id" || return 1
     
     # Ensure monitor mode is globally disabled (we need to be connected)
     ensure_managed_mode || return 1
@@ -71,7 +75,7 @@ run_b8() {
     local bcast_filter="udp port 1900 or udp port 5355 or udp port 5353 or udp port 137 or udp port 138"
     log_cmd "${TOOL_PATHS[tcpdump]} -i ${iface} -nn '${bcast_filter}' -w ${pcap_file}"
 
-    # Run ${TOOL_PATHS[tcpdump]}
+    # Run tcpdump
     start_countdown "$capture_time" "Analyzing broadcast/multicast leaks"
     timeout "$capture_time" "${TOOL_PATHS[tcpdump]}" -i "$iface" -nn -w "$pcap_file" udp port 1900 or udp port 5355 or udp port 5353 or udp port 137 or udp port 138 >/dev/null 2>&1 || true
     stop_countdown
@@ -82,7 +86,10 @@ run_b8() {
     log_step 4 $total_steps "Validating capture"
     update_tc_progress 4 $total_steps "Validating"
 
-    if ! validate_pcap "$pcap_file" "Broadcast/Multicast leak capture"; then
+    local has_primary=0
+    if validate_pcap "$pcap_file" "Broadcast/Multicast leak capture"; then
+        has_primary=1
+    else
         log_info "No significant broadcast/multicast leaks detected during window."
     fi
 
@@ -97,6 +104,7 @@ run_b8() {
     local total_leaks=0
     local status="SECURE"
     local summary="No significant broadcast/multicast leakage from corporate VLANs."
+    local has_tool_output=0
 
     if [[ -f "$pcap_file" && -s "$pcap_file" ]]; then
         ensure_user_ownership "$pcap_file"
@@ -125,14 +133,15 @@ run_b8() {
             run_as_user tshark -r "$pcap_file" -T fields -e ip.src 2>/dev/null | sort | uniq -c | sort -rn | head -10
 
         } > "$analysis_file"
+        has_tool_output=1
 
         if [[ $total_leaks -gt 50 ]]; then
-            local status="FINDING"
-            local summary="High volume of broadcast/multicast traffic (${total_leaks} packets) leaking from corporate devices."
+            status="FINDING"
+            summary="High volume of broadcast/multicast traffic (${total_leaks} packets) leaking from corporate devices."
             log_result "FINDING" "${summary}"
         elif [[ $total_leaks -gt 0 ]]; then
-            local status="INFO"
-            local summary="Minor broadcast/multicast leakage detected (${total_leaks} packets)."
+            status="INFO"
+            summary="Minor broadcast/multicast leakage detected (${total_leaks} packets)."
             log_result "INFO" "${summary}"
         else
             log_result "SECURE" "Broadcast traffic properly restricted."
@@ -143,11 +152,14 @@ run_b8() {
     log_step 6 $total_steps "Saving results"
     update_tc_progress 6 $total_steps "Saving"
 
-    local result_json
-    evidence_register_file "$pcap"
-    evidence_register_file "$txt"
+    evidence_register_file "$pcap_file"
+    evidence_register_file "$analysis_file"
 
-    local result_json=$(run_tool jq -n \
+    local is_secure=0
+    [[ "$status" == "SECURE" ]] && is_secure=1
+
+    local result_json
+    result_json=$(run_fg jq -n \
         --arg status "$status" \
         --arg summary "$summary" \
         --argjson ssdp "$ssdp_count" \
@@ -162,9 +174,10 @@ run_b8() {
             summary: $summary,
             details: "Detected protocol counts - SSDP: \($ssdp), LLMNR: \($llmnr), mDNS: \($mdns), NetBIOS: \($nbtns). Total: \($total)",
             protocol_counts: {ssdp: $ssdp, llmnr: $llmnr, mdns: $mdns, nbtns: $nbtns},
-            recommendations: (if $status == "FINDING" then "Enable broadcast/multicast suppression on the WLC/AP. Ensure VLAN isolation is strictly enforced at Layer 2." else "No action required." end),
-                    }')
+            recommendations: (if $status == "FINDING" then "Enable broadcast/multicast suppression on the WLC/AP. Ensure VLAN isolation is strictly enforced at Layer 2." else "No action required." end)
+        }')
 
-    save_tc_result "B8" "$result_json" "has_tool_output:1,clean_run:1"
+    save_tc_result "$tc_id" "$result_json" 1 "$has_tool_output" "$has_primary" 1 1 1 0 1 1 1 "$is_secure"
+    save_session_state
     return 0
 }

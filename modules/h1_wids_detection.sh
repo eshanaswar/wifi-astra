@@ -38,6 +38,7 @@
 #===============================================================================
 
 run_h1() {
+    set -uo pipefail
     local total_steps=7
     local evidence_prefix="${SESSION_EVIDENCE_DIR}/h1"
 
@@ -45,17 +46,7 @@ run_h1() {
     log_step 1 $total_steps "Verifying tools"
     update_tc_progress 1 $total_steps "Checking"
 
-    local has_mdk4=false
-    local has_aireplay=false
-
-    command -v mdk4 &>/dev/null && has_mdk4=true
-    command -v aireplay-ng &>/dev/null && has_aireplay=true
-
-    if [[ "$has_mdk4" == "false" && "$has_aireplay" == "false" ]]; then
-        log_error "Either ${TOOL_PATHS[mdk4]} or ${TOOL_PATHS[aireplay-ng]} is required."
-        log_error "Install: apt install -y ${TOOL_PATHS[mdk4]} aircrack-ng"
-        return 1
-    fi
+    check_module_dependencies "H1" || return 1
 
     
     if [[ -z "${GUEST_SSID:-}" || -z "${GUEST_BSSID:-}" ]]; then
@@ -374,7 +365,13 @@ run_h1() {
             detection_count: $detection_count,
                     }')
 
-    save_tc_result "H1" "$result_json" "has_tool_output:1,clean_run:1"
+    local has_tool_output=0
+    [[ -f "$findings_file" ]] && has_tool_output=1
+    local has_primary=0
+    [[ "$wids_present" == "true" ]] && has_primary=1
+
+    save_tc_result "H1" "$result_json" 1 $has_tool_output $has_primary 1 1 1 0 1 1 1 0
+    save_session_state
 
     # Display summary
     echo ""
