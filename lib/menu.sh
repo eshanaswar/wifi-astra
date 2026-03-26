@@ -135,7 +135,7 @@ render_menu() {
         # 4. Dependency hint (Starts at fixed column)
         if [[ "$tc_status" == "not_run" && "$deps" != "none" ]]; then
             local formatted_deps=""
-            local old_ifs="$IFS"
+            local old_ifs="${IFS:-}"
             IFS=','
             for d in $deps; do
                 d=$(echo "$d" | xargs)
@@ -150,7 +150,7 @@ render_menu() {
                     formatted_deps+="${d_id} " # Space placeholder for alignment
                 fi
             done
-            IFS="$old_ifs"
+            IFS="${old_ifs:-}"
             printf "${C_DIM}(req: %s)${C_RESET}\n" "${formatted_deps}"
         else
             echo ""

@@ -165,8 +165,8 @@ detect_previous_session() {
         if [[ -f "$db_file" ]]; then
             sname=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-config --key "session_name" 2>/dev/null)
             # Count statuses that are 'done'
-            # For simplicity in this shell loop, we'll just use astra-engine to get all statuses and count
-            done_count=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard | grep -c ":done" || echo "0")
+            # Use a subshell to isolate pipefail and ensure grep -c always returns a single number
+            done_count=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard 2>/dev/null | grep -c ":done")
         fi
         
         local display_name="${sname:-$sid}"
@@ -717,7 +717,7 @@ manage_sessions() {
 
                 if [[ -f "$db_file" ]]; then
                     sname=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-config --key "session_name" 2>/dev/null)
-                    done_count=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard | grep -c ":done" || echo "0")
+                    done_count=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard 2>/dev/null | grep -c ":done")
                 fi
 
                 local session_date

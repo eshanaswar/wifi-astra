@@ -192,10 +192,10 @@ run_c1() {
     printf "  [?] Do you know any internal domains to test? (comma-separated, leave blank to skip): "
     read custom_domain_input
     if [[ -n "$custom_domain_input" ]]; then
-        local old_ifs="$IFS"
+        local old_ifs="${IFS:-}"
         IFS=','
         read -ra parsed_domains <<< "$custom_domain_input"
-        IFS="$old_ifs"
+        IFS="${old_ifs:-}"
         for dom in "${parsed_domains[@]}"; do
             dom=$(echo "$dom" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^\.//')
             if [[ -n "$dom" ]]; then

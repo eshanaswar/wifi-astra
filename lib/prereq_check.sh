@@ -224,9 +224,6 @@ check_module_dependencies() {
     fi
     return 0
 }
-export -f check_module_dependencies
-export -f get_tools_for_tc
-export -f require_tools
 
 #--- Full prerequisite check ---
 full_prereq_check() {
@@ -262,6 +259,7 @@ full_prereq_check() {
             missing_tools+=("$tool")
             
             # Track affected TCs
+            local old_ifs="${IFS:-}"
             IFS=',' read -ra tc_list <<< "$tcs"
             for tc in "${tc_list[@]}"; do
                 tc=$(echo "$tc" | xargs)
@@ -269,6 +267,7 @@ full_prereq_check() {
                     affected_tcs+=("$tc")
                 fi
             done
+            IFS="${old_ifs}"
         fi
     done
     
@@ -600,5 +599,10 @@ _get_apt_package() {
         responder)      echo "responder" ;;
         eaphammer|airsnitch|hostapd-mana|krack-test|fragattack|dragonslayer|dragondrain|wkhtmltopdf) echo "" ;;  # custom install
         *)              echo "$tool" ;;
-        esac
-        }
+    esac
+}
+
+#--- Export helper functions for module subshells ---
+export -f check_module_dependencies
+export -f get_tools_for_tc
+export -f require_tools

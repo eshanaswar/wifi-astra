@@ -227,11 +227,11 @@ run_a1() {
         stty echo 2>/dev/null
         read -t 0.1 -n 10000 discard 2>/dev/null || true
         
-        local old_ifs="$IFS"
+        local old_ifs="${IFS:-}"
         IFS=$' \t\n'
         printf "  Change target network? [y/N]: "
         read _change_target
-        IFS="$old_ifs"
+        IFS="${old_ifs:-}"
         if [[ "${_change_target,,}" == "y" ]]; then
             _prompt_selection=true
         fi
@@ -268,11 +268,11 @@ run_a1() {
             stty echo 2>/dev/null
             read -t 0.1 -n 10000 discard 2>/dev/null || true # Flush buffer
             
-            local old_ifs="$IFS"
+            local old_ifs="${IFS:-}"
             IFS=$' \t\n'
             printf "  Select target [1-%d] or type SSID manually: " "$((ssid_idx-1))"
             read ssid_choice
-            IFS="$old_ifs"
+            IFS="${old_ifs:-}"
 
             if [[ -z "$ssid_choice" ]]; then
                 log_warn "No selection made."
@@ -289,10 +289,7 @@ run_a1() {
         else
             echo -e "    ${C_GRAY}(No non-hidden networks detected in scan)${C_RESET}"
             local manual_ssid=""
-            stty echo 2>/dev/null
-            read -t 0.1 -n 10000 discard 2>/dev/null || true
-            printf "  Enter target SSID manually: "
-            read manual_ssid
+            safe_read "  Enter target SSID manually: " manual_ssid
             if [[ -n "$manual_ssid" ]]; then
                 GUEST_SSID="$manual_ssid"
                 GUEST_BSSID=$(echo "$networks_json" | run_tool jq -r --arg ssid "$GUEST_SSID" '[.[] | select(.ssid == $ssid)] | .[0].bssid // ""')
@@ -347,11 +344,11 @@ run_a1() {
             stty echo 2>/dev/null
             read -t 0.1 -n 10000 discard 2>/dev/null || true
             
-            local old_ifs="$IFS"
+            local old_ifs="${IFS:-}"
             IFS=$' \t\n'
             printf "  Select internal network [1-%d] or type SSID manually: " "$((int_idx-1))"
             read int_choice
-            IFS="$old_ifs"
+            IFS="${old_ifs:-}"
             
             if [[ -z "$int_choice" ]]; then
                 log_info "Internal reference skipped."
