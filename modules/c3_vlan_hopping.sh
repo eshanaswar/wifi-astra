@@ -130,10 +130,7 @@ run_c3() {
     echo -e "${C_RESET}"
     echo ""
     local confirm=""
-    stty echo 2>/dev/null
-    read -t 0.1 -n 10000 discard 2>/dev/null || true
-    printf "  Proceed with VLAN hopping tests? [Y/n]: "
-    read confirm
+    safe_read "Proceed with VLAN hopping tests? [Y/n]" confirm "y"
     [[ "${confirm,,}" == "n" ]] && return 1
 
     #--- Step 2: DTP Switch Spoofing ---

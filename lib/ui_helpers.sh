@@ -20,8 +20,9 @@ safe_read() {
     # Ensure Readline is enabled
     set -o emacs 2>/dev/null || true
     
-    # Defensive: restore terminal state
+    # Defensive: restore terminal state and enable echo
     stty sane 2>/dev/null
+    enable_echo
     # Ensure backspace is handled correctly (^? or ^H depending on terminal)
     stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
     

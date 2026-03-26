@@ -91,10 +91,7 @@ run_c4() {
     echo ""
     
     if [[ -z "$nac_ip" ]]; then
-        stty echo 2>/dev/null
-        read -t 0.1 -n 10000 discard 2>/dev/null || true
-        printf "  Do you know the IP of the corporate RADIUS/NAC server? (IP or Enter to skip): "
-        read nac_ip
+        safe_read "Do you know the IP of the corporate RADIUS/NAC server? (IP or Enter to skip)" nac_ip
     fi
     
     local scan_targets="$gateway_ip"

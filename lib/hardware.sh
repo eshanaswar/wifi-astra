@@ -43,10 +43,17 @@ validate_injection() {
     local tmp_out
     tmp_out=$(mktemp)
 
+    # Disable echo to prevent keystroke leakage during the long-running test
+    disable_echo
+
     # Run aireplay-ng --test and pipe to both console and temp file
     # We use a 45s timeout to give the driver enough time to cycle channels
     ( timeout 45s "$aireplay_path" --test "$iface" 2>&1 | tee "$tmp_out" ) || true
     
+    # Restore echo and clear buffer
+    clear_stdin
+    enable_echo
+
     local output
     output=$(cat "$tmp_out")
     rm -f "$tmp_out"

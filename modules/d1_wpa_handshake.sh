@@ -109,10 +109,7 @@ run_d1() {
     echo -e "${C_RESET}"
     echo ""
     local confirm=""
-    stty echo 2>/dev/null
-    read -t 0.1 -n 10000 discard 2>/dev/null || true
-    printf "  Proceed with WPA handshake capture? [Y/n]: "
-    read confirm
+    safe_read "Proceed with WPA handshake capture? [Y/n]" confirm "y"
     [[ "${confirm,,}" == "n" ]] && return 1
 
     local pmkid_captured="false"

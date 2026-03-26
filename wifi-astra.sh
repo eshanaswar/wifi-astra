@@ -185,7 +185,7 @@ main() {
     quick_prereq_check
 
     #--- Ensure terminal settings are sane ---
-    stty sane 2>/dev/null || true
+    enable_echo
 
     #--- Enter main menu loop ---
     main_menu_loop

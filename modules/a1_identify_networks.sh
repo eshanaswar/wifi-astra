@@ -224,14 +224,7 @@ run_a1() {
         echo ""
         echo -e "  Current Target SSID: ${C_BOLD}${GUEST_SSID}${C_RESET}"
         local _change_target=""
-        stty echo 2>/dev/null
-        read -t 0.1 -n 10000 discard 2>/dev/null || true
-        
-        local old_ifs="${IFS:-}"
-        IFS=$' \t\n'
-        printf "  Change target network? [y/N]: "
-        read _change_target
-        IFS="${old_ifs:-}"
+        safe_read "Change target network? [y/N]" _change_target "n"
         if [[ "${_change_target,,}" == "y" ]]; then
             _prompt_selection=true
         fi
@@ -263,16 +256,7 @@ run_a1() {
         if [[ ${#ssid_list[@]} -gt 0 ]]; then
             echo ""
             local ssid_choice=""
-            
-            # Sanitization pass
-            stty echo 2>/dev/null
-            read -t 0.1 -n 10000 discard 2>/dev/null || true # Flush buffer
-            
-            local old_ifs="${IFS:-}"
-            IFS=$' \t\n'
-            printf "  Select target [1-%d] or type SSID manually: " "$((ssid_idx-1))"
-            read ssid_choice
-            IFS="${old_ifs:-}"
+            safe_read "Select target [1-$((ssid_idx-1))] or type SSID manually" ssid_choice
 
             if [[ -z "$ssid_choice" ]]; then
                 log_warn "No selection made."
@@ -289,7 +273,7 @@ run_a1() {
         else
             echo -e "    ${C_GRAY}(No non-hidden networks detected in scan)${C_RESET}"
             local manual_ssid=""
-            safe_read "  Enter target SSID manually: " manual_ssid
+            safe_read "Enter target SSID manually" manual_ssid
             if [[ -n "$manual_ssid" ]]; then
                 GUEST_SSID="$manual_ssid"
                 GUEST_BSSID=$(echo "$networks_json" | run_tool jq -r --arg ssid "$GUEST_SSID" '[.[] | select(.ssid == $ssid)] | .[0].bssid // ""')
@@ -339,16 +323,8 @@ run_a1() {
             echo -e "    [${C_BOLD}Enter${C_RESET}] Skip / No internal reference"
             echo ""
             
-            # Use read directly here for more control over 'skip' vs 'manual'
             local int_choice=""
-            stty echo 2>/dev/null
-            read -t 0.1 -n 10000 discard 2>/dev/null || true
-            
-            local old_ifs="${IFS:-}"
-            IFS=$' \t\n'
-            printf "  Select internal network [1-%d] or type SSID manually: " "$((int_idx-1))"
-            read int_choice
-            IFS="${old_ifs:-}"
+            safe_read "Select internal network [1-$((int_idx-1))] or type SSID manually" int_choice
             
             if [[ -z "$int_choice" ]]; then
                 log_info "Internal reference skipped."
@@ -360,7 +336,7 @@ run_a1() {
                 INTERNAL_BSSID="${int_bssid_list[$idx]}"
                 
                 if [[ "$INTERNAL_SSID" == "<HIDDEN>" ]]; then
-                    read -p "  Hidden network selected. Enter known SSID (optional): " known_ssid
+                    safe_read "Hidden network selected. Enter known SSID (optional)" known_ssid
                     [[ -n "$known_ssid" ]] && INTERNAL_SSID="$known_ssid"
                 fi
                 log_info "Internal reference set: ${INTERNAL_SSID} (${INTERNAL_BSSID})"

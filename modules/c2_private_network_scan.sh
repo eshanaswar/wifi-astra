@@ -134,10 +134,7 @@ run_c2() {
     local -a user_subnets=()
     local subnet_input=""
     while true; do
-        stty echo 2>/dev/null
-        read -t 0.1 -n 10000 discard 2>/dev/null || true
-        printf "  Enter target subnet CIDR (or Enter to finish): "
-        read subnet_input
+        safe_read "Enter target subnet CIDR (or Enter to finish)" subnet_input
         [[ -z "$subnet_input" ]] && break
         # Basic validation: must contain /
         if [[ "$subnet_input" == *"/"* ]]; then
@@ -164,10 +161,7 @@ run_c2() {
 
     echo ""
     local confirm_scan=""
-    stty echo 2>/dev/null
-    read -t 0.1 -n 10000 discard 2>/dev/null || true
-    printf "  Proceed with scan? [Y/n]: "
-    read confirm_scan
+    safe_read "Proceed with scan? [Y/n]" confirm_scan "y"
     [[ "${confirm_scan,,}" == "n" ]] && return 1
 
     #--- Steps 2+: Scan target ranges ---

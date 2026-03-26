@@ -193,10 +193,7 @@ run_d2() {
     echo -e "${C_RESET}"
     echo ""
     local confirm=""
-    stty echo 2>/dev/null
-    read -t 0.1 -n 10000 discard 2>/dev/null || true
-    printf "  Proceed with WEP cracking? [Y/n]: "
-    read confirm
+    safe_read "Proceed with WEP cracking? [Y/n]" confirm "y"
     [[ "${confirm,,}" == "n" ]] && { disable_monitor_mode; return 1; }
 
     local ivs_collected=0

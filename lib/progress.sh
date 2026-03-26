@@ -58,7 +58,7 @@ start_countdown() {
     # Kill any existing countdown
     stop_countdown 2>/dev/null
     
-    stty -echo 2>/dev/null
+    disable_echo
     
     (
         local start_time=$(date +%s)
@@ -106,9 +106,8 @@ stop_countdown() {
     fi
     
     # Flush stdin queue and restore terminal sanity
-    while read -r -t 0.1 -n 1; do :; done 2>/dev/null
-    stty sane 2>/dev/null
-    stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
+    clear_stdin
+    enable_echo
     tput cnorm 2>/dev/null # Show cursor
 }
 
@@ -122,7 +121,7 @@ start_spinner() {
     
     stop_spinner 2>/dev/null
     
-    stty -echo 2>/dev/null
+    disable_echo
     
     (
         local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
@@ -156,9 +155,8 @@ stop_spinner() {
     fi
     
     # Flush stdin queue and restore terminal sanity
-    while read -r -t 0.1 -n 1; do :; done 2>/dev/null
-    stty sane 2>/dev/null
-    stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
+    clear_stdin
+    enable_echo
     tput cnorm 2>/dev/null # Show cursor
 }
 

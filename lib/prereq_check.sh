@@ -320,6 +320,7 @@ full_prereq_check() {
                     done
                     # One apt update and one apt install — no apt upgrade (no full system upgrade)
                     if [[ ${#apt_packages[@]} -gt 0 ]]; then
+                        disable_echo
                         echo -e "  ${C_CYAN}Updating package lists (apt update only, no upgrade)...${C_RESET}"
                         apt update -qq
                         local pkgs_to_install=()
@@ -328,13 +329,18 @@ full_prereq_check() {
                         done
                         echo -e "  ${C_CYAN}Installing ${#pkgs_to_install[@]} package(s) at once: ${pkgs_to_install[*]}${C_RESET}"
                         apt install -y "${pkgs_to_install[@]}" || echo -e "  ${C_RED}Some apt packages failed. Check output above.${C_RESET}"
+                        clear_stdin
+                        enable_echo
                     fi
                     # Custom installs (e.g. ${TOOL_PATHS[eaphammer]}, ${TOOL_PATHS[airsnitch]}) one by one
                     for tool in "${custom_tools[@]}"; do
                         local install_cmd
                         install_cmd=$(_get_install_command "$tool")
                         echo -e "  ${C_CYAN}Installing ${tool} (custom): ${install_cmd}${C_RESET}"
+                        disable_echo
                         eval "$install_cmd" || echo -e "  ${C_RED}Failed to install ${tool}${C_RESET}"
+                        clear_stdin
+                        enable_echo
                     done
                     echo -e "  ${C_GREEN}Install-all finished. Re-run [P] to verify.${C_RESET}"
                     ;;
@@ -429,7 +435,10 @@ require_tool() {
             os=$(_detect_os)
             case "$os" in
                 kali|parrot|ubuntu|debian)
+                    disable_echo
                     eval "$install_cmd"
+                    clear_stdin
+                    enable_echo
                     if command -v "$tool" &>/dev/null; then
                         TOOL_PATHS["$tool"]=$(command -v "$tool")
                         log_success "${tool} installed successfully."
@@ -474,10 +483,13 @@ require_tools() {
             case "$os" in
                 kali|parrot|ubuntu|debian)
                     # apt update only — no apt upgrade
+                    disable_echo
                     apt update -qq
                     for cmd in "${install_cmds[@]}"; do
                         eval "$cmd"
                     done
+                    clear_stdin
+                    enable_echo
                     # Re-check
                     local still_missing=0
                     for tool in "${missing_tools[@]}"; do

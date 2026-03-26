@@ -94,20 +94,15 @@ run_c1() {
         echo ""
         echo -e "  Current DNS Server: ${C_BOLD}${dns_server}${C_RESET}"
         local _change_dns=""
-        stty echo 2>/dev/null
-        read -t 0.1 -n 10000 discard 2>/dev/null || true
-        printf "  Change DNS server for this test? [y/N]: "
-        read _change_dns
+        safe_read "Change DNS server for this test? [y/N]" _change_dns "n"
         if [[ "${_change_dns,,}" == "y" ]]; then
-            printf "  Enter INTERNAL DNS server IP: "
-            read dns_server
+            safe_read "Enter INTERNAL DNS server IP" dns_server
         fi
     fi
 
     if [[ -z "$dns_server" ]]; then
         log_error "Could not identify DNS server."
-        printf "  Enter INTERNAL DNS server IP for the target network: "
-        read dns_server
+        safe_read "Enter INTERNAL DNS server IP for the target network" dns_server
         dns_server=$(echo "$dns_server" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -1)
         [[ -z "$dns_server" ]] && return 1
     fi
@@ -189,8 +184,7 @@ run_c1() {
     # Prompt user for known internal domains
     local custom_domains=()
     local custom_domain_input=""
-    printf "  [?] Do you know any internal domains to test? (comma-separated, leave blank to skip): "
-    read custom_domain_input
+    safe_read "[?] Do you know any internal domains to test? (comma-separated, leave blank to skip)" custom_domain_input
     if [[ -n "$custom_domain_input" ]]; then
         local old_ifs="${IFS:-}"
         IFS=','

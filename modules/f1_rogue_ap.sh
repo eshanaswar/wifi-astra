@@ -88,8 +88,7 @@ run_f1() {
             echo -e "${C_YELLOW}  Using the primary interface will disconnect from the target.${C_RESET}"
             echo ""
             local use_primary=""
-            printf "  Use primary interface (%s)? [y/N]: " "$primary_iface"
-            read -r use_primary
+            safe_read "Use primary interface ($primary_iface)? [y/N]" use_primary "n"
             if [[ "${use_primary,,}" == "y" ]]; then
                 ap_iface="$primary_iface"
             else
