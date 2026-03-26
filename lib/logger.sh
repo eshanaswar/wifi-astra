@@ -11,6 +11,15 @@
 # Global verbosity flag (0 or 1)
 VERBOSE_MODE=${VERBOSE_MODE:-0}
 
+# Clear any pending characters in stdin to prevent leakage into subsequent prompts or logs
+clear_stdin() {
+    # Only if it's a terminal and not in headless mode
+    if [[ -t 0 ]] && [[ "${HEADLESS_MODE:-0}" == "0" ]]; then
+        local discard
+        while read -t 0.01 -n 10000 discard 2>/dev/null; do :; done
+    fi
+}
+
 #--- Internal: Write to log file ---
 _log_to_file() {
     local level="$1"
@@ -81,6 +90,9 @@ log_step() {
     local total="$2"
     local description="$3"
     local tc_label="${CURRENT_TC:-SYSTEM}"
+    
+    # Clear any pending characters in stdin before showing a major step header
+    clear_stdin
     
     echo "" >&2
     echo -e "${C_CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RESET}" >&2
@@ -156,6 +168,9 @@ log_tc_start() {
     tc_name=$(get_tc_field "$tc_id" "name")
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # Clear any pending characters in stdin before showing the start banner
+    clear_stdin
     
     echo "" >&2
     echo -e "${C_BOLD}${C_CYAN}╔══════════════════════════════════════════════════════════════════╗${C_RESET}" >&2

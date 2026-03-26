@@ -25,8 +25,8 @@ safe_read() {
     # Ensure backspace is handled correctly (^? or ^H depending on terminal)
     stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
     
-    # Clear any pending characters in stdin (only if it's a terminal)
-    read -t 0.1 -n 10000 discard 2>/dev/null || true
+    # Clear any pending characters in stdin
+    clear_stdin
     
     # Strip all trailing colons and spaces from prompt_msg to avoid doubling
     local clean_prompt="${prompt_msg}"

@@ -21,6 +21,9 @@ _execute_cleanups() {
         return
     fi
     
+    # Clear any buffered keystrokes before starting cleanup
+    clear_stdin
+    
     log_info "Executing cleanup hooks..."
     
     # LIFO execution (Last-In, First-Out)
@@ -100,6 +103,9 @@ _handle_sigquit() {
 #--- SIGINT/SIGTERM/SIGHUP Handler: Exit script ---
 _handle_sigint() {
     echo ""
+    # Clear any buffered keystrokes immediately
+    clear_stdin
+    
     log_warn "Interrupt or termination signal received."
     
     # Kill any running test
@@ -143,6 +149,9 @@ _handle_sighup() {
 
 #--- EXIT Handler: Final cleanup ---
 _handle_exit() {
+    # Clear any buffered keystrokes immediately on exit
+    clear_stdin
+    
     # Stop any lingering progress indicators
     stop_spinner 2>/dev/null
     stop_countdown 2>/dev/null
@@ -253,6 +262,7 @@ _show_abort_menu() {
                 return 0
                 ;;
             "Q")
+                clear_stdin
                 save_session_state 2>/dev/null
                 echo -e "${C_GREEN}Session saved: ${SESSION_ID:-unknown}${C_RESET}"
                 exit 0

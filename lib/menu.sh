@@ -8,6 +8,7 @@ main_menu_loop() {
     set -o emacs 2>/dev/null || true
 
     while true; do
+        clear_stdin
         render_menu
 
         local choice
@@ -205,6 +206,7 @@ handle_menu_choice() {
             preflight_wizard
             ;;
         "Q")
+            clear_stdin
             save_session_state
             echo -e "${C_GREEN}Session saved: ${SESSION_ID}${C_RESET}"
             exit 0
@@ -346,6 +348,9 @@ execute_test_case() {
     # Mark as running for menu status
     TC_STATUS["$tc_id"]="running"
     save_session_state
+    
+    # Clear any keystrokes pressed during interface/network prep
+    clear_stdin
     
     echo ""
     echo -e "${C_BLUE}┌── EXECUTING: ${C_BOLD}${tc_id} — ${tc_name}${C_RESET}${C_BLUE} ──────────────────────┐${C_RESET}"
