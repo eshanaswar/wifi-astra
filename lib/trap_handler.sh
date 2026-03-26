@@ -103,8 +103,7 @@ _handle_sigquit() {
 #--- SIGINT/SIGTERM/SIGHUP Handler: Exit script ---
 _handle_sigint() {
     echo ""
-    # Ensure echo is back on and stdin is clear
-    enable_echo
+    # Clear any buffered keystrokes
     clear_stdin
     
     log_warn "Interrupt or termination signal received."
@@ -150,8 +149,7 @@ _handle_sighup() {
 
 #--- EXIT Handler: Final cleanup ---
 _handle_exit() {
-    # Ensure echo is back on and stdin is clear
-    enable_echo
+    # Clear any buffered keystrokes immediately on exit
     clear_stdin
     
     # Stop any lingering progress indicators
@@ -182,14 +180,15 @@ _handle_exit() {
         ensure_managed_mode
     fi
 
-    # Restore terminal
-    stty sane 2>/dev/null
-    tput cnorm 2>/dev/null  # Show cursor
-
     # Cleanup secure temporary workspace
     if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" ]]; then
         rm -rf "$TMP_DIR" 2>/dev/null
     fi
+
+    # Final terminal restoration (at the absolute last moment)
+    stty sane 2>/dev/null
+    enable_echo
+    tput cnorm 2>/dev/null  # Show cursor
 }
 
 #--- Kill processes spawned by current TC ---

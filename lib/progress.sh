@@ -107,7 +107,7 @@ stop_countdown() {
     
     # Flush stdin queue and restore terminal sanity
     clear_stdin
-    enable_echo
+    # We DO NOT re-enable echo here; the framework remains in -echo mode
     tput cnorm 2>/dev/null # Show cursor
 }
 
@@ -156,7 +156,7 @@ stop_spinner() {
     
     # Flush stdin queue and restore terminal sanity
     clear_stdin
-    enable_echo
+    # We DO NOT re-enable echo here; the framework remains in -echo mode
     tput cnorm 2>/dev/null # Show cursor
 }
 

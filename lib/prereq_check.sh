@@ -120,14 +120,7 @@ quick_prereq_check() {
         log_info "These tools are required for core framework functionality."
         
         local choice=""
-        # Use safe_read if available, otherwise fallback to basic read
-        if declare -f safe_read &>/dev/null; then
-            safe_read "Attempt to install missing critical tools now? [Y/n]" choice "y"
-        else
-            printf "  Attempt to install missing critical tools now? [Y/n]: "
-            read choice
-            choice="${choice:-y}"
-        fi
+        safe_read "Attempt to install missing critical tools now? [Y/n]" choice "y"
 
         if [[ "${choice,,}" == "y" ]]; then
             log_info "Updating package lists..."

@@ -8,18 +8,17 @@ main_menu_loop() {
     set -o emacs 2>/dev/null || true
 
     while true; do
-        disable_echo
         clear_stdin
         render_menu
 
         local choice
-        enable_echo
         safe_read "Select module [A1-H1, ALL, R, M, S, P, V, W, Q]: " choice
         handle_menu_choice "$choice"
     done
 }
 #--- Render the full menu ---
 render_menu() {
+    disable_echo
     clear
     
     local completed
@@ -180,6 +179,7 @@ render_menu() {
 
 #--- Handle menu input ---
 handle_menu_choice() {
+    disable_echo
     local choice="${1^^}"  # Uppercase
     
     case "$choice" in

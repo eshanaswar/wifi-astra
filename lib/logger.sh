@@ -15,8 +15,9 @@ VERBOSE_MODE=${VERBOSE_MODE:-0}
 clear_stdin() {
     # Only if it's a terminal and not in headless mode
     if [[ -t 0 ]] && [[ "${HEADLESS_MODE:-0}" == "0" ]]; then
+        # More aggressive clearing: use a while loop with a very short timeout
         local discard
-        while read -t 0.01 -n 10000 discard 2>/dev/null; do :; done
+        while read -rs -t 0.001 -n 10000 discard 2>/dev/null; do :; done
     fi
 }
 

@@ -14,16 +14,17 @@ safe_read() {
     if [[ "${HEADLESS_MODE:-0}" == "1" ]] || [[ ! -t 0 ]]; then
         # Just use the default if available, otherwise empty
         printf -v "$target_var" "%s" "$default_val"
+        disable_echo
         return 0
     fi
 
     # Ensure Readline is enabled
     set -o emacs 2>/dev/null || true
     
-    # Defensive: restore terminal state and enable echo
-    stty sane 2>/dev/null
+    # Enable echo only for the duration of the prompt
     enable_echo
-    # Ensure backspace is handled correctly (^? or ^H depending on terminal)
+    
+    # Defensive: ensure backspace is handled correctly
     stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
     
     # Clear any pending characters in stdin
@@ -46,6 +47,9 @@ safe_read() {
     
     # Use printf -v for safe dynamic variable assignment (removes eval RCE vulnerability)
     printf -v "$target_var" "%s" "$_input"
+    
+    # Immediately disable echo after input is received
+    disable_echo
 }
 
 # Dynamically request a parameter if it's missing from the session state.

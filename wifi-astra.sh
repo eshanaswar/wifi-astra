@@ -57,6 +57,8 @@ source "${SCRIPT_DIR}/lib/headless.sh"
 source "${SCRIPT_DIR}/lib/menu.sh"
 
 #--- Initialize framework ---
+disable_echo
+
 usage() {
     echo "Usage: sudo ./wifi-astra.sh [OPTIONS]"
     echo ""
