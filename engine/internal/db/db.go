@@ -12,7 +12,12 @@ func InitDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	// Create tables
+	// Enable WAL mode for better concurrency during simultaneous background tasks
+	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`)
+	if err != nil {
+		return nil, err
+	}
+
 	schemas := []string{
 		`CREATE TABLE IF NOT EXISTS session (
 			id TEXT PRIMARY KEY,

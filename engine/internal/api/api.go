@@ -1,11 +1,16 @@
 package api
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"wifi-astra/engine/internal/db"
 	"wifi-astra/engine/internal/ingest"
 	"wifi-astra/engine/internal/proc"
@@ -18,6 +23,7 @@ type Server struct {
 	supervisor *proc.Supervisor
 	socketPath string
 	server     *http.Server
+	apiToken   string
 }
 
 func NewServer(database *sql.DB, socketPath string) *Server {
@@ -29,7 +35,27 @@ func NewServer(database *sql.DB, socketPath string) *Server {
 	}
 }
 
+func (s *Server) generateToken() error {
+	b := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return err
+	}
+	s.apiToken = hex.EncodeToString(b)
+	
+	// Save token to a file in the same directory as the socket
+	tokenPath := filepath.Join(filepath.Dir(s.socketPath), "engine.token")
+	if err := os.WriteFile(tokenPath, []byte(s.apiToken), 0600); err != nil {
+		return fmt.Errorf("failed to save API token: %v", err)
+	}
+	fmt.Printf("API Token saved to: %s\n", tokenPath)
+	return nil
+}
+
 func (s *Server) Start() error {
+	if err := s.generateToken(); err != nil {
+		return err
+	}
+
 	// Remove existing socket if any
 	os.Remove(s.socketPath)
 
@@ -38,40 +64,54 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	// Set permissions for the socket
-	os.Chmod(s.socketPath, 0666)
+	// Set permissions for the socket: 0600 (Owner only)
+	// This is critical to prevent local users from accessing the root API
+	os.Chmod(s.socketPath, 0600)
 
 	mux := http.NewServeMux()
 
+	// --- Middleware for Token Verification ---
+	authMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			token := r.Header.Get("X-Astra-Token")
+			if token != s.apiToken {
+				http.Error(w, "Unauthorized: Invalid or missing Astra Token", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
+
 	// --- State Endpoints ---
-	mux.HandleFunc("/v1/config/get", s.handleGetConfig)
-	mux.HandleFunc("/v1/config/set", s.handleSetConfig)
-	mux.HandleFunc("/v1/config/batch-set", s.handleBatchSetConfig)
-	mux.HandleFunc("/v1/status/get", s.handleGetStatus)
-	mux.HandleFunc("/v1/status/set", s.handleUpdateStatus)
-	mux.HandleFunc("/v1/status/batch-set", s.handleBatchUpdateStatus)
+	mux.HandleFunc("/v1/config/get", authMiddleware(s.handleGetConfig))
+	mux.HandleFunc("/v1/config/set", authMiddleware(s.handleSetConfig))
+	mux.HandleFunc("/v1/config/batch-set", authMiddleware(s.handleBatchSetConfig))
+	mux.HandleFunc("/v1/status/get", authMiddleware(s.handleGetStatus))
+	mux.HandleFunc("/v1/status/set", authMiddleware(s.handleUpdateStatus))
+	mux.HandleFunc("/v1/status/batch-set", authMiddleware(s.handleBatchUpdateStatus))
+	mux.HandleFunc("/v1/status/summary", authMiddleware(s.handleStatusSummary))
 
 	// --- Ingest Endpoints ---
-	mux.HandleFunc("/v1/ingest/airodump", s.handleIngestAirodump)
-	mux.HandleFunc("/v1/ingest/network", s.handleIngestNetwork)
-	mux.HandleFunc("/v1/ingest/client", s.handleIngestClient)
-	mux.HandleFunc("/v1/ingest/batch-clients", s.handleBatchIngestClients)
-	mux.HandleFunc("/v1/ingest/credential", s.handleIngestCredential)
-	mux.HandleFunc("/v1/ingest/vulnerability", s.handleIngestVulnerability)
+	mux.HandleFunc("/v1/ingest/airodump", authMiddleware(s.handleIngestAirodump))
+	mux.HandleFunc("/v1/ingest/network", authMiddleware(s.handleIngestNetwork))
+	mux.HandleFunc("/v1/ingest/client", authMiddleware(s.handleIngestClient))
+	mux.HandleFunc("/v1/ingest/batch-clients", authMiddleware(s.handleBatchIngestClients))
+	mux.HandleFunc("/v1/ingest/credential", authMiddleware(s.handleIngestCredential))
+	mux.HandleFunc("/v1/ingest/vulnerability", authMiddleware(s.handleIngestVulnerability))
 
 	// --- List Endpoints ---
-	mux.HandleFunc("/v1/networks", s.handleListNetworks)
-	mux.HandleFunc("/v1/networks/hidden", s.handleListHiddenNetworks)
-	mux.HandleFunc("/v1/clients", s.handleListClients)
-	mux.HandleFunc("/v1/credentials", s.handleListCredentials)
-	mux.HandleFunc("/v1/vulnerabilities", s.handleListVulnerabilities)
+	mux.HandleFunc("/v1/networks", authMiddleware(s.handleListNetworks))
+	mux.HandleFunc("/v1/networks/hidden", authMiddleware(s.handleListHiddenNetworks))
+	mux.HandleFunc("/v1/clients", authMiddleware(s.handleListClients))
+	mux.HandleFunc("/v1/credentials", authMiddleware(s.handleListCredentials))
+	mux.HandleFunc("/v1/vulnerabilities", authMiddleware(s.handleListVulnerabilities))
 
 	// --- Process Endpoints ---
-	mux.HandleFunc("/v1/process/start", s.handleProcessStart)
-	mux.HandleFunc("/v1/process/stop", s.handleProcessStop)
-	mux.HandleFunc("/v1/process/list", s.handleProcessList)
+	mux.HandleFunc("/v1/process/start", authMiddleware(s.handleProcessStart))
+	mux.HandleFunc("/v1/process/stop", authMiddleware(s.handleProcessStop))
+	mux.HandleFunc("/v1/process/list", authMiddleware(s.handleProcessList))
 
-	mux.HandleFunc("/v1/shutdown", s.handleShutdown)
+	mux.HandleFunc("/v1/shutdown", authMiddleware(s.handleShutdown))
 
 	server := &http.Server{Handler: mux}
 	s.server = server
@@ -156,6 +196,15 @@ func (s *Server) handleBatchUpdateStatus(w http.ResponseWriter, r *http.Request)
 		s.state.UpdateModuleStatus(k, v, 0)
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleStatusSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := s.state.GetStatusSummary()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(summary)
 }
 
 func (s *Server) handleIngestAirodump(w http.ResponseWriter, r *http.Request) {

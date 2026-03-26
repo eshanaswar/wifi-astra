@@ -95,13 +95,23 @@ run_a1() {
     # Remove any previous output files
     rm -f "${airodump_prefix}"* 2>/dev/null
 
+    log_info "Monitor interface status:"
+    iw dev "$mon_iface" info 2>/dev/null | grep -E "type|channel" || echo "  [!] Could not get info for ${mon_iface}"
+    
+    local tool_path="${TOOL_PATHS[airodump-ng]:-airodump-ng}"
+    log_info "Starting airodump-ng scan (Path: ${tool_path})..."
+
     # Spawn via assessment engine process supervisor
     spawn_bg "a1_scan" "airodump-ng" \
+        --log "${evidence_prefix}_airodump.log" \
         "$mon_iface" \
         --write "$airodump_prefix" \
         --output-format csv,pcap \
         --band abg
 
+    # Wait a moment for process to initialize and files to be created
+    sleep 2
+    
     # Countdown while scanning
     start_countdown "$scan_time" "Scanning for wireless networks"
     sleep "$scan_time"
@@ -481,8 +491,8 @@ run_a1() {
     else
         log_result "SECURE" "No open (unencrypted) networks detected"
     fi
-    log_result "INFO" "${network_count} total networks found, ${hidden_count} hidden"
-    log_result "INFO" "Target: ${GUEST_SSID} (${GUEST_BSSID}) on CH ${GUEST_CHANNEL}"
+    log_result "INFO" "${network_count:-0} total networks found, ${hidden_count:-0} hidden"
+    log_result "INFO" "Target: ${GUEST_SSID:-not set} (${GUEST_BSSID:-unknown}) on CH ${GUEST_CHANNEL:-unknown}"
     if [[ -n "${INTERNAL_SSID:-}" ]]; then
         log_result "INFO" "Internal Reference: ${INTERNAL_SSID} (${INTERNAL_BSSID})"
     fi

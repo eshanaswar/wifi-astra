@@ -9,11 +9,13 @@
 set -uo pipefail
 
 export ENGINE_SOCKET=""
+export ENGINE_TOKEN=""
 
 #--- Engine Daemon Lifecycle ---
 start_engine_daemon() {
     [[ -z "${SESSION_DIR:-}" ]] && return 1
     ENGINE_SOCKET="${SESSION_DIR}/engine.sock"
+    local token_file="${SESSION_DIR}/engine.token"
     
     log_info "Starting Assessment Engine daemon..."
     # Start the daemon in the background
@@ -23,18 +25,21 @@ start_engine_daemon() {
     # Register for cleanup
     register_cleanup "stop_engine_daemon"
     
-    # Wait for socket to be ready
+    # Wait for socket and token to be ready
     local timeout=10
     while [[ $timeout -gt 0 ]]; do
-        if [[ -S "$ENGINE_SOCKET" ]]; then
-            log_success "Assessment Engine ready."
-            return 0
+        if [[ -S "$ENGINE_SOCKET" && -f "$token_file" ]]; then
+            ENGINE_TOKEN=$(cat "$token_file" 2>/dev/null)
+            if [[ -n "$ENGINE_TOKEN" ]]; then
+                log_success "Assessment Engine ready (authenticated)."
+                return 0
+            fi
         fi
         sleep 0.5
         ((timeout--))
     done
     
-    log_error "Assessment Engine failed to start within 5 seconds."
+    log_error "Assessment Engine failed to start or generate token within 5 seconds."
     return 1
 }
 
@@ -45,6 +50,7 @@ stop_engine_daemon() {
         # Wait a moment for it to exit
         sleep 1
         rm -f "$ENGINE_SOCKET"
+        rm -f "${SESSION_DIR}/engine.token"
     fi
 }
 
@@ -55,20 +61,33 @@ run_engine_api() {
     shift 2
     
     if [[ -z "${ENGINE_SOCKET:-}" || ! -S "$ENGINE_SOCKET" ]]; then
-        # Fallback to CLI if daemon not running (migration period)
-        # But we want to avoid this as much as possible
         return 1
+    fi
+
+    # Read token if not cached
+    if [[ -z "${ENGINE_TOKEN:-}" ]]; then
+        local token_file="${SESSION_DIR}/engine.token"
+        if [[ -f "$token_file" ]]; then
+            ENGINE_TOKEN=$(cat "$token_file" 2>/dev/null)
+        fi
     fi
     
     if [[ "$method" == "GET" ]]; then
-        curl --unix-socket "$ENGINE_SOCKET" -s -X GET "http://localhost${endpoint}"
+        curl --unix-socket "$ENGINE_SOCKET" -s -X GET \
+             -H "X-Astra-Token: ${ENGINE_TOKEN}" \
+             "http://localhost${endpoint}"
     else
         # POST with data
         local data="${1:-}"
         if [[ -n "$data" ]]; then
-            curl --unix-socket "$ENGINE_SOCKET" -s -X POST -H "Content-Type: application/json" -d "$data" "http://localhost${endpoint}"
+            curl --unix-socket "$ENGINE_SOCKET" -s -X POST \
+                 -H "X-Astra-Token: ${ENGINE_TOKEN}" \
+                 -H "Content-Type: application/json" \
+                 -d "$data" "http://localhost${endpoint}"
         else
-            curl --unix-socket "$ENGINE_SOCKET" -s -X POST "http://localhost${endpoint}"
+            curl --unix-socket "$ENGINE_SOCKET" -s -X POST \
+                 -H "X-Astra-Token: ${ENGINE_TOKEN}" \
+                 "http://localhost${endpoint}"
         fi
     fi
 }
@@ -164,8 +183,10 @@ detect_previous_session() {
         
         if [[ -f "$db_file" ]]; then
             sname=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-config --key "session_name" 2>/dev/null)
-            # Use a more robust way to get the count that doesn't trigger pipefail issues
-            done_count=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard 2>/dev/null | grep ":done" | wc -l | xargs)
+            # Use structured summary endpoint
+            local summary_json
+            summary_json=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard 2>/dev/null)
+            done_count=$(echo "$summary_json" | run_tool jq -r '.done // 0')
         fi
         
         local display_name="${sname:-$sid}"
@@ -417,13 +438,17 @@ save_session_state() {
 
 #--- Get completed TC count ---
 get_completed_count() {
-    local count=0
-    for _tc in "${TC_ORDER[@]}"; do
-        if [[ "${TC_STATUS[$_tc]}" == "done" ]]; then
-            ((count++))
-        fi
-    done
-    echo "$count"
+    if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
+        run_engine_api GET "/v1/status/summary" | run_tool jq -r '.done // 0'
+    else
+        local count=0
+        for _tc in "${TC_ORDER[@]}"; do
+            if [[ "${TC_STATUS[$_tc]}" == "done" ]]; then
+                ((count++))
+            fi
+        done
+        echo "$count"
+    fi
 }
 
 #--- Get TC result file path ---
@@ -572,7 +597,7 @@ enrich_tc_result_file() {
 
        # Ensure all evidence files generated in this TC have correct permissions
        finalize_evidence_permissions
-       }
+}
 
 #--- Check if TC has results ---
 has_tc_results() {
@@ -717,7 +742,9 @@ manage_sessions() {
 
                 if [[ -f "$db_file" ]]; then
                     sname=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-config --key "session_name" 2>/dev/null)
-                    done_count=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard 2>/dev/null | grep ":done" | wc -l | xargs)
+                    local summary_json
+                    summary_json=$("${TOOL_PATHS[astra-engine]:-./astra-engine}" --db "$db_file" state get-dashboard 2>/dev/null)
+                    done_count=$(echo "$summary_json" | run_tool jq -r '.done // 0')
                 fi
 
                 local session_date

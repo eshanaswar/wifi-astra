@@ -47,21 +47,47 @@ func (s *StateManager) GetModuleStatus(tcID string) (string, error) {
 	return status, err
 }
 
-// GetDashboardSummary returns a map of all module statuses.
-func (s *StateManager) GetDashboardSummary() (map[string]string, error) {
-	rows, err := s.db.Query(`SELECT tc_id, status FROM module_state;`)
+type StatusSummary struct {
+	Total      int `json:"total"`
+	Done       int `json:"done"`
+	Failed     int `json:"failed"`
+	Aborted    int `json:"aborted"`
+	Running    int `json:"running"`
+	NotRun     int `json:"not_run"`
+	Percentage int `json:"percentage"`
+}
+
+func (s *StateManager) GetStatusSummary() (*StatusSummary, error) {
+	rows, err := s.db.Query(`SELECT status FROM module_state;`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	summary := make(map[string]string)
+	summary := &StatusSummary{}
 	for rows.Next() {
-		var id, status string
-		if err := rows.Scan(&id, &status); err != nil {
+		var status string
+		if err := rows.Scan(&status); err != nil {
 			return nil, err
 		}
-		summary[id] = status
+		summary.Total++
+		switch status {
+		case "done":
+			summary.Done++
+		case "failed":
+			summary.Failed++
+		case "aborted":
+			summary.Aborted++
+		case "running":
+			summary.Running++
+		default:
+			summary.NotRun++
+		}
 	}
+
+	if summary.Total > 0 {
+		summary.Percentage = (summary.Done * 100) / summary.Total
+	}
+
 	return summary, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ type Process struct {
 	PID       int       `json:"pid"`
 	StartTime time.Time `json:"start_time"`
 	Status    string    `json:"status"`
+	LogFile   string    `json:"log_file"`
 	cmd       *exec.Cmd
 	cancel    context.CancelFunc
 }
@@ -36,6 +38,11 @@ func (s *Supervisor) StartProcess(id, command string, args []string, logFile str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// If ID is empty, generate a unique one
+	if id == "" {
+		id = fmt.Sprintf("proc_%d", time.Now().UnixNano())
+	}
+
 	if _, exists := s.processes[id]; exists {
 		return nil, fmt.Errorf("process with ID %s already exists", id)
 	}
@@ -43,11 +50,17 @@ func (s *Supervisor) StartProcess(id, command string, args []string, logFile str
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, command, args...)
 	
+	fmt.Printf("[DEBUG] Engine Supervisor: Starting %s with args %v\n", command, args)
+
 	if logFile != "" {
+		// Ensure log directory exists
+		os.MkdirAll(filepath.Dir(logFile), 0755)
 		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err == nil {
 			cmd.Stdout = f
 			cmd.Stderr = f
+		} else {
+			fmt.Fprintf(os.Stderr, "[ERROR] Could not open log file %s: %v\n", logFile, err)
 		}
 	}
 
@@ -63,6 +76,7 @@ func (s *Supervisor) StartProcess(id, command string, args []string, logFile str
 		PID:       cmd.Process.Pid,
 		StartTime: time.Now(),
 		Status:    "running",
+		LogFile:   logFile,
 		cmd:       cmd,
 		cancel:    cancel,
 	}

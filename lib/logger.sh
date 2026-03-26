@@ -203,14 +203,15 @@ log_tc_end() {
     
     local status_icon status_color status_text
     case "$status" in
-        "done")    status_icon="${C_GREEN}${ICON_DONE}${C_RESET}${status_color}"; status_color="$C_GREEN"; status_text="COMPLETED" ;;
-        "failed")  status_icon="${C_RED}${ICON_FAIL}${C_RESET}${status_color}"; status_color="$C_RED";   status_text="FAILED" ;;
-        "aborted") status_icon="${C_YELLOW}${ICON_WARN}${C_RESET}${status_color}"; status_color="$C_YELLOW"; status_text="ABORTED" ;;
+        "done")    status_color="$C_GREEN";  status_icon="${ICON_DONE}";    status_text="COMPLETED" ;;
+        "failed")  status_color="$C_RED";    status_icon="${ICON_FAIL}";    status_text="FAILED"    ;;
+        "aborted") status_color="$C_YELLOW"; status_icon="${ICON_WARN}";    status_text="ABORTED"   ;;
+        *)         status_color="$C_CYAN";   status_icon="?";               status_text="UNKNOWN"   ;;
     esac
     
     echo "" >&2
     echo -e "${C_BOLD}${status_color}╔══════════════════════════════════════════════════════════════════╗${C_RESET}" >&2
-    echo -e "${C_BOLD}${status_color}║  ${status_icon}  ${status_text}: ${tc_id} — ${tc_name}${C_RESET}" >&2
+    echo -e "${C_BOLD}${status_color}║  [${status_icon}]  ${status_text}: ${tc_id} — ${tc_name}${C_RESET}" >&2
     echo -e "${C_BOLD}${status_color}║  Duration: ${duration}${C_RESET}" >&2
     echo -e "${C_BOLD}${status_color}╚══════════════════════════════════════════════════════════════════╝${C_RESET}" >&2
     echo "" >&2

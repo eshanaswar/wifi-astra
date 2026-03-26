@@ -91,7 +91,7 @@ func main() {
 
 	var getDashboardCmd = &cobra.Command{
 		Use:   "get-dashboard",
-		Short: "Get all module statuses",
+		Short: "Get module status summary",
 		Run: func(cmd *cobra.Command, args []string) {
 			database, err := db.InitDB(dbPath)
 			if err != nil {
@@ -99,14 +99,12 @@ func main() {
 				os.Exit(1)
 			}
 			s := state.NewStateManager(database)
-			summary, err := s.GetDashboardSummary()
+			summary, err := s.GetStatusSummary()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			for id, status := range summary {
-				fmt.Printf("%s:%s\n", id, status)
-			}
+			json.NewEncoder(os.Stdout).Encode(summary)
 		},
 	}
 	stateCmd.AddCommand(getDashboardCmd)

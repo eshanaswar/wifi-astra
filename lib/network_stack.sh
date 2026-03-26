@@ -121,6 +121,10 @@ enable_monitor_mode() {
 
     if [[ -n "$detected_mon" ]]; then
         MONITOR_INTERFACE="$detected_mon"
+        
+        # Ensure the interface is UP
+        ip link set "$MONITOR_INTERFACE" up 2>/dev/null || true
+        
         log_success "Monitor mode active: ${MONITOR_INTERFACE}"
         
         # Lock to target channel

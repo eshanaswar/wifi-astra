@@ -434,7 +434,7 @@ execute_test_case() {
         enrich_tc_result_file "$tc_id" "$exit_code" "$_tc_started_iso" "$_tc_ended_iso" "$_duration_sec" || true
     fi
     
-    log_tc_end "$tc_id" "$( [[ "$exit_code" -eq 0 ]] && echo "done" || echo "failed" )" "$(_format_duration $_duration_sec)"
+    log_tc_end "$tc_id" "$( [[ "$exit_code" -eq 0 ]] && echo "done" || echo "failed" )" "$(format_duration $_duration_sec)"
     
     if [[ "$exit_code" -eq 0 ]]; then
         TC_STATUS["$tc_id"]="done"
