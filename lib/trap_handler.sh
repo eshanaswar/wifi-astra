@@ -103,7 +103,8 @@ _handle_sigquit() {
 #--- SIGINT/SIGTERM/SIGHUP Handler: Exit script ---
 _handle_sigint() {
     echo ""
-    # Clear any buffered keystrokes immediately
+    # Ensure echo is back on and stdin is clear
+    enable_echo
     clear_stdin
     
     log_warn "Interrupt or termination signal received."
@@ -149,7 +150,8 @@ _handle_sighup() {
 
 #--- EXIT Handler: Final cleanup ---
 _handle_exit() {
-    # Clear any buffered keystrokes immediately on exit
+    # Ensure echo is back on and stdin is clear
+    enable_echo
     clear_stdin
     
     # Stop any lingering progress indicators

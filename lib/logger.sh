@@ -20,6 +20,16 @@ clear_stdin() {
     fi
 }
 
+# Disable terminal echoing of keystrokes
+disable_echo() {
+    [[ -t 0 ]] && [[ "${HEADLESS_MODE:-0}" == "0" ]] && stty -echo 2>/dev/null
+}
+
+# Enable terminal echoing of keystrokes
+enable_echo() {
+    [[ -t 0 ]] && [[ "${HEADLESS_MODE:-0}" == "0" ]] && stty echo 2>/dev/null
+}
+
 #--- Internal: Write to log file ---
 _log_to_file() {
     local level="$1"

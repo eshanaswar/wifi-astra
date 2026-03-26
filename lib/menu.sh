@@ -8,10 +8,12 @@ main_menu_loop() {
     set -o emacs 2>/dev/null || true
 
     while true; do
+        disable_echo
         clear_stdin
         render_menu
 
         local choice
+        enable_echo
         safe_read "Select module [A1-H1, ALL, R, M, S, P, V, W, Q]: " choice
         handle_menu_choice "$choice"
     done
@@ -342,6 +344,9 @@ execute_test_case() {
     # 3) Setup Evidence Registry
     evidence_tc_start "$tc_id"
     
+    # Disable echo during execution to prevent keystroke leakage in logs/UI
+    disable_echo
+    
     # 4) Launch Module
     local func_name="run_${tc_id,,}"
     
@@ -447,6 +452,9 @@ execute_test_case() {
     echo -e "${C_BLUE}└─────────────────────────────────────────────────────────────────┘${C_RESET}"
     echo ""
     
+    # Re-enable echo for potential user input
+    enable_echo
+
     # Skip interactive prompt in headless mode
     if [[ "${HEADLESS_MODE:-0}" == "0" ]]; then
         safe_read "Press Enter to return to menu..." _
