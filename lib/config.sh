@@ -148,6 +148,13 @@ export ICON_RUNNING="[>]"
 export ICON_CRITICAL="*"
 export ICON_LOCK="[L]"
 export ICON_KEY="[K]"
+
+#--- Hardware Capabilities (set during hardware query) ---
+export HW_CAN_INJECT="no"
+export HW_CAN_MONITOR="no"
+export HW_24GHZ_SUPPORT="no"
+export HW_5GHZ_SUPPORT="no"
+export HW_6GHZ_SUPPORT="no"
 export ICON_SKIP="[S]"
 
 #--- Category Labels ---

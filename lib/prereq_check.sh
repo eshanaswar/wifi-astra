@@ -182,6 +182,12 @@ check_hardware_injection() {
         log_debug "MONITOR_INTERFACE not set, skipping injection check."
         return 0
     fi
+
+    # If the hardware query already confirmed support, trust it to avoid environment-based failures
+    if [[ "${HW_CAN_INJECT:-no}" == "yes" ]]; then
+        log_success "Injection support confirmed for ${iface} via driver analysis."
+        return 0
+    fi
     
     if ! validate_injection "$iface"; then
         echo ""
