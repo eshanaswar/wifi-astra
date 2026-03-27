@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 	"wifi-astra/engine/internal/db"
 	"wifi-astra/engine/internal/ingest"
 	"wifi-astra/engine/internal/proc"
@@ -18,20 +20,22 @@ import (
 )
 
 type Server struct {
-	db         *sql.DB
-	state      *state.StateManager
-	supervisor *proc.Supervisor
-	socketPath string
-	server     *http.Server
-	apiToken   string
+	db            *sql.DB
+	state         *state.StateManager
+	supervisor    *proc.Supervisor
+	socketPath    string
+	server        *http.Server
+	apiToken      string
+	lastHeartbeat int64 // Unix timestamp (atomic)
 }
 
 func NewServer(database *sql.DB, socketPath string) *Server {
 	return &Server{
-		db:         database,
-		state:      state.NewStateManager(database),
-		supervisor: proc.NewSupervisor(),
-		socketPath: socketPath,
+		db:            database,
+		state:         state.NewStateManager(database),
+		supervisor:    proc.NewSupervisor(),
+		socketPath:    socketPath,
+		lastHeartbeat: time.Now().Unix(),
 	}
 }
 
@@ -51,10 +55,26 @@ func (s *Server) generateToken() error {
 	return nil
 }
 
+func (s *Server) startWatchdog() {
+	ticker := time.NewTicker(10 * time.Second)
+	go func() {
+		for range ticker.C {
+			last := atomic.LoadInt64(&s.lastHeartbeat)
+			if time.Since(time.Unix(last, 0)) > 30*time.Second {
+				fmt.Fprintf(os.Stderr, "[WATCHDOG] Heartbeat lost for >30s. Emergency shutdown initiated.\n")
+				s.Cleanup()
+				os.Exit(1)
+			}
+		}
+	}()
+}
+
 func (s *Server) Start() error {
 	if err := s.generateToken(); err != nil {
 		return err
 	}
+
+	s.startWatchdog()
 
 	// Remove existing socket if any
 	os.Remove(s.socketPath)
@@ -106,11 +126,15 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/v1/credentials", authMiddleware(s.handleListCredentials))
 	mux.HandleFunc("/v1/vulnerabilities", authMiddleware(s.handleListVulnerabilities))
 
+	// --- Report Endpoints ---
+	mux.HandleFunc("/v1/report/generate", authMiddleware(s.handleGenerateReport))
+
 	// --- Process Endpoints ---
 	mux.HandleFunc("/v1/process/start", authMiddleware(s.handleProcessStart))
 	mux.HandleFunc("/v1/process/stop", authMiddleware(s.handleProcessStop))
 	mux.HandleFunc("/v1/process/list", authMiddleware(s.handleProcessList))
 
+	mux.HandleFunc("/v1/heartbeat", authMiddleware(s.handleHeartbeat))
 	mux.HandleFunc("/v1/shutdown", authMiddleware(s.handleShutdown))
 
 	server := &http.Server{Handler: mux}
@@ -373,6 +397,12 @@ func (s *Server) handleProcessStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	atomic.StoreInt64(&s.lastHeartbeat, time.Now().Unix())
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("pong"))
 }
 
 func (s *Server) handleProcessList(w http.ResponseWriter, r *http.Request) {

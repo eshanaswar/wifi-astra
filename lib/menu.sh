@@ -493,15 +493,13 @@ preflight_wizard() {
     # 1) Managed interface
     echo -e "  ${C_BOLD}Step 1:${C_RESET} Select managed WiFi interface"
     echo ""
-    if [[ -n "${WIFI_INTERFACE:-}" ]]; then
-        echo -e "    Current interface: ${C_BOLD}${WIFI_INTERFACE}${C_RESET}"
-        safe_read "Keep this interface? [Y/n]: " _keep_iface
-        if [[ "${_keep_iface,,}" == "n" ]]; then
-            configure_network || return 1
-        fi
-    else
-        configure_network || return 1
-    fi
+    
+    # Clear any stale monitor interface from previous runs or setup attempts
+    # to ensure hardware query looks at the fresh physical selection
+    MONITOR_INTERFACE=""
+
+    # Always prompt for configuration to handle hardware/adapter changes
+    configure_network || return 1
 
     # Derive details
     MY_IP=$(${TOOL_PATHS[ip]} -4 addr show "$WIFI_INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
@@ -517,7 +515,7 @@ preflight_wizard() {
 
     # Verify hardware capabilities immediately after selection
     if declare -f check_hardware_capabilities &>/dev/null; then
-        check_hardware_capabilities
+        check_hardware_capabilities "$WIFI_INTERFACE"
     fi
 
     PREFLIGHT_DONE=1

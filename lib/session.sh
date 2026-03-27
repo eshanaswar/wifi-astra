@@ -10,6 +10,7 @@ set -uo pipefail
 
 export ENGINE_SOCKET=""
 export ENGINE_TOKEN=""
+export HEARTBEAT_PID=""
 
 #--- Engine Daemon Lifecycle ---
 start_engine_daemon() {
@@ -32,6 +33,8 @@ start_engine_daemon() {
             ENGINE_TOKEN=$(cat "$token_file" 2>/dev/null)
             if [[ -n "$ENGINE_TOKEN" ]]; then
                 log_success "Assessment Engine ready (authenticated)."
+                # Start the heartbeat loop
+                start_heartbeat_loop
                 return 0
             fi
         fi
@@ -44,6 +47,9 @@ start_engine_daemon() {
 }
 
 stop_engine_daemon() {
+    # Stop heartbeat first
+    stop_heartbeat_loop
+    
     if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
         log_info "Stopping Assessment Engine daemon..."
         run_engine_api POST "/v1/shutdown" >/dev/null 2>&1 || true
@@ -51,6 +57,30 @@ stop_engine_daemon() {
         sleep 1
         rm -f "$ENGINE_SOCKET"
         rm -f "${SESSION_DIR}/engine.token"
+    fi
+}
+
+#--- Heartbeat Loop ---
+start_heartbeat_loop() {
+    # Don't start if already running
+    [[ -n "$HEARTBEAT_PID" ]] && kill -0 "$HEARTBEAT_PID" 2>/dev/null && return
+    
+    (
+        while true; do
+            run_engine_api POST "/v1/heartbeat" >/dev/null 2>&1
+            sleep 10
+        done
+    ) &
+    HEARTBEAT_PID=$!
+    log_debug "Heartbeat loop started (PID: $HEARTBEAT_PID)"
+}
+
+stop_heartbeat_loop() {
+    if [[ -n "$HEARTBEAT_PID" ]]; then
+        log_debug "Stopping heartbeat loop (PID: $HEARTBEAT_PID)..."
+        kill "$HEARTBEAT_PID" 2>/dev/null || true
+        wait "$HEARTBEAT_PID" 2>/dev/null || true
+        HEARTBEAT_PID=""
     fi
 }
 

@@ -93,19 +93,49 @@ validate_injection() {
         return 1
     fi
 }
-
 check_hardware_capabilities() {
-    local iface="${WIFI_INTERFACE:-}"
+    local iface="${1:-${WIFI_INTERFACE:-}}"
     [[ -z "$iface" ]] && return 0
 
     log_step 1 2 "Querying Hardware Capabilities: ${iface}"
-    
+
     # 1. Map Interface to PHY
+    # Method A: Direct lookup via 'iw dev <iface> info'
     local phy=$(iw dev "$iface" info 2>/dev/null | awk '/wiphy/{print "phy"$2}')
-    [[ -z "$phy" ]] && phy=$(iw dev | grep -B 1 "$iface" | awk '/phy#/{print "phy"$1}' | tr -d '#')
+
+    # Method B: Search the full 'iw dev' output for the interface block
+    if [[ -z "$phy" ]]; then
+        # Use awk to find the PHY associated with the interface name
+        phy=$(iw dev 2>/dev/null | awk -v iface="$iface" '
+            /^phy#/ { current_phy = "phy" substr($1, 5) }
+            /Interface/ { 
+                if ($2 == iface) { 
+                    print current_phy
+                    exit 
+                }
+            }
+        ')
+    fi
+
+    # Method C: Virtual Interface Parent Resolution (Check if it's a monitor child)
+    if [[ -z "$phy" ]] && [[ "$iface" == *mon ]]; then
+        local base_iface="${iface%mon}"
+        log_debug "Detected potential monitor interface. Checking parent: ${base_iface}"
+        phy=$(iw dev "$base_iface" info 2>/dev/null | awk '/wiphy/{print "phy"$2}')
+    fi
+
+    # Method D: Look up by sysfs (works even if iw is weird)
+    if [[ -z "$phy" ]]; then
+        if [[ -d "/sys/class/net/$iface/phy80211" ]]; then
+            phy=$(basename "$(readlink "/sys/class/net/$iface/phy80211" 2>/dev/null || echo "")")
+        fi
+    fi
     
     if [[ -z "$phy" ]]; then
         log_error "Could not map interface ${iface} to a physical radio (PHY)."
+        log_debug "Dumping raw interface state for diagnosis:"
+        log_debug "iw dev output:\n$(iw dev 2>&1)"
+        log_debug "sysfs check: $(ls -l /sys/class/net/"$iface"/phy80211 2>&1)"
         return 1
     fi
 
@@ -138,9 +168,14 @@ check_hardware_capabilities() {
         HW_CAN_MONITOR="yes"
     fi
 
-    # Injection is indicated by the presence of 'tx' and 'monitor' capabilities
-    # and confirmed by the driver module flags.
-    local driver=$(basename $(readlink /sys/class/net/"$iface"/device/driver/module) 2>/dev/null || echo "unknown")
+    # Resolve actual driver using ethtool (most reliable)
+    # If it's a monitor interface, try the base name first
+    local check_iface="$iface"
+    [[ "$iface" == *mon ]] && check_iface="${iface%mon}"
+    
+    local driver
+    driver=$(ethtool -i "$check_iface" 2>/dev/null | awk '/driver/{print $2}')
+    [[ -z "$driver" ]] && driver=$(basename $(readlink /sys/class/net/"$iface"/device/driver/module) 2>/dev/null || echo "unknown")
     
     # We confirm injection support via 'iw' and known-good driver list
     if [[ "$HW_CAN_MONITOR" == "yes" ]]; then

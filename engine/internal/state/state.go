@@ -28,6 +28,24 @@ func (s *StateManager) GetConfig(key string) (string, error) {
 	return value, err
 }
 
+func (s *StateManager) GetAllConfigs() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT key, value FROM config;`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	configs := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		configs[k] = v
+	}
+	return configs, nil
+}
+
 // UpdateModuleStatus updates the status of a test case.
 func (s *StateManager) UpdateModuleStatus(tcID, status string, exitCode int) error {
 	_, err := s.db.Exec(`INSERT OR REPLACE INTO module_state (tc_id, status, exit_code) 

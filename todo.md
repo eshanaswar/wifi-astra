@@ -1,25 +1,19 @@
-# Refactor Category C, D, and E Modules
+# WiFi-Astra Project Roadmap & Status
 
-## Category C
-- [ ] Refactor `modules/c3_vlan_hopping.sh`
-- [ ] Refactor `modules/c4_radius_reachability.sh`
-- [ ] Refactor `modules/c5_egress_filtering.sh`
+## ✅ Completed Tasks
+- [x] **Phase 1: Engine Daemonization**: Go engine now runs as a persistent daemon via UNIX socket.
+- [x] **Phase 2: Database Reliability**: Enabled SQLite WAL mode and structured summary API.
+- [x] **Phase 3: Module Decoupling**: All 40+ modules refactored to use explicit argument parsing.
+- [x] **Phase 4: E2E Validation**: Headless simulation framework with mock tools is fully operational.
+- [x] **UI Hardening**: Framework-wide terminal echo control and buffer purging (no more ^[[C noise).
+- [x] **API Security**: Forced 0600 socket permissions and mandatory Astra Token authentication.
 
-## Category D
-- [ ] Refactor `modules/d2_wep_cracking.sh`
-- [ ] Refactor `modules/d3_wps_testing.sh`
-- [ ] Refactor `modules/d4_wpa3_dragonblood.sh`
-- [ ] Refactor `modules/d6_owe_downgrade.sh`
-- [ ] Refactor `modules/d7_wpa3_downgrade_active.sh`
+## 🚧 Active / High Priority
+- [ ] **Hardware Mapping Fix**: Investigate why `wlan0mon` fails PHY mapping despite fallbacks.
+- [ ] **Stale Variable Bleed**: Ensure `MONITOR_INTERFACE` is purged more aggressively when switching adapters in Preflight.
+- [ ] **Process Heartbeats**: Implement a watchdog in Go to reap orphans if the Bash orchestrator dies unexpectedly.
 
-## Category E
-- [ ] Refactor `modules/e1_krack_attack.sh`
-- [ ] Refactor `modules/e2_fragattacks.sh`
-- [ ] Refactor `modules/e3_deauth_resilience.sh`
-- [ ] Refactor `modules/e4_wireless_fuzzing.sh`
-- [ ] Refactor `modules/e5_kr00k_test.sh`
-
-## Final Review
-- [ ] Run `bash -n` on all modified files
-- [ ] Verify JSON schema for one module per category
-- [ ] Final code review of all changes
+## 📅 Next Milestones
+- [ ] **Reporting V2**: Migrate `lib/report.sh` (Bash strings) to Go `html/template` for cleaner maintainability.
+- [ ] **Extended E2E Failures**: Add test cases for tool exit codes > 0 and database lock scenarios.
+- [ ] **Advanced Ingestion**: Correlate captured credentials with physical AP infrastructure in the SQLite database automatically.

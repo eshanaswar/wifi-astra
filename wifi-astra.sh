@@ -167,7 +167,22 @@ main() {
         "resume")
             load_session
             log_info "Resumed session: ${SESSION_ID}"
-            check_hardware_capabilities
+            
+            #--- Interface Validation ---
+            # If saved interface is missing or looks like a stale monitor name, force selection
+            if [[ -z "${WIFI_INTERFACE:-}" ]] || ! iw dev "$WIFI_INTERFACE" info &>/dev/null || [[ "$WIFI_INTERFACE" == *mon ]]; then
+                log_warn "Saved interface '${WIFI_INTERFACE:-none}' is no longer available or is a stale monitor reference."
+                configure_network || exit 1
+            else
+                # Ask if they want to keep it or select new (as requested: user can define every time)
+                local change_iface="n"
+                safe_read "Use saved interface [${WIFI_INTERFACE}] or select new? [Y/s]: " change_iface "y"
+                if [[ "${change_iface,,}" == "s" ]]; then
+                    configure_network || exit 1
+                fi
+            fi
+            
+            check_hardware_capabilities "${WIFI_INTERFACE}"
             safe_read "Press Enter to continue to Main Menu..." _
             ;;
         "new"|"")

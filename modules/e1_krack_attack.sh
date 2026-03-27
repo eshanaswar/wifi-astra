@@ -41,6 +41,7 @@
 set -uo pipefail
 
 run_e1() {
+    set -uo pipefail
     local interface=""
     local bssid="${GUEST_BSSID:-}"
     local ssid="${GUEST_SSID:-}"
@@ -175,7 +176,7 @@ run_e1() {
     local mon_iface="${MONITOR_INTERFACE}"
 
     if [[ -n "$channel" ]]; then
-        run_fg iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
+        run_fg --quiet iw dev "$mon_iface" set channel "$channel" 2>/dev/null || true
     fi
 
     check_abort || return 1
@@ -185,38 +186,36 @@ run_e1() {
     update_tc_progress 3 $total_steps "Nonce capture"
 
     # Capture all EAPOL traffic
-    spawn_bg "e1_tcpdump" "tcpdump" -i "$mon_iface" -w "$nonce_pcap" \
-        "ether proto 0x888e or (type mgt subtype deauth) or (type mgt subtype auth)" \
-        &>/dev/null
+    spawn_bg "e1_cap" "tcpdump" -i "$mon_iface" -w "$nonce_pcap" \
+        "ether proto 0x888e or (type mgt subtype deauth) or (type mgt subtype auth)"
 
     # Send periodic deauths to trigger handshake re-negotiations
+    local deauth_pid=""
     if [[ "$has_aireplay" == "true" ]]; then
         log_info "Sending deauth bursts to trigger handshake retransmissions..."
         (
             for burst in $(seq 1 6); do
                 sleep 10
                 check_abort || break
-                run_fg aireplay-ng --deauth 3 -a "$bssid" "$mon_iface" &>/dev/null || true
+                run_fg --quiet aireplay-ng --deauth 3 -a "$bssid" "$mon_iface" 2>/dev/null || true
                 sleep 5
             done
         ) &
-        local deauth_pid=$!
-        # register_cleanup is not defined in core, usually it's trap-based or manual
-        # but I'll leave it if it was there or handle it manually
+        deauth_pid=$!
     fi
 
     start_countdown 90 "Capturing handshakes — analyzing nonce patterns"
     sleep 90
     stop_countdown
 
-    # Stop deauth
-    if [[ -n "${deauth_pid:-}" ]]; then
+    # Stop deauth loop
+    if [[ -n "$deauth_pid" ]]; then
         kill -TERM "$deauth_pid" 2>/dev/null || true
         wait "$deauth_pid" 2>/dev/null || true
     fi
 
     # Stop capture
-    stop_process "e1_tcpdump"
+    stop_process "e1_cap"
     
     validate_pcap "$nonce_pcap" "EAPOL nonce capture"
 
@@ -328,24 +327,29 @@ run_e1() {
 
     if [[ "$has_krack_test" == "true" && -n "$krack_script" ]]; then
         log_info "Running krackattacks test script: $(basename "$krack_script")"
-        log_cmd "python3 ${krack_script} --interface ${mon_iface} --bssid ${bssid}"
-
-        local krack_output
-        krack_output=$(timeout 120 python3 "$krack_script" \
+        
+        # Use a temporary file for output to avoid direct capture issues
+        local krack_tmp="$TMP_DIR/e1_krack_out.txt"
+        timeout 120 python3 "$krack_script" \
             --interface "$mon_iface" \
             --bssid "$bssid" \
-            2>&1 || true)
+            >"$krack_tmp" 2>&1 || true
 
-        echo "" >> "$results_file"
-        echo "=== krackattacks-scripts Output ===" >> "$results_file"
-        echo "$krack_output" >> "$results_file"
+        if [[ -f "$krack_tmp" ]]; then
+            local krack_output
+            krack_output=$(cat "$krack_tmp")
+            echo "" >> "$results_file"
+            echo "=== krackattacks-scripts Output ===" >> "$results_file"
+            echo "$krack_output" >> "$results_file"
 
-        if echo "$krack_output" | grep -qi "vulnerable"; then
-            ap_vulnerable="true"
-            log_result "CRITICAL" "★ KRACK vulnerability confirmed by test scripts!"
-            echo "CRITICAL: KRACK vulnerability confirmed" >> "$findings_file"
-        elif echo "$krack_output" | grep -qi "not vulnerable\|patched"; then
-            log_success "KRACK test scripts report: NOT vulnerable / patched"
+            if echo "$krack_output" | grep -qi "vulnerable"; then
+                ap_vulnerable="true"
+                log_result "CRITICAL" "★ KRACK vulnerability confirmed by test scripts!"
+                echo "CRITICAL: KRACK vulnerability confirmed" >> "$findings_file"
+            elif echo "$krack_output" | grep -qi "not vulnerable\|patched"; then
+                log_success "KRACK test scripts report: NOT vulnerable / patched"
+            fi
+            rm -f "$krack_tmp"
         fi
     fi
 
@@ -385,12 +389,12 @@ run_e1() {
     fi
 
     local result_json
-    evidence_register_file "$results_file"
-    evidence_register_file "$client_analysis"
-    evidence_register_file "$nonce_pcap"
-    evidence_register_file "$findings_file"
+    evidence_register_file "e1_krack_results.txt"
+    evidence_register_file "e1_client_analysis.txt"
+    evidence_register_file "e1_nonce_capture.pcap"
+    evidence_register_file "e1_findings.txt"
 
-    result_json=$(run_fg jq -n \
+    result_json=$(run_fg --quiet jq -n \
         --arg status "$result_status" \
         --arg summary "$result_summary" \
         --arg details "AP vulnerable: ${ap_vulnerable}, Clients tested: ${clients_tested}, Vulnerable: ${clients_vulnerable}, Nonce reuse: ${nonce_reuse_detected}, GTK reinstall: ${gtk_reinstall_vulnerable}" \

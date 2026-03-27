@@ -244,3 +244,37 @@ func ListVulnerabilities(d *sql.DB) ([]Vulnerability, error) {
 	}
 	return vulns, nil
 }
+
+type TestResult struct {
+	TCID            string   `json:"tc_id"`
+	Status          string   `json:"status"`
+	ExitCode        int      `json:"exit_code"`
+	StartedAt       string   `json:"started_at"`
+	EndedAt         string   `json:"ended_at"`
+	DurationSec     int      `json:"duration_sec"`
+	Summary         string   `json:"summary"`
+	Details         string   `json:"details"`
+	Recommendations string   `json:"recommendations"`
+	EvidenceFiles   []string `json:"evidence_files"`
+}
+
+func GetTestResults(d *sql.DB) ([]TestResult, error) {
+	rows, err := d.Query(`SELECT tc_id, status, exit_code, started_at, ended_at, duration_sec FROM module_state WHERE status != 'not_run'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []TestResult
+	for rows.Next() {
+		var tr TestResult
+		var started, ended sql.NullString
+		if err := rows.Scan(&tr.TCID, &tr.Status, &tr.ExitCode, &started, &ended, &tr.DurationSec); err != nil {
+			return nil, err
+		}
+		tr.StartedAt = started.String
+		tr.EndedAt = ended.String
+		results = append(results, tr)
+	}
+	return results, nil
+}

@@ -14,8 +14,24 @@ configure_network() {
     
     # Detect wireless interfaces
     echo -e "  ${C_BOLD}Available wireless interfaces:${C_RESET}"
+    
+    # Use a more robust way to find the primary interface for each PHY
     local ifaces
-    ifaces=$(iw dev 2>/dev/null | awk '/Interface/{print $2}')
+    ifaces=$(iw dev 2>/dev/null | awk '
+        /^phy#/ { phy = $1 }
+        /Interface/ { 
+            iface = $2
+            # Prefer original names, avoid common virtual monitor suffixes for the main list
+            if (iface !~ /mon$/) {
+                print iface
+            }
+        }
+    ')
+    
+    # If only virtual interfaces exist, show everything
+    if [[ -z "$ifaces" ]]; then
+        ifaces=$(iw dev 2>/dev/null | awk '/Interface/{print $2}')
+    fi
     
     if [[ -z "$ifaces" ]]; then
         log_error "No wireless interfaces detected."
@@ -43,6 +59,11 @@ configure_network() {
     if [[ "$iface_choice" =~ ^[0-9]+$ ]] && [[ $iface_choice -ge 1 ]] && [[ $iface_choice -le ${#iface_list[@]} ]]; then
         WIFI_INTERFACE="${iface_list[$((iface_choice-1))]}"
         MY_MAC=$(${TOOL_PATHS[ip]} link show "$WIFI_INTERFACE" 2>/dev/null | awk '/ether/{print $2}')
+        
+        # IMPORTANT: If we are selecting a fresh managed interface, clear any stale monitor interface
+        # This prevents the hardware query from looking at an old 'wlan0mon'
+        MONITOR_INTERFACE=""
+        
         log_success "Selected interface: ${WIFI_INTERFACE} (${MY_MAC})"
     else
         log_error "Invalid selection."
