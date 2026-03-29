@@ -54,6 +54,11 @@ fi
 
 echo "[*] Initializing AirSnitch (NDSS 2026) Audit on ${INTERFACE}..."
 
+# Intelligence Insight
+if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
+    echo "[!] WARNING: Low Signal Strength (${ASTRA_TARGET_RSSI}dBm). Isolation bypass packets may be dropped."
+fi
+
 # Identify a target client from B1 results
 B1_XML="${EVIDENCE_DIR}/b1_results.xml"
 TARGET_VICTIM=""
