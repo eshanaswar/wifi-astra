@@ -8,7 +8,7 @@
 # DESC="Capture CDP/LLDP frames leaking infrastructure details"
 # REQS="managed_iface"
 # PCAP="yes"
-# DECODE="l2_discovery"
+# DECODE="none"
 
 #===============================================================================
 #  modules/b3_cdp_lldp_leaks.sh

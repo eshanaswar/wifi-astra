@@ -8,7 +8,7 @@
 # DESC="Analyze UDP traffic for SSDP/LLMNR/NetBIOS storms bleeding from corporate"
 # REQS="managed_iface"
 # PCAP="yes"
-# DECODE="l2_discovery"
+# DECODE="none"
 
 #===============================================================================
 #  modules/b8_broadcast_leaks.sh

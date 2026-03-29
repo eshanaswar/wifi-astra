@@ -4,7 +4,7 @@
 # CATEGORY="C"
 # DEPS="none"
 # CRITICAL="no"
-# TOOLS="nmap,ip"
+# TOOLS="yersinia,tcpdump"
 # DESC="Attempt 802.1Q double-tagging and DTP spoofing to reach other VLANs"
 # REQS="managed_iface"
 # PCAP="yes"

@@ -4,7 +4,7 @@
 # CATEGORY="C"
 # DEPS="none"
 # CRITICAL="no"
-# TOOLS="dig,nslookup"
+# TOOLS="dig,host"
 # DESC="Test if target WiFi DNS resolves internal hostnames"
 # REQS="managed_iface,dns_server"
 # PCAP="no"

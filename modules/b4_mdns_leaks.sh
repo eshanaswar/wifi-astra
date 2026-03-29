@@ -4,11 +4,11 @@
 # CATEGORY="B"
 # DEPS="none"
 # CRITICAL="no"
-# TOOLS="tcpdump,tshark,avahi-browse"
+# TOOLS="tcpdump,tshark"
 # DESC="Detect mDNS/Bonjour service announcements from corporate devices"
 # REQS="managed_iface"
 # PCAP="yes"
-# DECODE="dns"
+# DECODE="none"
 
 #===============================================================================
 #  modules/b4_mdns_leaks.sh

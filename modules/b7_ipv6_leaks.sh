@@ -4,7 +4,7 @@
 # CATEGORY="B"
 # DEPS="none"
 # CRITICAL="no"
-# TOOLS="tcpdump,tshark,ip"
+# TOOLS="tcpdump,tshark"
 # DESC="Listen for corporate IPv6 router advertisements bleeding into target VLAN"
 # REQS="managed_iface"
 # PCAP="yes"

@@ -4,7 +4,7 @@
 # CATEGORY="C"
 # DEPS="none"
 # CRITICAL="yes"
-# TOOLS="nmap,masscan,nbtscan,fping"
+# TOOLS="fping,nmap"
 # DESC="Scan RFC1918 ranges for reachable corporate hosts from target WiFi"
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"

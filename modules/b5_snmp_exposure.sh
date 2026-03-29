@@ -4,7 +4,7 @@
 # CATEGORY="B"
 # DEPS="none"
 # CRITICAL="no"
-# TOOLS="nmap,onesixtyone,snmpwalk"
+# TOOLS="snmp-check,onesixtyone"
 # DESC="Probe for SNMP services with default/common communities"
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"

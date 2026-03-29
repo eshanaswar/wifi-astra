@@ -4,10 +4,11 @@
 # CATEGORY="B"
 # DEPS="none"
 # CRITICAL="no"
+# TOOLS="nmap,tcpdump"
 # DESC="Analyze DHCP configuration and check for rogue DHCP servers"
 # REQS="managed_iface"
 # PCAP="yes"
-# DECODE="dhcp"
+# DECODE="none"
 
 #===============================================================================
 #  modules/b6_dhcp_analysis.sh
