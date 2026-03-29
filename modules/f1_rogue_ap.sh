@@ -42,6 +42,12 @@ fi
 
 echo "[*] Initializing Rogue AP tactical options..."
 
+# Intelligence Insight
+if [[ "${ASTRA_TARGET_PMF:-}" != "None" ]]; then
+    echo -e "\n[!] INTELLIGENCE ALERT: Target supports PMF (802.11w)."
+    echo "[*] Deauthentication may be ignored. CSA Catalyst (Option 3) is recommended."
+fi
+
 # 1. Interactive Selection
 echo "[?] Select Rogue AP Mode:"
 echo "    1) SSID Only (Random BSSID)"

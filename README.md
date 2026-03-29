@@ -1,58 +1,87 @@
-# 🛡️ WiFi-Astra: Wireless Security Assessment Framework
+# 🛡️ WiFi-Astra: Advanced Wireless Security Assessment Framework
 
-> **Automated, enterprise-grade wireless penetration testing toolkit.**
-> Aligned with industry-standard assessment methodologies for Guest and Corporate WiFi security.
+[![Go Report Card](https://goreportcard.com/badge/github.com/youruser/wifi-astra)](https://goreportcard.com/report/github.com/youruser/wifi-astra)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 🚀 Overview
+WiFi-Astra is a professional-grade, Go-native orchestration framework designed for high-fidelity wireless security assessments. Unlike traditional script-heavy tools, WiFi-Astra combines a high-performance compiled core with modular attack wrappers to provide a stable, evidence-linked, and production-ready auditing experience.
 
-WiFi-Astra is a comprehensive, modular Bash framework designed for end-to-end wireless security auditing. It automates **35+ specialized test cases**, moving from passive reconnaissance to advanced protocol exploitation and policy validation.
+---
 
-### Key Capabilities
-*   **Modern Protocol Support**: Native modules for **WPA3-SAE (Dragonblood)**, **OWE (Enhanced Open)**, and **WPA-Enterprise (802.1X)**.
-*   **Advanced Exploitation**: Integrated tests for **Kr00k**, **FragAttacks**, and **KRACK** vulnerabilities.
-*   **Intelligent UI**: Interactive TUI with session persistence, resume support, and a unified progress tracking system.
-*   **Dynamic Customization**:
-    *   **Target Auto-Config**: Select targets directly from scan results (`A1`) to automatically sync BSSID, SSID, and Channel across all attack modules.
-    *   **Custom Rogue APs**: Fully customizable SSIDs and phishing templates for Evil Twin and Captive Portal attacks.
-*   **Professional Reporting**: Generates structured JSON artifacts and high-quality assessment reports.
+## 🚀 Key Features
+
+*   **Go-Native Core:** Built for performance and stability, replacing fragile Bash orchestration.
+*   **Modular "Golden Wrappers":** 40+ assessment modules across 8 categories, easily extensible via simple Bash scripts.
+*   **Guardian Privilege System:** Runs hardware-level operations as root but drops privileges for TUI and data processing to minimize attack surface.
+*   **Forensic Reporting:** Generates professional HTML reports with direct links to PCAPs, handshakes, and logs.
+*   **Self-Healing Hardware:** Automated recovery of interfaces stuck in monitor mode.
+*   **Headless Mode:** Support for JSON mission plans for automated or scheduled audits.
+*   **Deep Ingestion:** Intelligent parsing of Nmap XML, Bettercap JSON, and Airodump CSVs.
 
 ---
 
 ## 📂 Assessment Categories
 
-| Cat | Name | Description |
+| Category | Name | Focus Area |
 |:---:|:---|:---|
-| **A** | **Discovery** | Passive/Active SSID discovery, BSSID correlation, and client profiling. |
-| **B** | **Infrastructure** | Network service leaks (mDNS, CDP, LLDP), IPv6 RAs, and AP vulnerability mapping. |
-| **C** | **Segmentation** | VLAN hopping, RADIUS reachability, and egress filtering policy validation. |
-| **D** | **Encryption** | WPA3 Dragonblood, OWE Downgrade, WPA Handshakes, and legacy WEP. |
-| **E** | **Protocols** | Hardware-level bugs like Kr00k (all-zero keys), FragAttacks, and KRACK. |
-| **F** | **Rogue AP** | Multi-mode Evil Twin, PineAP-style Karma attacks, and Captive Portal bypass. |
-| **G** | **MITM** | ARP spoofing, SSL/TLS interception, and DNS/Responder poisoning. |
-| **H** | **Defense** | WIDS/WIPS detection validation and auto-containment testing. |
+| **A** | **Discovery** | SSID/BSSID mapping, Hidden SSID reveal, Client fingerprinting. |
+| **B** | **Internal Recon** | Management interface exposure, DHCP/mDNS/LLDP leaks. |
+| **C** | **Segmentation** | Egress filtering, RADIUS reachability, VLAN hopping. |
+| **D** | **Encryption** | WPA2/3 handshakes, WEP cracking, WPS vulnerabilities. |
+| **E** | **Design Flaws** | KRACK, FragAttacks, Kr00k, 802.11w resilience. |
+| **F** | **Rogue AP** | Evil Twin deployment, Captive portal phishing. |
+| **G** | **MITM** | ARP/DNS spoofing, SSL/TLS interception. |
+| **H** | **Policy** | WIDS/WIPS detection, PMF configuration checks. |
 
 ---
 
-## 🚀 Quick Start
+## 🛠️ Installation & Setup
 
-### 1. Installation
-The toolkit is designed for **Kali Linux**.
+WiFi-Astra requires a Kali Linux or similar Debian-based environment with a wireless adapter capable of monitor mode and injection.
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/youruser/wifi-astra.git
+    cd wifi-astra
+    ```
+
+2.  **Run the Native Setup:**
+    ```bash
+    sudo ./bin/wifi-astra setup
+    ```
+    *This command will automatically install all required dependencies (aircrack-ng, nmap, bettercap, etc.) via apt.*
+
+3.  **Update Hardware Data:**
+    ```bash
+    sudo ./bin/wifi-astra update-oui
+    ```
+
+---
+
+## 🛰️ Quick Start
+
+### Interactive Mission
 ```bash
-sudo ./install.sh
+sudo ./bin/wifi-astra start
+```
+Follow the wizard to create a session, select your hardware, and launch attack categories from the TUI cockpit.
+
+### Headless Autonomous Audit
+```bash
+sudo ./bin/wifi-astra start --config mission_plan.json
 ```
 
-### 2. Documentation
-- 📖 **[User Guide](docs/USER_GUIDE.md)**: Full workflow and report interpretation.
-- 🛠️ **[Developer Guide](docs/DEVELOPER_GUIDE.md)**: Library API and module creation.
+---
 
-### 3. Launch
-Start the interactive framework launcher:
-```bash
-sudo wifi-astra
-```
+## 📖 Documentation
 
-## 🛡️ Safety & Reliability
-- **Process Tracking**: All background tools are tracked via a centralized PID registry.
-- **Reliable Cleanup**: Automatic interface scrubbing and service restoration on exit.
-- **Data Integrity**: Atomic writes and rolling backups for all session data.
-- **Professional Reporting**: Standardized findings with automated confidence scoring.
+*   [**User Guide**](docs/USER_GUIDE.md): Detailed usage instructions and attack methodology.
+*   [**Developer Guide**](docs/DEVELOPER_GUIDE.md): Architecture overview and instructions for adding new modules.
+*   [**Architecture**](docs/ARCHITECTURE.md): Deep dive into the framework's nervous system.
+
+---
+
+## ⚖️ License & Ethics
+
+Distributed under the MIT License. See `License.txt` for more information.
+
+**Warning:** This tool is for authorized security auditing only. Unauthorized use against networks without explicit permission is illegal. The developers assume no liability for misuse.

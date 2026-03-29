@@ -1,0 +1,60 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"wifi-astra/internal/logging"
+	"wifi-astra/internal/ui"
+
+	"github.com/spf13/cobra"
+)
+
+var setupCmd = &cobra.Command{
+	Use:   "setup",
+	Short: "Install required system dependencies",
+	Run: func(cmd *cobra.Command, args []string) {
+		if os.Geteuid() != 0 {
+			fmt.Println("[✗] Setup requires root privileges (sudo).")
+			os.Exit(1)
+		}
+
+		fmt.Println("\n--- WiFi-Astra: System Setup ---")
+		fmt.Println("This will install all required wireless auditing tools via apt.")
+		
+		if !ui.PromptConfirm("Proceed with installation?", true) {
+			fmt.Println("Setup aborted.")
+			return
+		}
+
+		dependencies := []string{
+			"aircrack-ng", "nmap", "tcpdump", "tshark", "hostapd", 
+			"dnsmasq", "yersinia", "responder", "bettercap", 
+			"macchanger", "curl", "jq", "fping", "snmp", "onesixtyone",
+		}
+
+		fmt.Printf("[*] Updating package lists...\n")
+		updateCmd := exec.Command("apt", "update")
+		updateCmd.Stdout = os.Stdout
+		updateCmd.Stderr = os.Stderr
+		updateCmd.Run()
+
+		fmt.Printf("[*] Installing dependencies: %s\n", strings.Join(dependencies, ", "))
+		installArgs := append([]string{"install", "-y"}, dependencies...)
+		installCmd := exec.Command("apt", installArgs...)
+		installCmd.Stdout = os.Stdout
+		installCmd.Stderr = os.Stderr
+		
+		if err := installCmd.Run(); err != nil {
+			logging.Error("Installation failed: %v", err)
+			os.Exit(1)
+		}
+
+		logging.Success("System setup complete. All dependencies installed.")
+	},
+}
+
+func init() {
+	RootCmd.AddCommand(setupCmd)
+}

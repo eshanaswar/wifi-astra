@@ -1,74 +1,77 @@
-# WiFi-Astra: User Guide
+# WiFi-Astra User Guide
 
-Welcome to the **WiFi-Astra** User Guide. This document provides everything you need to know to perform professional wireless security assessments using the framework.
-
-## 📋 Table of Contents
-1. [Introduction](#introduction)
-2. [Installation](#installation)
-3. [Core Concepts](#core-concepts)
-4. [Workflow Walkthrough](#workflow-workflow)
-5. [Reporting & Evidence](#reporting--evidence)
-6. [Safety & Best Practices](#safety--best-practices)
+This guide provides comprehensive instructions for conducting wireless security assessments using the WiFi-Astra framework.
 
 ---
 
-## 1. Introduction
-WiFi-Astra is an automated, menu-driven framework for auditing wireless networks. It moves beyond simple handshake capturing, offering 35+ test cases covering infrastructure leaks, segmentation vulnerabilities, and modern protocol flaws (WPA3, Kr00k, etc.).
+## 🚦 Pre-Engagement Checklist
 
-## 2. Installation
-The toolkit is designed for **Kali Linux**.
+Before starting, ensure your environment is ready:
+1.  **Hardware:** A wireless adapter that supports **Monitor Mode** and **Packet Injection** (e.g., Alfa AWUS036ACM).
+2.  **OS:** Kali Linux, Parrot OS, or a Debian-based system with `sudo` privileges.
+3.  **Dependencies:** Run the setup command to install all required tools:
+    ```bash
+    sudo ./bin/wifi-astra setup
+    ```
 
+---
+
+## 🛰️ Running your first Mission
+
+### 1. Interactive Start
+Launch the tool and follow the wizard:
 ```bash
-git clone <repository_url>
-cd WiFi_PT
-sudo ./install.sh
+sudo ./bin/wifi-astra start
+```
+*   **Session Name:** Give your audit a descriptive name (e.g., `ClientX_Audit`).
+*   **Interface Selection:** Select the adapter you wish to use. The tool will automatically check for stuck monitor interfaces.
+
+### 2. Discovery (Phase A)
+Start with module **A1 (Identify Networks)**. This will scan the airwaves and build your target map. 
+*   Once finished, the tool will present a list of discovered networks.
+*   Select your **Target SSID** to save it to the session configuration. This target will be used automatically for all subsequent attack modules.
+
+### 3. Execution
+Navigate through the Category menus to launch specific tests:
+*   **Category D:** WPA Handshake Capture, WEP Cracking.
+*   **Category F:** Rogue AP and Captive Portal phishing.
+*   **Category G:** MITM and traffic interception.
+
+### 4. Reporting
+When the assessment is complete, select **"Generate Assessment Report"** from the main menu.
+*   A professional HTML report will be generated in `sessions/<ID>/reports/`.
+*   The report includes a mission summary, a map of all discovered hardware, and all vulnerabilities found during the audit.
+
+---
+
+## 🤖 Headless (Automated) Audits
+
+For automated testing or scheduled audits, use a JSON mission plan:
+
+**plan.json:**
+```json
+{
+  "session_name": "Monthly_Audit",
+  "interface": "wlan0",
+  "target_ssid": "Corp-Guest",
+  "modules": ["A1", "D1", "B1", "B2"]
+}
 ```
 
-The installer will:
-- Install all required binary dependencies (`aircrack-ng`, `nmap`, `jq`, etc.).
-- Configure system settings.
-- Create a global `wifi-astra` alias.
-
-## 3. Core Concepts
-- **Session-Based**: Every audit is a session. State is saved automatically. You can resume an interrupted audit at any time.
-- **Centralized Storage**: All data is stored in `~/.wifi-astra/sessions/<session_id>/`.
-- **Target Sync**: Once you identify a target network in module `A1`, its details (SSID, BSSID, Channel) are automatically synced to all other modules.
-
-## 4. Workflow Walkthrough
-
-### Step 1: Launch
+**Execute:**
 ```bash
-sudo wifi-astra
+sudo ./bin/wifi-astra start --config plan.json
 ```
 
-### Step 2: Reconnaissance (Category A)
-Always start with **A1 (Identify All Wireless Networks)**. This uses monitor mode to map the environment.
-- After the scan, select your **Target SSID**.
-- (Optional) Select an **Internal SSID** to test for data leaks from the corporate network.
+---
 
-### Step 3: Network Testing (Category B & C)
-Connect your managed interface to the target WiFi and run modules like:
-- **B1 (Client Isolation)**: Test if guests can see each other.
-- **C2 (Private Network Scan)**: Check if you can reach internal corporate subnets.
+## 🧹 Maintenance
 
-### Step 4: Protocol Attacks (Category D & E)
-Switch back to monitor mode for active attacks:
-- **D1 (WPA Handshake)**: Capture and test PSK strength.
-- **E2 (FragAttacks)**: Test for hardware-level 802.11 vulnerabilities.
-
-### Step 5: MITM & Rogue AP (Category F & G)
-- **F1 (Rogue AP)**: Deploy an Evil Twin to test client susceptibility.
-- **G2 (SSL Interception)**: Attempt to intercept encrypted traffic.
-
-## 5. Reporting & Evidence
-At any point, or at the end of your audit, select **[R] Generate Report** from the main menu.
-- **TXT Report**: Quick summary for the console.
-- **HTML Report**: Professional, responsive dashboard with grouped findings.
-- **PDF Report**: Executive-ready document (requires `wkhtmltopdf`).
-
-All raw evidence (PCAPs, logs) is available in the `evidence/` folder of your session.
-
-## 6. Safety & Best Practices
-- **Legal Authorization**: Only audit networks you have explicit written permission to test.
-- **Interface Management**: If your interface gets "stuck", the framework will attempt to "Scrub" it on exit.
-- **System Stability**: The toolkit automatically stops conflicting services (like NetworkManager) during monitor mode tasks and restores them afterwards.
+*   **Update OUI Data:** Keep your vendor mapping up to date:
+    ```bash
+    sudo ./bin/wifi-astra update-oui
+    ```
+*   **Cleanup:** Remove old sessions to save disk space:
+    ```bash
+    sudo ./bin/wifi-astra clean --days 30
+    ```

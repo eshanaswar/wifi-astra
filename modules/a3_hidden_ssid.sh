@@ -1,358 +1,176 @@
 #!/usr/bin/env bash
 # MODULE_META
-# NAME="Discover Hidden SSIDs"
+# NAME="Hidden SSID Discovery"
 # CATEGORY="A"
 # DEPS="A1"
 # CRITICAL="no"
-# TOOLS="airmon-ng,airodump-ng,aireplay-ng"
-# DESC="Deauthenticate and capture hidden SSID probe responses"
-# REQS="monitor_iface,target_ssid,target_bssid"
+# TOOLS="aireplay-ng,airodump-ng"
+# DESC="Identify and reveal SSIDs of hidden networks by monitoring client traffic"
+# REQS="monitor_iface"
 # PCAP="no"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
 #  modules/a3_hidden_ssid.sh
-#  A3: Discover Hidden SSIDs
+#  A3: Hidden SSID Discovery (Golden Wrapper)
 #
-#  PURPOSE:
-#    Identify hidden SSIDs by capturing probe request/response frames.
-#    Optionally send targeted deauthentication to force clients to
-#    reconnect and reveal hidden SSID names.
-#
-#  TOOLS: ${TOOL_PATHS[airodump-ng]}, ${TOOL_PATHS[aireplay-ng]}, ${TOOL_PATHS[tshark]}
-#  PHASE: 1A — Passive Recon (Monitor Mode)
-#  DEPENDENCIES: A1
-#
-#  EVIDENCE PRODUCED:
-#    - a3_hidden_ssid_capture.cap    (probe response captures)
-#    - a3_hidden_ssids_revealed.txt  (discovered hidden SSID list)
-#
-#  RESULT JSON FIELDS:
-#    - hidden_networks_found: count from A1
-#    - hidden_ssids_revealed: array of revealed SSIDs
-#    - deauth_used: bool — was deauth required?
+#  METHODOLOGY:
+#  1. Identify BSSIDs that were originally hidden (from A1 discovery).
+#  2. Listen for Probe Response or Association Request frames where the SSID
+#     is revealed in the clear.
+#  3. Cross-reference new results against the baseline. Only report if a 
+#     previously hidden BSSID now has a cleartext ESSID.
 #===============================================================================
 
-run_a3() {
-    set -uo pipefail
+set -euo pipefail
+
+# Inputs from Environment
+INTERFACE="${MONITOR_INTERFACE:-}"
+SCAN_TIME="${SCAN_TIME:-120}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+OUTPUT_CSV="${OUTPUT_CSV:-${EVIDENCE_DIR}/a3_results.csv}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="A3"
+
+# Baseline Discovery Data
+A1_CSV="${EVIDENCE_DIR}/a1_results.csv"
+
+if [[ -z "$INTERFACE" ]]; then
+    echo "[!] MONITOR_INTERFACE not set."
+    exit 1
+fi
+
+if [[ ! -f "$A1_CSV" ]]; then
+    echo "[!] Baseline discovery (A1) not found. Run A1 first."
+    exit 1
+fi
+
+# 1. Identify which BSSIDs were originally hidden
+echo "[*] Loading baseline hidden networks from A1..."
+# Airodump CSV: BSSID is field 1, ESSID is field 14
+# We look for SSIDs that are empty, start with <length, or are <HIDDEN>
+HIDDEN_BSSIDS=$(awk -F',' '
+    NR > 1 {
+        bssid = $1;
+        ssid = $14;
+        # Strip whitespace and quotes
+        gsub(/^[ \t\r\n"<>]+|[ \t\r\n"<>]+$/, "", ssid);
+        gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
+        
+        if (ssid == "" || ssid ~ /^length:/ || ssid == "HIDDEN") {
+            print bssid;
+        }
+    }
+' "$A1_CSV" | sort -u)
+
+if [[ -z "$HIDDEN_BSSIDS" ]]; then
+    echo "[+] No hidden networks detected in baseline scan. Nothing to deanonymize."
+    $ASTRA_BIN record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "A3 Audit Complete" \
+        --severity INFO \
+        --desc "Scan completed. No hidden networks were identified in the baseline discovery phase." \
+        --rationale "Monitoring for hidden network leaks is a standard part of recon, but depends on the presence of hidden BSSIDs."
+    exit 0
+fi
+
+echo "[*] Target Hidden BSSIDs:"
+echo "$HIDDEN_BSSIDS"
+
+# 2. Start targeted discovery
+echo "[*] Initializing targeted SSID reveal on ${INTERFACE}..."
+CSV_PREFIX="${OUTPUT_CSV%.csv}"
+# Run airodump-ng in background to catch revealed SSIDs
+# Redirect stdout/stderr to a log to prevent terminal pollution
+airodump-ng "$INTERFACE" \
+    --write "$CSV_PREFIX" \
+    --output-format csv \
+    --band abg > "${EVIDENCE_DIR}/a3_airodump.log" 2>&1 &
+AIRODUMP_PID=$!
+
+# Wait for discovery
+sleep "$SCAN_TIME"
+
+# Cleanup
+kill "$AIRODUMP_PID" || true
+wait "$AIRODUMP_PID" 2>/dev/null || true
+
+# Standardize output path
+if [[ -f "${CSV_PREFIX}-01.csv" ]]; then
+    mv "${CSV_PREFIX}-01.csv" "$OUTPUT_CSV"
+fi
+
+# 3. Intelligent Analysis & Reporting (Single Pass O(1) Subprocess)
+REVEALED_FILE="${EVIDENCE_DIR}/a3_revealed.txt"
+
+if [[ -f "$OUTPUT_CSV" ]]; then
+    echo "[*] Analyzing revealed SSIDs..."
     
-    local mon_iface="${MONITOR_INTERFACE:-}"
-    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
-    local passive_time=60
-    local deauth_used="${DEAUTH_FOR_HIDDEN:-false}"
-    
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --interface) mon_iface="$2"; shift 2 ;;
-            --evidence-dir) evidence_dir="$2"; shift 2 ;;
-            --passive-time) passive_time="$2"; shift 2 ;;
-            --use-deauth) deauth_used="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
-
-    local total_steps=6
-    local evidence_prefix="${evidence_dir}/a3"
-
-    #--- Step 1: Load data from assessment engine, identify hidden networks ---
-    log_step 1 $total_steps "Loading scan data and identifying hidden networks"
-    update_tc_progress 1 $total_steps "Loading data"
-
-    if [[ -z "${ENGINE_SOCKET:-}" || ! -S "$ENGINE_SOCKET" ]]; then
-        log_error "Assessment Engine not running. Run A1 first."
-        return 1
-    fi
-
-    local hidden_networks
-    hidden_networks=$(run_engine_api GET "/v1/networks/hidden")
-    local hidden_count
-    hidden_count=$(echo "$hidden_networks" | run_tool jq 'length')
-
-    if [[ $hidden_count -eq 0 ]]; then
-        log_success "No hidden SSIDs were detected in assessment database."
-
-        local result_json
-        result_json=$(run_tool jq -n \
-            --arg status "SECURE" \
-            --arg summary "No hidden SSIDs detected. All networks broadcast their SSID." \
-            '{
-                status: $status,
-                summary: $summary,
-                details: "No hidden networks found during A1 passive scan.",
-                hidden_networks_found: 0,
-                hidden_ssids_revealed: [],
-                deauth_used: false,
-                evidence_files: [],
-                recommendations: "No action needed."
-            }')
-        save_tc_result "A3" "$result_json" "has_tool_output:1,clean_run:1"
-        return 0
-    fi
-
-    log_info "Found ${hidden_count} hidden network(s) to investigate"
-
-    # List hidden networks
-    echo ""
-    echo -e "  ${C_BOLD}Hidden Networks:${C_RESET}"
-    echo "$hidden_networks" | run_tool jq -r '.[] | "    BSSID: \(.bssid)  CH: \(.channel)  Signal: \(.signal)dBm  Enc: \(.encryption)"'
-
-    #--- Step 2: Ensure monitor mode ---
-    log_step 2 $total_steps "Verifying monitor mode"
-    update_tc_progress 2 $total_steps "Monitor mode"
-
-    enable_monitor_mode || return 1
-
-    #--- Step 3: Passive capture for probe responses ---
-    log_step 3 $total_steps "Capturing probe responses (${passive_time}s)"
-    update_tc_progress 3 $total_steps "Passive capture"
-
-    check_abort || return 1
-
-    local capture_file="${evidence_prefix}_hidden_ssid_capture"
-    rm -f "${capture_file}"* 2>/dev/null
-
-    # Target the channels of hidden networks
-    local target_channels
-    target_channels=$(echo "$hidden_networks" | run_tool jq -r '.[].channel' | sort -un | paste -sd',' -)
-
-    # Run airodump-ng via assessment engine process supervisor
-    spawn_bg "a3_capture" "airodump-ng" \
-        "$mon_iface" \
-        --channel "$target_channels" \
-        --write "$capture_file" \
-        --output-format pcap
-
-    start_countdown "$passive_time" "Passively capturing probe responses"
-    sleep "$passive_time"
-    stop_countdown
-    stop_process "a3_capture"
-
-    
-    check_abort || return 1
-
-    # Check passive results
-    local cap_file
-    local cap_file=$(ls "${capture_file}"*.cap 2>/dev/null | head -1)
-    local revealed_ssids=()
-
-    if [[ -n "$cap_file" && -f "$cap_file" ]]; then
-        ensure_user_ownership "$cap_file"
-        # Extract probe responses with SSIDs using ${TOOL_PATHS[tshark]}
-        local probe_results
-        local probe_results=$(run_as_user tshark -r "$cap_file" \
-            -Y "wlan.fc.type_subtype == 0x05" \
-            -T fields \
-            -e wlan.ta \
-            -e wlan.ssid \
-            2>/dev/null | sort -u)
-
-        while IFS=$'\t' read -r ta ssid; do
-            [[ -z "$ssid" || -z "$ta" ]] && continue
-            # Check if this TA matches a hidden network BSSID
-            local matches
-            local matches=$(echo "$hidden_networks" | run_tool jq --arg bssid "$ta" '[.[] | select(.bssid == $bssid)] | length')
-            if [[ $matches -gt 0 ]]; then
-                revealed_ssids+=("$ssid")
-                log_result "FINDING" "Hidden SSID revealed (passive): ${ssid} (BSSID: ${ta})"
-                
-                # Sync with Assessment Engine
-                if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
-                    # Get existing network info if possible
-                    local net_info
-                    net_info=$(echo "$hidden_networks" | run_tool jq -c --arg bssid "$ta" ".[] | select(.bssid == \"$ta\")")
-                    
-                    # Build updated JSON
-                    local updated_json
-                    updated_json=$(echo "$net_info" | run_tool jq --arg ssid "$ssid" '.ssid = $ssid')
-                    
-                    run_engine_api POST "/v1/ingest/network" "$updated_json" >/dev/null
-                fi
-            fi
-        done <<< "$probe_results"
-    fi
-
-    #--- Step 4: Active deauth (if hidden SSIDs still unresolved) ---
-    log_step 4 $total_steps "Active deauthentication to reveal remaining hidden SSIDs"
-    update_tc_progress 4 $total_steps "Deauth attack"
-
-    check_abort || return 1
-
-    local unrevealed_count=$(( hidden_count - ${#revealed_ssids[@]} ))
-    local deauth_used="false"
-
-    if [[ $unrevealed_count -gt 0 ]]; then
-        echo ""
-        echo -e "${C_YELLOW}  ${unrevealed_count} hidden SSID(s) still unresolved.${C_RESET}"
-        echo -e "${C_YELLOW}  Deauthentication can force clients to reconnect, revealing the SSID.${C_RESET}"
-        echo -e "${C_YELLOW}  This will briefly disconnect any clients on the target AP.${C_RESET}"
-        echo ""
-        get_or_request_param "deauth_confirm" "  Send deauth frames? [Y/n]"
-
-        if [[ "${deauth_confirm,,}" != "n" ]]; then
-            local deauth_used="true"
-
-            # Start a fresh capture in background
-            local deauth_cap="${evidence_prefix}_deauth_capture"
-            rm -f "${deauth_cap}"* 2>/dev/null
-
-            ${TOOL_PATHS[airodump-ng]} "$MONITOR_INTERFACE" \
-                --channel "$target_channels" \
-                --write "$deauth_cap" \
-                --output-format pcap \
-                &>/dev/null &
-            local deauth_cap_pid=$!
-            register_cleanup "kill -SIGINT $deauth_cap_pid 2>/dev/null || true; wait $deauth_cap_pid 2>/dev/null || true"
-
-            # Send deauth to each hidden network BSSID
-            while IFS= read -r hidden_net; do
-                local h_bssid h_channel
-                local h_bssid=$(echo "$hidden_net" | run_tool jq -r '.bssid')
-                local h_channel=$(echo "$hidden_net" | run_tool jq -r '.channel')
-
-                # Check if already revealed
-                local already_found="false"
-                for rev in "${revealed_ssids[@]}"; do
-                    # We can't easily match by BSSID here, so skip check
-                    :
-                done
-
-                log_cmd "${TOOL_PATHS[aireplay-ng]} --deauth 5 -a ${h_bssid} ${MONITOR_INTERFACE}"
-                echo -e "  ${C_DIM}  Sending 5 deauth frames to ${h_bssid} on CH ${h_channel}...${C_RESET}"
-
-                # Set channel first
-                iwconfig "$MONITOR_INTERFACE" channel "$h_channel" 2>/dev/null
-
-                ${TOOL_PATHS[aireplay-ng]} --deauth 5 -a "$h_bssid" "$MONITOR_INTERFACE" &>/dev/null || true
-                sleep 3
-
-            done < <(echo "$hidden_networks" | run_tool jq -c '.[]')
-
-            # Wait for reconnections
-            start_countdown 30 "Waiting for clients to reconnect and reveal SSIDs"
-            sleep 30
-            stop_countdown
-
-            # Stop capture
+    # Use a single awk script to compare the baseline to the new results
+    awk -F',' -v hidden_list="$HIDDEN_BSSIDS" '
+        BEGIN {
+            # Load hidden BSSIDs into an array for O(1) lookup
+            split(hidden_list, hl, "\n");
+            for (i in hl) {
+                if (hl[i] != "") {
+                    hidden_map[hl[i]] = 1;
+                }
+            }
+        }
+        # Process the new CSV
+        NR > 1 {
+            bssid = $1;
+            ssid = $14;
+            # Strip whitespace
+            gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
+            gsub(/^[ \t\r\n"<>]+|[ \t\r\n"<>]+$/, "", ssid);
             
-            # Parse deauth capture
-            local deauth_cap_file
-            local deauth_cap_file=$(ls "${deauth_cap}"*.cap 2>/dev/null | head -1)
+            # If the BSSID was originally hidden, and now has a valid name
+            if (bssid in hidden_map && ssid != "" && ssid !~ /^length:/ && ssid != "HIDDEN") {
+                print bssid " -> " ssid;
+                # Remove it from the map so we only report it once
+                delete hidden_map[bssid];
+            }
+        }
+    ' "$OUTPUT_CSV" > "$REVEALED_FILE"
+fi
 
-            if [[ -n "$deauth_cap_file" && -f "$deauth_cap_file" ]]; then
-                ensure_user_ownership "$deauth_cap_file"
-                local deauth_probes
-                local deauth_probes=$(run_as_user tshark -r "$deauth_cap_file" \
-                    -Y "wlan.fc.type_subtype == 0x05 || wlan.fc.type_subtype == 0x04" \
-                    -T fields \
-                    -e wlan.ta \
-                    -e wlan.ssid \
-                    2>/dev/null | sort -u)
+REVEALED_COUNT=0
+if [[ -s "$REVEALED_FILE" ]]; then
+    while read -r line; do
+        [[ -z "$line" ]] && continue
+        bssid="${line% -> *}"
+        ssid="${line#* -> }"
+        
+        echo "[!] DEANONYMIZED: ${bssid} -> ${ssid}"
+        
+        $ASTRA_BIN record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type vulnerability \
+            --name "Hidden SSID Revealed" \
+            --severity MEDIUM \
+            --desc "Successfully revealed hidden network name: ${ssid} (BSSID: ${bssid})" \
+            --rationale "Hiding SSIDs is 'security by obscurity' and does not prevent discovery. Revealed names provide further targets for assessment and indicate that clients are actively connecting to the hidden infrastructure." \
+            --evidence "$OUTPUT_CSV"
+        
+        ((REVEALED_COUNT++))
+    done < "$REVEALED_FILE"
+fi
 
-                while IFS=$'\t' read -r ta ssid; do
-                    [[ -z "$ssid" || -z "$ta" ]] && continue
-                    local matches
-                    local matches=$(echo "$hidden_networks" | run_tool jq --arg bssid "$ta" '[.[] | select(.bssid == $bssid)] | length')
-                    if [[ $matches -gt 0 ]]; then
-                        # Check not already in list
-                        local already="false"
-                        for rev in "${revealed_ssids[@]}"; do
-                            [[ "$rev" == "$ssid" ]] && already="true" && break
-                        done
-                        if [[ "$already" == "false" ]]; then
-                            revealed_ssids+=("$ssid")
-                            log_result "FINDING" "Hidden SSID revealed (deauth): ${ssid} (BSSID: ${ta})"
-                            
-                            # Sync with Assessment Engine
-                            if [[ -n "${ENGINE_SOCKET:-}" && -S "$ENGINE_SOCKET" ]]; then
-                                # Get existing network info if possible
-                                local net_info
-                                net_info=$(echo "$hidden_networks" | run_tool jq -c --arg bssid "$ta" ".[] | select(.bssid == \"$ta\")")
-                                
-                                # Build updated JSON
-                                local updated_json
-                                updated_json=$(echo "$net_info" | run_tool jq --arg ssid "$ssid" '.ssid = $ssid')
-                                
-                                run_engine_api POST "/v1/ingest/network" "$updated_json" >/dev/null
-                            fi
-                        fi
-                    fi
-                done <<< "$deauth_probes"
-            fi
-        fi
-    fi
+if [[ $REVEALED_COUNT -eq 0 ]]; then
+    echo "[+] No hidden SSIDs were deanonymized during this mission."
+    $ASTRA_BIN record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "A3 Audit Complete" \
+        --severity INFO \
+        --desc "Scan completed. No previously hidden SSIDs were revealed in this interval." \
+        --rationale "Hidden SSID reveal is dependent on client interaction (reconnections) occurring during the monitoring window."
+fi
 
-    #--- Step 5: Compile results ---
-    log_step 5 $total_steps "Compiling results"
-    update_tc_progress 5 $total_steps "Compiling"
-
-    local revealed_file="${evidence_prefix}_hidden_ssids_revealed.txt"
-    {
-        echo "============================================================"
-        echo "  A3: Hidden SSID Discovery Results"
-        echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "============================================================"
-        echo ""
-        echo "Hidden networks detected: ${hidden_count}"
-        echo "SSIDs revealed: ${#revealed_ssids[@]}"
-        echo "Deauth used: ${deauth_used}"
-        echo ""
-        echo "Revealed SSIDs:"
-        for ssid in "${revealed_ssids[@]}"; do
-            echo "  - ${ssid}"
-        done
-        echo ""
-        echo "Still hidden (could not reveal):"
-        echo "  $(( hidden_count - ${#revealed_ssids[@]} )) network(s)"
-    } > "$revealed_file"
-
-    #--- Step 6: Save results ---
-    log_step 6 $total_steps "Saving results"
-    update_tc_progress 6 $total_steps "Saving"
-
-    local result_status="INFO"
-    local result_summary=""
-    local recommendations=""
-
-    if [[ ${#revealed_ssids[@]} -gt 0 ]]; then
-        local result_status="FINDING"
-        local result_summary="${#revealed_ssids[@]} hidden SSID(s) were revealed out of ${hidden_count} hidden networks. Hidden SSIDs provide no real security — they are trivially discoverable."
-        local recommendations="Hidden SSIDs are a cosmetic measure only. If these are corporate networks, ensure they rely on WPA2/3-Enterprise authentication, not obscurity. Consider if hiding SSIDs adds operational complexity without security benefit."
-    else
-        local result_summary="${hidden_count} hidden network(s) detected but SSIDs could not be revealed (no clients connected). Hidden SSIDs can still be discovered when clients connect."
-        local recommendations="Monitor during business hours when clients are active to reveal hidden SSIDs. Hidden SSIDs are not a security control."
-    fi
-
-    # Build revealed array for JSON
-    local revealed_json="[]"
-    for ssid in "${revealed_ssids[@]}"; do
-        revealed_json=$(echo "$revealed_json" | run_tool jq --arg s "$ssid" '. += [$s]')
-    done
-
-    local evidence_files='["a3_hidden_ssids_revealed.txt"]'
-    [[ -n "${cap_file:-}" ]] && evidence_files=$(echo "$evidence_files" | run_tool jq '. += ["a3_hidden_ssid_capture.cap"]')
-
-    local result_json
-    local result_json=$(run_tool jq -n \
-        --arg status "$result_status" \
-        --arg summary "$result_summary" \
-        --arg recommendations "$recommendations" \
-        --argjson hidden_networks_found "${hidden_count:-0}" \
-        --argjson hidden_ssids_revealed "$revealed_json" \
-        --arg deauth_used "$deauth_used" \
-        --argjson evidence_files "$evidence_files" \
-        '{
-            status: $status,
-            summary: $summary,
-            details: ("\(.hidden_networks_found) hidden networks found. \(.hidden_ssids_revealed | length) revealed."),
-            recommendations: $recommendations,
-            hidden_networks_found: $hidden_networks_found,
-            hidden_ssids_revealed: $hidden_ssids_revealed,
-            deauth_used: ($deauth_used == "true"),
-            evidence_files: $evidence_files
-        }')
-
-    save_tc_result "A3" "$result_json" "has_tool_output:1,clean_run:1"
-
-    return 0
-}
+exit 0

