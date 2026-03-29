@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"wifi-astra/internal/db"
 	"wifi-astra/internal/ingest"
 	"wifi-astra/internal/logging"
 	"wifi-astra/internal/module"
@@ -21,11 +22,12 @@ import (
 )
 
 type AssessmentController struct {
-	Session  *session.Session
-	ExecMgr  *executor.Manager
-	NetMgr   *executor.NetworkManager
-	ModDir   string
-	Running  string // ID of currently running module
+	Session      *session.Session
+	ExecMgr      *executor.Manager
+	NetMgr       *executor.NetworkManager
+	ModDir       string
+	Running      string // ID of currently running module
+	SupportProcs map[string]*executor.Process
 }
 
 func NewAssessmentController(s *session.Session, mgr *executor.Manager, modDir string) *AssessmentController {
@@ -128,35 +130,121 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	}
 
 	// 4.5. Networking Setup (NAT/Routing) for MITM modules
-	if m.Category == "F" || strings.Contains(m.Reqs, constants.ReqNAT) {
-		uplink := config[constants.ConfigUplinkInterface]
-		internalNet := config[constants.ConfigInternalNet]
-		internalIP := config[constants.ConfigInternalIP]
+	// ... (NAT logic) ...
 
-		// Set defaults if missing
-		if uplink == "" {
-			uplink = "eth0" // Fallback to eth0
+	// 4.7. SMART TACTICAL PROMPTS (Go-Side Interactivity)
+	// Handle tactical choices here to prevent TTY contention in modules
+	
+	// A. SNR Safeguard (Global)
+	rssiStr := os.Getenv("ASTRA_TARGET_RSSI")
+	if rssiStr != "" {
+		rssi, _ := strconv.Atoi(rssiStr)
+		if rssi != 0 && rssi < -75 {
+			fmt.Printf("\n%s[!] WARNING: Low Signal Strength Detected (%ddBm)%s\n", constants.ThemeHigh, rssi, constants.ColorReset)
+			if !ui.PromptConfirm("Injection/Active attacks are unreliable. Continue?", false) {
+				return nil
+			}
 		}
-		if internalNet == "" {
-			internalNet = "192.168.44.0/24"
-		}
-		if internalIP == "" {
-			internalIP = "192.168.44.1"
-		}
+	}
 
-		c.NetMgr = executor.NewNetworkManager(uplink, internalNet, internalIP)
+	// PMF Intelligence Guard
+	pmf, _ := db.GetConfig(c.Session.DB, "ASTRA_TARGET_PMF")
+	if pmf == "Required" && (m.ID == "A3" || m.ID == "F4") {
+		fmt.Printf("\n%s[!] INTELLIGENCE ALERT: Target enforces PMF (802.11w).%s\n", constants.ThemeHigh, constants.ColorReset)
+		fmt.Println("[*] Active deauthentication WILL FAIL. Passive monitoring is recommended.")
+		if m.ID == "A3" {
+			if !ui.PromptConfirm("Continue with active reveal anyway?", false) {
+				os.Setenv("ACTIVE_REVEAL", "no")
+			}
+		} else if m.ID == "F4" {
+			fmt.Println("[*] CSA suppression will be used as primary mechanism.")
+		}
+	}
+
+	// B. Target Client Selection (Global for relevant modules)
+	// Modules requiring a target client: D1, E3, F4, G4, G5
+	if strings.Contains("D1,E3,F4,G4,G5", m.ID) {
+		clients, err := db.ListClients(c.Session.DB)
+		if err == nil && len(clients) > 0 {
+			var options []string
+			for _, cl := range clients {
+				options = append(options, fmt.Sprintf("%s (%s) [%ddBm]", cl.MAC, cl.Vendor, cl.LastSignal))
+			}
+			if m.ID == "D1" {
+				options = append(options, "BROADCAST (Loud/Destructive)")
+			}
+			
+			choice := ui.PromptList("Select Target Client", options)
+			if m.ID == "D1" && choice == len(clients) {
+				os.Setenv("TARGET_CLIENT", "FF:FF:FF:FF:FF:FF")
+			} else if choice >= 0 {
+				os.Setenv("TARGET_CLIENT", clients[choice].MAC)
+			}
+		}
+	}
+
+	// C. Module-Specific Logic
+	switch m.ID {
+	case "A1":
+		options := []string{"Standard (60s)", "Deep Scan (120s - Recommended for DFS/5GHz)"}
+		if ui.PromptList("Select Scan Depth", options) == 1 {
+			os.Setenv("SCAN_TIME", "120")
+		} else {
+			os.Setenv("SCAN_TIME", "60")
+		}
+	case "A3":
+		if ui.PromptConfirm("Force reveal via surgical deauth?", true) {
+			os.Setenv("ACTIVE_REVEAL", "yes")
+		}
+	case "D3":
+		options := []string{"Pixie Dust (Fast, 1 transaction)", "Online Brute-Force (Sequential)"}
+		if ui.PromptList("Select WPS Vector", options) == 1 {
+			os.Setenv("WPS_ATTACK", "online")
+			delay := ui.PromptString("Enter delay (seconds)", "300")
+			os.Setenv("WPS_DELAY", delay)
+		} else {
+			os.Setenv("WPS_ATTACK", "pixie")
+		}
+	case "D7":
+		options := []string{"Targeted Deauth (Surgical)", "CSA (Stealthier)"}
+		if ui.PromptList("Select Roaming Catalyst", options) == 1 {
+			os.Setenv("CATALYST", "csa")
+		} else {
+			os.Setenv("CATALYST", "deauth")
+		}
+	case "F1":
+		opts := []string{"SSID Only (Random BSSID)", "BSSID Clone (Match Target)"}
+		if ui.PromptList("Select Rogue AP Mode", opts) == 1 {
+			os.Setenv("AP_MODE", "clone")
+		} else {
+			os.Setenv("AP_MODE", "ssid")
+		}
 		
-		fmt.Printf("   [*] Initializing NAT (Uplink: %s, Subnet: %s)...\n", uplink, internalNet)
-		if err := c.NetMgr.SetupNAT(); err != nil {
-			logging.Error("NAT Setup Failed: %v", err)
-			return err
+		catOpts := []string{"None", "Targeted Deauth", "CSA"}
+		os.Setenv("CATALYST", strconv.Itoa(ui.PromptList("Select Roaming Catalyst", catOpts)))
+		
+		if ui.PromptConfirm("Launch Responder pivot in background?", true) {
+			os.Setenv("LAUNCH_RESPONDER", "yes")
 		}
-		defer c.NetMgr.CleanupNAT()
-
-		if err := c.NetMgr.SetupInterfaceIP(iface); err != nil {
-			logging.Error("Interface IP Setup Failed: %v", err)
-			return err
+	case "F2":
+		opts := []string{"Dynamic MANA (Directed Probes)", "Known Beacon Attack (Loud)"}
+		if ui.PromptList("Select Karma Vector", opts) == 1 {
+			os.Setenv("KARMA_MODE", "loud")
+		} else {
+			os.Setenv("KARMA_MODE", "mana")
 		}
+	case "F3":
+		opts := []string{"Generic Corporate", "Microsoft 365 (High-Fidelity)"}
+		if ui.PromptList("Select Phishing Template", opts) == 1 {
+			os.Setenv("PHISH_TEMPLATE", "m365")
+		} else {
+			os.Setenv("PHISH_TEMPLATE", "generic")
+		}
+	case "F5":
+		os.Setenv("TUNNEL_DOMAIN", ui.PromptString("Enter tunnel domain", ""))
+		os.Setenv("TUNNEL_PASS", ui.PromptString("Enter tunnel password", ""))
+	case "G5":
+		os.Setenv("ROGUE_BSSID", ui.PromptString("Enter Rogue AP BSSID", ""))
 	}
 
 	// 5. Run the Module
@@ -189,8 +277,12 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		status = constants.StatusFailed
 	}
 
-	c.Session.DB.Exec(`UPDATE module_state SET status = ?, exit_code = ?, ended_at = ?, duration_sec = ?, command_run = ?
+	_, dbErr := c.Session.DB.Exec(`UPDATE module_state SET status = ?, exit_code = ?, ended_at = ?, duration_sec = ?, command_run = ?
 		WHERE tc_id = ?`, status, exitCode, endTime.Format("2006-01-02 15:04:05"), duration, fullCommand, m.ID)
+	
+	if dbErr != nil {
+		logging.Error("State update failed for %s: %v", m.ID, dbErr)
+	}
 
 	fmt.Printf("\n%s\n", strings.Repeat("┈", 80))
 	if status == constants.StatusCompleted {
@@ -434,6 +526,10 @@ func (c *AssessmentController) HandleA1PostRun() {
 			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestSSID, target.SSID)
 			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestBSSID, target.BSSID)
 			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestChannel, strconv.Itoa(target.Channel))
+			
+			// Redundant Safety: Ensure A1 is marked as completed if target is set
+			c.Session.DB.Exec("UPDATE module_state SET status = ? WHERE tc_id = 'A1'", constants.StatusCompleted)
+			
 			logging.Success("Target set to %s (%s)", target.SSID, target.BSSID)
 		}
 	}

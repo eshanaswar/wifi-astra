@@ -12,8 +12,8 @@ func InitDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 
-	// Enable WAL mode for better concurrency during simultaneous background tasks
-	_, err = database.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;`)
+	// Set a busy timeout to handle concurrent access
+	_, err = database.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;`)
 	if err != nil {
 		return nil, err
 	}
@@ -308,4 +308,16 @@ func GetTestResults(d *sql.DB) ([]TestResult, error) {
 		results = append(results, tr)
 	}
 	return results, nil
+}
+
+func GetConfig(d *sql.DB, key string) (string, error) {
+	var value string
+	err := d.QueryRow(`SELECT value FROM config WHERE key = ?`, key).Scan(&value)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return value, nil
 }
