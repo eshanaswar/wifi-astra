@@ -383,6 +383,8 @@ func (c *AssessmentController) LaunchSupportModule(tcID string) error {
 	logging.Success("Support module %s is now running in the background.", tcID)
 	return nil
 }
+
+func (c *AssessmentController) DisplayEvidence(tcID string) {
 	fmt.Println("\n📁 [Generated Evidence]")
 	files, _ := os.ReadDir(c.Session.EvidenceDir)
 	evidenceFound := false
