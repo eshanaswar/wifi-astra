@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-set -euo pipefail
-=======
 # MODULE_META
 # NAME="Internal DNS Resolution"
 # CATEGORY="C"
@@ -12,12 +9,13 @@ set -euo pipefail
 # REQS="managed_iface,dns_server"
 # PCAP="no"
 # DECODE="none"
->>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/c1_dns_resolution.sh
 #  C1: Internal DNS Resolution
 #===============================================================================
+
+set -euo pipefail
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -32,12 +30,18 @@ if [[ -z "$INTERFACE" ]]; then
     exit 1
 fi
 
+# Dynamic Intelligence: Identify DNS server if not provided
 if [[ -z "$DNS_SERVER" ]]; then
     DNS_SERVER=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null | head -1 | awk '{print $2}' || true)
 fi
 
 if [[ -z "$DNS_SERVER" ]]; then
-    echo "[!] DNS_SERVER not detected."
+    echo "[!] DNS_SERVER not detected. Falling back to gateway."
+    DNS_SERVER=$(ip -4 route show dev "$INTERFACE" | awk '/default/{print $3}' | head -1 || true)
+fi
+
+if [[ -z "$DNS_SERVER" ]]; then
+    echo "[!] Could not identify target DNS server."
     exit 1
 fi
 
@@ -48,15 +52,22 @@ AXFR_FILE="${EVIDENCE_PREFIX}_axfr.txt"
 
 echo "[*] [$TC_ID] Identifying internal DNS resolution via ${DNS_SERVER}..."
 
-# Identify & Target
-HOSTNAMES=("internal.corp" "dc01.corp" "mail.corp" "vpn.corp" "wifi.corp" "proxy.corp" "intranet" "portal" "git" "jira")
+# Dynamic Targets: Use the actual domain search suffix if available
+SEARCH_DOMAINS=$(grep "^search" /etc/resolv.conf 2>/dev/null | cut -d' ' -f2- || true)
+HOSTNAMES=("internal" "dc01" "mail" "vpn" "wifi" "proxy" "intranet" "portal" "git" "jira")
+
 for host in "${HOSTNAMES[@]}"; do
+    # Try raw host
     dig +short "@$DNS_SERVER" "$host" 2>/dev/null >> "$RESOLUTION_FILE" || true
+    # Try with search suffixes
+    for suffix in $SEARCH_DOMAINS; do
+        dig +short "@$DNS_SERVER" "${host}.${suffix}" 2>/dev/null >> "$RESOLUTION_FILE" || true
+    done
 done
 
 # Verify
 FOUND=0
-RESOLVED_COUNT=$(grep -v "NOT FOUND" "$RESOLUTION_FILE" 2>/dev/null | wc -l || echo 0)
+RESOLVED_COUNT=$(grep -v "NOT FOUND" "$RESOLUTION_FILE" 2>/dev/null | grep -E "[0-9.]+" | wc -l || echo 0)
 
 if [[ "$RESOLVED_COUNT" -gt 0 ]]; then
     FOUND=1
@@ -68,12 +79,11 @@ if [[ "$RESOLVED_COUNT" -gt 0 ]]; then
         --desc "Resolved $RESOLVED_COUNT internal hostnames via $DNS_SERVER." \
         --severity "HIGH" \
         --evidence "$RESOLUTION_FILE" \
-        --rationale "Access to internal DNS reveals infrastructure details."
+        --rationale "Access to internal DNS reveals infrastructure details and facilitates pivoting."
 fi
 
-# AXFR Attempt
-domains=("corp" "internal" "local" "guest.corp")
-for dom in "${domains[@]}"; do
+# AXFR Attempt (Dynamic)
+for dom in $SEARCH_DOMAINS; do
     dig "@$DNS_SERVER" "$dom" AXFR >> "$AXFR_FILE" 2>/dev/null || true
 done
 
@@ -88,7 +98,7 @@ if [[ -s "$AXFR_FILE" ]]; then
             --desc "Successfully performed AXFR from $DNS_SERVER." \
             --severity "CRITICAL" \
             --evidence "$AXFR_FILE" \
-            --rationale "AXFR exposes all internal hostnames and IP addresses."
+            --rationale "AXFR exposes all internal hostnames and IP addresses, providing a complete map of the internal infrastructure."
     fi
 fi
 
@@ -107,4 +117,3 @@ fi
 
 # Cleanup
 exit 0
-

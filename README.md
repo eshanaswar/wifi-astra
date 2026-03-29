@@ -10,8 +10,11 @@ WiFi-Astra is a professional-grade, Go-native orchestration framework designed f
 ## 🚀 Key Features
 
 *   **Go-Native Core:** Built for performance and stability, replacing fragile Bash orchestration.
-*   **Modular "Golden Wrappers":** 40+ assessment modules across 8 categories, easily extensible via simple Bash scripts.
+*   **Modular "Golden Wrappers":** 42 assessment modules across 8 categories, easily extensible via simple Bash scripts.
+*   **Smart Tactical Intelligence:** Real-time scouting of target defenses (PMF, Encryption, SNR) before active module execution.
+*   **AirSnitch (NDSS 2026):** Advanced client isolation bypass auditing based on the latest research.
 *   **Guardian Privilege System:** Runs hardware-level operations as root but drops privileges for TUI and data processing to minimize attack surface.
+*   **Full-Stack Identity Spoofing:** Defeats modern NACs by cloning MAC, Hostname, and DHCP Option 55 fingerprints.
 *   **Forensic Reporting:** Generates professional HTML reports with direct links to PCAPs, handshakes, and logs.
 *   **Self-Healing Hardware:** Automated recovery of interfaces stuck in monitor mode.
 *   **Headless Mode:** Support for JSON mission plans for automated or scheduled audits.

@@ -16,34 +16,39 @@ type Manager struct {
 }
 
 var globalManager *Manager
-var managerOnce sync.Once
+var managerMu sync.Mutex
 
 // GetManager returns the singleton UI manager.
 func GetManager() *Manager {
-	managerOnce.Do(func() {
+	managerMu.Lock()
+	defer managerMu.Unlock()
+	
+	if globalManager == nil {
+		globalManager = &Manager{}
+	}
+	
+	if globalManager.rl == nil {
 		rl, err := readline.NewEx(&readline.Config{
 			InterruptPrompt: "^C",
 			EOFPrompt:       "exit",
 		})
-		if err != nil {
-			globalManager = &Manager{}
-		} else {
-			globalManager = &Manager{rl: rl}
+		if err == nil {
+			globalManager.rl = rl
 		}
-	})
+	}
 	return globalManager
 }
 
 func (m *Manager) ClearScreen() {
-	// Always attempt to clear using standard ANSI escape codes
-	// \033[H: Home cursor
-	// \033[2J: Clear screen
 	fmt.Print("\033[H\033[2J")
 }
 
 func (m *Manager) Close() {
+	managerMu.Lock()
+	defer managerMu.Unlock()
 	if m.rl != nil {
 		m.rl.Close()
+		m.rl = nil
 	}
 }
 

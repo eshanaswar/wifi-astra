@@ -23,6 +23,14 @@
 
 set -euo pipefail
 
+# SNR Safeguard (Red Team Hardening)
+if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
+    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
+    echo "[*] Wireless fuzzing is ineffective and noisy at this distance."
+    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    [[ "$snr_continue" != "y" ]] && exit 0
+fi
+
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 BSSID="${GUEST_BSSID:-}"

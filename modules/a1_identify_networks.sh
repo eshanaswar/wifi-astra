@@ -32,17 +32,23 @@ if [[ -z "$INTERFACE" ]]; then
     exit 1
 fi
 
-echo "[?] Select Scan Depth:"
+# 0. Intelligence Insight
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Scan Depth:${C_RESET}"
 echo "    1) Standard (60s)"
 echo "    2) Deep Scan (120s - Recommended for DFS/5GHz)"
-read -p "Selection [1/2]: " depth_choice
+read -p "$(echo -e "${C_BOLD}Selection [1/2]: ${C_RESET}")" depth_choice
 
 if [[ "$depth_choice" == "2" ]]; then
     SCAN_TIME=120
-    echo "[*] Deep Scan enabled. Setting interval to 120s..."
+    echo -e "${C_PROMPT}[*]${C_RESET} Deep Scan enabled. Setting interval to ${C_VAR}120s${C_RESET}..."
 fi
 
-echo "[*] Starting airodump-ng scan on ${INTERFACE} for ${SCAN_TIME}s..."
+echo -e "${C_PROMPT}[*]${C_RESET} Starting airodump-ng scan on ${C_VAR}${INTERFACE}${C_RESET} for ${C_VAR}${SCAN_TIME}s${C_RESET}..."
 
 # airodump-ng appends -01.csv to the prefix. 
 # We remove the suffix from the target path to match airodump's behavior

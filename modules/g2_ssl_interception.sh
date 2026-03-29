@@ -24,6 +24,14 @@
 
 set -euo pipefail
 
+# SNR Safeguard (Red Team Hardening)
+if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
+    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
+    echo "[*] TLS interception requires stable MITM which is unlikely at this distance."
+    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    [[ "$snr_continue" != "y" ]] && exit 0
+fi
+
 # Inputs from Environment
 INTERFACE="${WIFI_INTERFACE:-}"
 SESSION_DIR="${SESSION_DIR:-.}"

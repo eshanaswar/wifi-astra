@@ -299,7 +299,17 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 		}
 	}
 
+	// Inject Colors for Module Highlighting
+	env = append(env, "ASTRA_COLOR_PROMPT=\033[1;34m")
+	env = append(env, "ASTRA_COLOR_VAR=\033[1;33m")
+	env = append(env, "ASTRA_COLOR_BOLD=\033[1m")
+	env = append(env, "ASTRA_COLOR_RESET=\033[0m")
+
 	logging.Info("Starting module %s...", tcID)
+
+	// RESTORE TERMINAL STATE: Close readline before running the module
+	// This ensures the child process has a "clean" TTY for input.
+	ui.GetManager().Close()
 
 	ctx := context.Background()
 	exitCode, err := c.ExecMgr.RunWithEnv(ctx, tcID, matches[0], []string{}, logFile, env)

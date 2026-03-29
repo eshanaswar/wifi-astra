@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-set -euo pipefail
-=======
 # MODULE_META
 # NAME="Private Network Scan"
 # CATEGORY="C"
@@ -12,12 +9,13 @@ set -euo pipefail
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
 # DECODE="none"
->>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/c2_private_network_scan.sh
 #  C2: Private Network Egress Scan
 #===============================================================================
+
+set -euo pipefail
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -36,15 +34,30 @@ EVIDENCE_PREFIX="${EVIDENCE_DIR}/${TC_ID}"
 REACHABLE_FILE="${EVIDENCE_PREFIX}_reachable_gateways.txt"
 OUTPUT_XML="${EVIDENCE_PREFIX}_nmap_internal.xml"
 
+# Dynamic Intelligence: Determine local subnet and common RFC1918 gateways
+LOCAL_GW=$(ip -4 route show dev "$INTERFACE" | awk '/default/{print $3}' | head -1 || true)
+LOCAL_NET=$(ip -4 route show dev "$INTERFACE" | grep "kernel" | awk '{print $1}' || true)
+
 echo "[*] [$TC_ID] Identifying egress to RFC1918 networks from ${INTERFACE}..."
 
-# Identify & Target
-RANGES=("10.0.0.1" "10.1.1.1" "172.16.0.1" "192.168.0.1" "192.168.1.1" "192.168.10.1" "192.168.100.1")
-fping -a -t 500 "${RANGES[@]}" 2>/dev/null > "$REACHABLE_FILE" || true
+# Dynamic Targets: Test local gateway, and common gateways in other RFC1918 ranges
+RANGES=("$LOCAL_GW" "10.0.0.1" "10.1.1.1" "172.16.0.1" "192.168.0.1" "192.168.1.1" "192.168.10.1" "192.168.100.1")
+# Add the .1 address of the current local network if not already present
+if [[ -n "$LOCAL_NET" ]]; then
+    NET_PREFIX=$(echo "$LOCAL_NET" | cut -d. -f1-3)
+    RANGES+=("${NET_PREFIX}.1")
+fi
+
+# Unique sorted list
+TARGETS=$(printf "%s\n" "${RANGES[@]}" | sort -u | grep -v "^$")
+
+echo "[*] Testing reachability for gateways: $(echo $TARGETS | xargs)"
+fping -a -t 500 $TARGETS 2>/dev/null > "$REACHABLE_FILE" || true
 
 # Verify
-REACHABLE=$(cat "$REACHABLE_FILE")
+REACHABLE=$(cat "$REACHABLE_FILE" | xargs)
 if [[ -n "$REACHABLE" ]]; then
+    echo "[!] REACHABLE HOSTS DETECTED: $REACHABLE"
     nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" >/dev/null 2>&1 || true
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
@@ -54,7 +67,7 @@ if [[ -n "$REACHABLE" ]]; then
         --desc "Guest network allows access to RFC1918 addresses: ${REACHABLE}" \
         --severity "HIGH" \
         --evidence "$OUTPUT_XML" \
-        --rationale "Failure to segment guest WiFi from internal networks allows pivoting."
+        --rationale "Failure to segment guest WiFi from internal networks allows pivoting and direct attacks on internal assets."
 else
     echo "[+] No internal gateways reachable."
     "$ASTRA_BIN" record-finding \
@@ -70,4 +83,3 @@ fi
 
 # Cleanup
 exit 0
-

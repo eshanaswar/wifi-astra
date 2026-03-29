@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-set -euo pipefail
-=======
 # MODULE_META
 # NAME="Broadcast & Multicast Leaks"
 # CATEGORY="B"
@@ -12,12 +9,13 @@ set -euo pipefail
 # REQS="managed_iface"
 # PCAP="yes"
 # DECODE="none"
->>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/b8_broadcast_leaks.sh
 #  B8: Broadcast/Multicast Leaks
 #===============================================================================
+
+set -euo pipefail
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -80,4 +78,3 @@ fi
 
 # Cleanup
 exit 0
-

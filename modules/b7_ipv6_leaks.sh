@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-set -euo pipefail
-=======
 # MODULE_META
 # NAME="IPv6 SLAAC & RA Leaks"
 # CATEGORY="B"
@@ -12,12 +9,13 @@ set -euo pipefail
 # REQS="managed_iface"
 # PCAP="yes"
 # DECODE="none"
->>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/b7_ipv6_leaks.sh
 #  B7: IPv6 Leaks
 #===============================================================================
+
+set -euo pipefail
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -94,4 +92,3 @@ fi
 
 # Cleanup
 exit 0
-

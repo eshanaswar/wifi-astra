@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-set -euo pipefail
-=======
 # MODULE_META
 # NAME="SNMP Exposure"
 # CATEGORY="B"
@@ -12,7 +9,8 @@ set -euo pipefail
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
 # DECODE="none"
->>>>>>> feature/smart-tactical-modernization
+
+set -euo pipefail
 
 #===============================================================================
 #  modules/b5_snmp_exposure.sh

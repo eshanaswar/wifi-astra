@@ -73,5 +73,13 @@ sudo ./bin/wifi-astra start --config plan.json
     ```
 *   **Cleanup:** Remove old sessions to save disk space:
     ```bash
-    sudo ./bin/wifi-astra clean --days 30
+    sudo ./bin/wifi-astra clean --older-than 30
     ```
+
+---
+
+## 🎯 Tactical Best Practices
+
+*   **Intelligence Prompts:** Pay attention to the "Expert Notes" provided by the Go brain. If the tool warns that **PMF is Required**, do not waste time on active deauthentication; use **Passive Capture** or **CSA catalysts**.
+*   **Signal Guard:** Ensure your target has an RSSI better than **-70dBm** for active roams (Category F) or deauths (Category D/E).
+*   **Full Identity Spoofing:** When bypassing NACs (Category G), use the **Full Identity** option to clone MAC, Hostname, and DHCP Option 55 fingerprints simultaneously.

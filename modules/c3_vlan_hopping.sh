@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-set -euo pipefail
-=======
 # MODULE_META
 # NAME="VLAN Hopping"
 # CATEGORY="C"
@@ -12,12 +9,13 @@ set -euo pipefail
 # REQS="managed_iface"
 # PCAP="yes"
 # DECODE="none"
->>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/c3_vlan_hopping.sh
 #  C3: VLAN Hopping / Trunking Test
 #===============================================================================
+
+set -euo pipefail
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -41,10 +39,13 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 echo "[*] [$TC_ID] Identifying VLAN hopping / DTP leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 
 # Identify & Target
+# 1. Listen for DTP/VTP/CDP/STP
 timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
-    "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:00" > "$LOG_FILE" 2>&1 || true
+    "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:00 or ether host 01:00:0c:cc:cc:cd" > "$LOG_FILE" 2>&1 || true
 
+# 2. Active DTP spoofing (Try to negotiate a trunk)
 if command -v yersinia &>/dev/null; then
+    echo "[*] Attempting DTP trunk negotiation..."
     timeout 30 yersinia dtp -i "$INTERFACE" -n 1 > "$YERSINIA_OUT" 2>/dev/null || true
 fi
 
@@ -56,11 +57,11 @@ if [[ -f "$YERSINIA_OUT" ]] && grep -qi "DTP" "$YERSINIA_OUT"; then
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type "vulnerability" \
-        --name "DTP Information Leak" \
-        --desc "Dynamic Trunking Protocol (DTP) frames detected." \
-        --severity "MEDIUM" \
+        --name "DTP Information Leak / Trunk Possible" \
+        --desc "Dynamic Trunking Protocol (DTP) frames detected on the segment." \
+        --severity "HIGH" \
         --evidence "$PCAP_FILE" \
-        --rationale "DTP frames indicate the switch port is in dynamic mode, allowing trunk negotiation."
+        --rationale "DTP frames indicate the switch port is in dynamic mode. An attacker can negotiate a trunk and access all VLANs traversing that switch, completely bypassing network segmentation."
 fi
 
 if [[ $FOUND -eq 0 ]]; then
@@ -73,9 +74,8 @@ if [[ $FOUND -eq 0 ]]; then
         --desc "No DTP or VTP management frames were detected." \
         --severity "INFO" \
         --evidence "$PCAP_FILE" \
-        --rationale "Hardcoded access ports prevent VLAN hopping."
+        --rationale "Hardcoded access ports prevent VLAN hopping and are a key security configuration for untrusted client segments."
 fi
 
 # Cleanup
 exit 0
-

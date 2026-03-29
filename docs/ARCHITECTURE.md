@@ -46,6 +46,9 @@ The system is built on a **Controller-Registry-Wrapper** pattern:
 Modules are invoked with a specific environment:
 *   `ASTRA_BIN`: Path to the core binary for findings callbacks.
 *   `SESSION_DIR`: Root path of the current session.
+*   `ASTRA_TARGET_PMF`: Target PMF status (`Required`, `Capable`, `None`).
+*   `ASTRA_TARGET_AUTH`: Detected authentication type (e.g., `WPA3-SAE`).
+*   `ASTRA_TARGET_RSSI`: Real-time signal strength of the target.
 *   `OUTPUT_CSV / OUTPUT_PCAP`: Target paths for standardized tool outputs.
 
 Modules report findings using the hidden callback:
@@ -68,6 +71,15 @@ WiFi-Astra implements a "Guardian" privilege lifecycle:
 
 ### Smart Exit (Real-time Polling)
 Professional attack modules (e.g., `D1`, `D2`, `D3`) do not rely on static `sleep` timers. Instead, they implement a polling loop that interrogates evidence files (e.g., via `aircrack-ng`) every few seconds. The moment a valid cryptographic artifact (handshake, WEP key, WPS PIN) is detected, the module terminates all background processes and exits with success, saving significant time during large-scale engagements.
+
+### Smart Tactical Scout Engine
+Before any disruptive module runs, the Go core executes `hw.ScoutTarget()`. This performs a surgical 5-second capture to extract:
+*   **PMF Status:** Identifies if 802.11w is Required or Capable.
+*   **Encryption:** Detects WPA3-SAE or OWE transition modes.
+*   **SNR:** Extracts RSSI to warn the operator if the signal is too weak for reliable injection.
+
+### Process Group Reaper
+To prevent orphaned hardware locks (e.g., `hostapd` running after `astra` exits), the `executor` places every module in a unique **Process Group (PGID)**. Upon module termination or framework exit, the core sends a `SIGKILL` to the entire group, ensuring a 100% clean hardware state.
 
 ### Hardware Interface Locking
 To prevent concurrent modules from clashing over the same wireless adapter (which causes channel-hopping corruption and driver crashes), the Go core implements a global `sync.Mutex` registry. Before an attack starts, the `AssessmentController` must acquire an exclusive lock on the physical interface name. If the interface is busy, the request is queued or rejected.

@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
-set -euo pipefail
-=======
 # MODULE_META
 # NAME="mDNS/Bonjour Information Leaks"
 # CATEGORY="B"
@@ -12,7 +9,8 @@ set -euo pipefail
 # REQS="managed_iface"
 # PCAP="yes"
 # DECODE="none"
->>>>>>> feature/smart-tactical-modernization
+
+set -euo pipefail
 
 #===============================================================================
 #  modules/b4_mdns_leaks.sh
