@@ -28,17 +28,10 @@ C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] CSA/Deauth roams are highly unlikely to succeed at this distance."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET} ")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
 
 # Inputs from Environment
-INTERFACE="${MONITOR_INTERFACE:-}"
+
+CATALYST="${CATALYST:-1}"INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
 TARGET_BSSID="${GUEST_BSSID:-}"
 CHANNEL="${GUEST_CHANNEL:-11}" # Default to 11 if not set
@@ -59,8 +52,7 @@ echo "[*] Initializing WPA3 Downgrade tactical options..."
 echo "[?] Select Roaming Catalyst:"
 echo "    1) Targeted Deauth (Surgical - Disrupts PMF)"
 echo "    2) CSA (Channel Switch Announcement via mdk4 - Stealthier)"
-stty sane
-read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET} ")" catalyst_choice
+catalyst_choice="${CATALYST:-1}"
 
 # 2. Deploy WPA2-only Evil Twin
 echo "[*] Deploying WPA2-PSK Evil Twin for SSID: $SSID..."
@@ -111,6 +103,7 @@ elif [[ "$catalyst_choice" == "2" ]]; then
 fi
 
 echo "[*] Downgrade environment active. Monitoring for client association..."
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 80 --status "Waiting for client fallback..."
 # In a real test, we would also run airodump-ng in background to capture the WPA2 handshake
 # as the client connects to our rogue AP using the known dummy passphrase.
 
@@ -145,3 +138,4 @@ else
 fi
 
 exit 0
+xit 0

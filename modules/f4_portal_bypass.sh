@@ -93,6 +93,8 @@ EOF
 echo -e "[*] Requesting DHCP lease with custom Fingerprint (Option 55)..."
 timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 80 --status "Verifying network access..."
+
 # 3. Verification
 echo -e "[*] Verifying internet access..."
 BYPASS_LOG="${EVIDENCE_DIR}/${TC_ID}_bypass.log"
@@ -113,3 +115,4 @@ else
 fi
 
 exit 0
+0

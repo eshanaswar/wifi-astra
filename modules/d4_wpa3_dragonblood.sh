@@ -23,14 +23,6 @@ C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] WPA3 SAE group forcing is highly likely to fail at this distance."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET} ")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
@@ -104,6 +96,8 @@ else
     echo "[!] dragondrain tool not found. Skipping resource exhaustion test." >> "$DRAGON_OUT"
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Aggregating WPA3 findings..."
+
 echo "[+] WPA3 Dragonblood testing complete."
 if [[ "$VULN_FOUND" -eq 0 ]]; then
     "$ASTRA_BIN" record-finding \
@@ -118,3 +112,4 @@ if [[ "$VULN_FOUND" -eq 0 ]]; then
 fi
 
 exit 0
+0

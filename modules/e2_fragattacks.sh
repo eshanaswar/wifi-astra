@@ -24,13 +24,13 @@
 
 set -euo pipefail
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] FragAttacks injection is highly unlikely to succeed at this distance."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
+# Intelligence Insight (Colors)
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
@@ -75,6 +75,8 @@ if [[ -n "$FRAG_SCRIPT" ]]; then
 else
     echo "[!] FragAttacks test tool not found." > "$FRAG_LOG"
 fi
+
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Finalizing FragAttacks audit..."
 
 # Audit Complete finding if no critical vulnerability was recorded above
 if [[ ! -f "$RES_FILE" ]]; then

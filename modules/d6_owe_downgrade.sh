@@ -23,14 +23,8 @@ C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] OWE scanning/spoofing is unreliable at this distance."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET} ")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
+ng is unreliable at this distance."
+    fi
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
@@ -61,6 +55,8 @@ AIRODUMP_PID=$!
 sleep 15
 kill "$AIRODUMP_PID" || true
 wait "$AIRODUMP_PID" 2>/dev/null || true
+
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing OWE scan results..."
 
 # 2. Check if OWE is present in scan results using awk
 # airodump CSV format: BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, Authentication, ESSID

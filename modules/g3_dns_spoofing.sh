@@ -29,14 +29,8 @@ C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] DNS spoofing packets may not reach victims reliably at this distance."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET} ")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
+ng packets may not reach victims reliably at this distance."
+    fi
 
 # Inputs from Environment
 INTERFACE="${WIFI_INTERFACE:-}"
@@ -86,6 +80,8 @@ EOF
     cleanup
     trap - EXIT
     
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Checking DNS redirection results..."
+
     # 2. Reporting
     if [[ -f "$JSON_LOG" && -s "$JSON_LOG" ]]; then
         "$ASTRA_BIN" record-finding \

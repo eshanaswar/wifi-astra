@@ -23,13 +23,13 @@
 
 set -euo pipefail
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] Wireless fuzzing is ineffective and noisy at this distance."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
+# Intelligence Insight (Colors)
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
@@ -57,6 +57,8 @@ if command -v mdk4 &>/dev/null; then
     echo "--- Beacon Fuzzing ---" >> "$FUZZ_OUT"
     timeout 60 mdk4 "$INTERFACE" m -t "$BSSID" >> "$FUZZ_OUT" 2>&1 || true
     
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing fuzzer impact..."
+
     echo "[+] Wireless fuzzing test complete."
 
     if [[ -s "$FUZZ_OUT" ]]; then

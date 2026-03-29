@@ -80,6 +80,8 @@ fi
 cleanup
 trap - EXIT
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Evaluating WIDS/WIPS response..."
+
 # 6. Reporting
 echo "[+] WIDS detection testing complete."
 "$ASTRA_BIN" record-finding \
@@ -93,3 +95,4 @@ echo "[+] WIDS detection testing complete."
     --rationale "WIDS/WIPS effectiveness determines if an attacker can operate undetected. Failure to detect these noisy signatures indicates a lack of real-time monitoring and incident response capability."
 
 exit 0
+

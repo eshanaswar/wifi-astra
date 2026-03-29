@@ -40,6 +40,7 @@ if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
 fi
 
 echo "[*] [$TC_ID] Checking for 802.11w PMF support on ${BSSID}..."
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 20 --status "Capturing management frames..."
 
 MFP_FILE="${EVIDENCE_PREFIX}_mfp_status.txt"
 PCAP_FILE="${EVIDENCE_PREFIX}_beacon.pcap"
