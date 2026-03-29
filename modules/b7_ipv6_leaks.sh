@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 set -euo pipefail
+=======
+# MODULE_META
+# NAME="IPv6 SLAAC & RA Leaks"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="tcpdump,tshark"
+# DESC="Listen for corporate IPv6 router advertisements bleeding into target VLAN"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="none"
+>>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/b7_ipv6_leaks.sh

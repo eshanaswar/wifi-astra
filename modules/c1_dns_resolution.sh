@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 set -euo pipefail
+=======
+# MODULE_META
+# NAME="Internal DNS Resolution"
+# CATEGORY="C"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="dig,host"
+# DESC="Test if target WiFi DNS resolves internal hostnames"
+# REQS="managed_iface,dns_server"
+# PCAP="no"
+# DECODE="none"
+>>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/c1_dns_resolution.sh

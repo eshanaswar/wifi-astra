@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 set -euo pipefail
+=======
+# MODULE_META
+# NAME="SNMP Exposure"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="snmp-check,onesixtyone"
+# DESC="Probe for SNMP services with default/common communities"
+# REQS="managed_iface,gateway_ip"
+# PCAP="no"
+# DECODE="none"
+>>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/b5_snmp_exposure.sh

@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 set -euo pipefail
+=======
+# MODULE_META
+# NAME="Broadcast & Multicast Leaks"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="tcpdump,tshark"
+# DESC="Analyze UDP traffic for SSDP/LLMNR/NetBIOS storms bleeding from corporate"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="none"
+>>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/b8_broadcast_leaks.sh

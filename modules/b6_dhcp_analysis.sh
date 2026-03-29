@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 set -euo pipefail
+=======
+# MODULE_META
+# NAME="DHCP Architecture Analysis"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="nmap,tcpdump"
+# DESC="Analyze DHCP configuration and check for rogue DHCP servers"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="none"
+>>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/b6_dhcp_analysis.sh

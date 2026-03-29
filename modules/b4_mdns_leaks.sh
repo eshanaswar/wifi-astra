@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 set -euo pipefail
+=======
+# MODULE_META
+# NAME="mDNS/Bonjour Information Leaks"
+# CATEGORY="B"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="tcpdump,tshark"
+# DESC="Detect mDNS/Bonjour service announcements from corporate devices"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="none"
+>>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/b4_mdns_leaks.sh

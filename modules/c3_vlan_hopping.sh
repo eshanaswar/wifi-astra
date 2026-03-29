@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 set -euo pipefail
+=======
+# MODULE_META
+# NAME="VLAN Hopping"
+# CATEGORY="C"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="yersinia,tcpdump"
+# DESC="Attempt 802.1Q double-tagging and DTP spoofing to reach other VLANs"
+# REQS="managed_iface"
+# PCAP="yes"
+# DECODE="none"
+>>>>>>> feature/smart-tactical-modernization
 
 #===============================================================================
 #  modules/c3_vlan_hopping.sh
