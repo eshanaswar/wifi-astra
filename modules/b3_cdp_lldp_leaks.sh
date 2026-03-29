@@ -12,10 +12,8 @@
 
 set -euo pipefail
 
-#===============================================================================
 #  modules/b3_cdp_lldp_leaks.sh
 #  B3: CDP/LLDP Leak Analysis
-#===============================================================================
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -37,11 +35,27 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 
 echo "[*] [$TC_ID] Identifying CDP/LLDP leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 
+# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( ELAPSED * 100 / SCAN_TIME ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Capturing CDP/LLDP frames..."
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 # Identify & Target
 timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
     "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" > "$LOG_FILE" 2>&1 || true
 
+kill "$TELEMETRY_PID" 2>/dev/null || true
+
 # Verify
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing capture..."
 FOUND=0
 if command -v tshark &>/dev/null && [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
     LEAKED_INFO=$(tshark -r "$PCAP_FILE" -T fields \
@@ -79,7 +93,6 @@ if [[ $FOUND -eq 0 ]]; then
         --rationale "Properly configured network infrastructure should not leak discovery protocols on wireless client segments."
 fi
 
-# Cleanup
-# No background processes to kill in this script.
+# 🏁 FINAL SIGNAL
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
-

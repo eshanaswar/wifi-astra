@@ -12,10 +12,8 @@
 
 set -euo pipefail
 
-#===============================================================================
 #  modules/b4_mdns_leaks.sh
 #  B4: mDNS/Bonjour Leak Analysis
-#===============================================================================
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -37,17 +35,48 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 
 echo "[*] [$TC_ID] Identifying mDNS/Bonjour services on ${INTERFACE} for ${SCAN_TIME}s..."
 
-# Identify & Target
+# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+# Phase 1: 10% - 50%
+(
+    ELAPSED=0
+    HALF_TIME=$((SCAN_TIME / 2))
+    while [[ $ELAPSED -lt $HALF_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 40 / HALF_TIME) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Discovering mDNS services..."
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 # 1. Active discovery using avahi-browse if available
 AVAHI_OUT="${EVIDENCE_PREFIX}_avahi_raw.txt"
 if command -v avahi-browse &>/dev/null; then
-    timeout "$SCAN_TIME" avahi-browse -art > "$AVAHI_OUT" 2>/dev/null || true
+    timeout "$((SCAN_TIME/2))" avahi-browse -art > "$AVAHI_OUT" 2>/dev/null || true
 fi
 
+kill "$TELEMETRY_PID" 2>/dev/null || true
+
+# Phase 2: 50% - 90%
+(
+    ELAPSED=0
+    HALF_TIME=$((SCAN_TIME / 2))
+    while [[ $ELAPSED -lt $HALF_TIME ]]; do
+        PCT=$(( 50 + (ELAPSED * 40 / HALF_TIME) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Capturing mDNS traffic..."
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 # 2. Passive capture of mDNS traffic (UDP 5353)
-timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 || true
+timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 || true
+
+kill "$TELEMETRY_PID" 2>/dev/null || true
 
 # Verify
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing findings..."
 FOUND=0
 if [[ -f "$AVAHI_OUT" && -s "$AVAHI_OUT" ]]; then
     SERVICES=$(grep "^=" "$AVAHI_OUT" | awk '{print $4 " (" $5 ")"}' | sort -u || true)
@@ -82,7 +111,6 @@ if [[ $FOUND -eq 0 ]]; then
         --rationale "A lack of mDNS traffic on a guest segment is a sign of good network hygiene."
 fi
 
-# Cleanup
-# No background processes to kill in this script.
+# 🏁 FINAL SIGNAL
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
-
