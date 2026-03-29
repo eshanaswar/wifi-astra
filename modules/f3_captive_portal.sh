@@ -71,7 +71,7 @@ interface=$INTERFACE
 driver=nl80211
 ssid=$SSID
 hw_mode=g
-channel=6
+channel=${GUEST_CHANNEL:-6}
 auth_algs=1
 wpa=0
 EOF
