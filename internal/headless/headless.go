@@ -23,6 +23,7 @@ type AuditPlan struct {
 
 // RunAutonomousAudit executes an assessment without user interaction based on a plan file.
 func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*session.Session, *module.Module) error) error {
+	os.Setenv("ASTRA_HEADLESS", "true")
 	data, err := os.ReadFile(planPath)
 	if err != nil {
 		return fmt.Errorf("failed to read audit plan: %v", err)

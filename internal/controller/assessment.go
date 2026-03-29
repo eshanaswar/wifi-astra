@@ -303,7 +303,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	c.DisplayMissionSummary(m.ID)
 
 	fmt.Printf("\n%s\n", strings.Repeat("═", 80))
-	ui.PromptString("Press Enter to return to menu", "")
+	if os.Getenv("ASTRA_HEADLESS") != "true" {
+		ui.PromptString("Press Enter to return to menu", "")
+	}
 	return nil
 }
 
