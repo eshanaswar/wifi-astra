@@ -12,14 +12,13 @@
 
 set -euo pipefail
 
-#===============================================================================
 #  modules/b5_snmp_exposure.sh
 #  B5: SNMP Information Exposure
-#===============================================================================
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
 GATEWAY="${GATEWAY_IP:-}"
+SCAN_TIME="${SCAN_TIME:-60}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
@@ -41,13 +40,29 @@ BRUTE_FILE="${EVIDENCE_PREFIX}_brute.txt"
 echo "[*] [$TC_ID] Identifying SNMP exposure on ${GATEWAY}..."
 
 # Identify & Target
+# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing scan..."
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
     onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY" > "$BRUTE_FILE" 2>/dev/null || true
 else
     onesixtyone "$GATEWAY" > "$BRUTE_FILE" 2>/dev/null || true
 fi
 
+kill "$TELEMETRY_PID" 2>/dev/null || true
+
 # Verify
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Verifying community strings..."
 COMM_STRINGS=$(grep "\[" "$BRUTE_FILE" | awk '{print $2}' | tr -d '[]' || true)
 
 if [[ -n "$COMM_STRINGS" ]]; then
@@ -79,6 +94,7 @@ else
         --rationale "Ensuring SNMP is disabled or properly secured is a fundamental network security control."
 fi
 
-# Cleanup
+# 🏁 FINAL SIGNAL
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
 

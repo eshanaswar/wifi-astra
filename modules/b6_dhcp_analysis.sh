@@ -12,13 +12,12 @@
 
 set -euo pipefail
 
-#===============================================================================
 #  modules/b6_dhcp_analysis.sh
 #  B6: DHCP Architecture Analysis
-#===============================================================================
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
+SCAN_TIME="${SCAN_TIME:-60}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
@@ -38,6 +37,19 @@ NMAP_OUT="${EVIDENCE_PREFIX}_nmap_dhcp.txt"
 echo "[*] [$TC_ID] Identifying DHCP architecture on ${INTERFACE}..."
 
 # Identify & Target
+# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing scan..."
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 # Start passive capture
 timeout 30 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" > "$LOG_FILE" 2>&1 &
 TCPDUMP_PID=$!
@@ -51,7 +63,10 @@ fi
 # Active discovery
 nmap --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>/dev/null || true
 
+kill "$TELEMETRY_PID" 2>/dev/null || true
+
 # Verify
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing DHCP architecture..."
 DHCP_SERVERS=$(grep "Server Identifier:" "$NMAP_OUT" | awk '{print $NF}' | sort -u || true)
 
 if [[ -n "$DHCP_SERVERS" ]]; then
@@ -83,5 +98,8 @@ fi
 # Cleanup
 kill "$TCPDUMP_PID" 2>/dev/null || true
 wait "$TCPDUMP_PID" 2>/dev/null || true
+
+# 🏁 FINAL SIGNAL
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
 

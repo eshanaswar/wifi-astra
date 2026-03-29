@@ -10,10 +10,8 @@
 # PCAP="yes"
 # DECODE="none"
 
-#===============================================================================
 #  modules/b8_broadcast_leaks.sh
 #  B8: Broadcast/Multicast Leaks
-#===============================================================================
 
 set -euo pipefail
 
@@ -38,10 +36,26 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 echo "[*] [$TC_ID] Identifying broadcast/multicast leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 
 # Identify & Target
+# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing scan..."
+        sleep 2
+        ELAPSED=$((ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
     "broadcast or multicast" > "$LOG_FILE" 2>&1 || true
 
+kill "$TELEMETRY_PID" 2>/dev/null || true
+
 # Verify
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing traffic patterns..."
 FOUND=0
 if command -v tshark &>/dev/null && [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
     PROTOCOLS=$(tshark -r "$PCAP_FILE" -T fields -e _ws.col.Protocol 2>/dev/null | sort | uniq -c | sort -nr || true)
@@ -76,5 +90,6 @@ if [[ $FOUND -eq 0 ]]; then
         --rationale "Restricting broadcast traffic is a key network hardening measure."
 fi
 
-# Cleanup
+# 🏁 FINAL SIGNAL
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
