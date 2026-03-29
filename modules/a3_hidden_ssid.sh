@@ -16,13 +16,19 @@
 #
 #  METHODOLOGY:
 #  1. Identify BSSIDs that were originally hidden (from A1 discovery).
-#  2. Active Reveal: If clients are associated with hidden BSSIDs, perform 
-#     surgical deauthentication to force reconnection and reveal SSID.
-#  3. Listen for Probe Response or Association Request frames where the SSID
-#     is revealed in the clear.
+#  2. Active Reveal: If ACTIVE_REVEAL is enabled, perform surgical deauth
+#     to force reconnection and reveal cleartext SSID.
+#  3. Listen for frames where the SSID is revealed.
 #===============================================================================
 
 set -euo pipefail
+
+# Intelligence Insight (Colors)
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
@@ -32,6 +38,7 @@ EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 OUTPUT_CSV="${OUTPUT_CSV:-${EVIDENCE_DIR}/a3_results.csv}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="A3"
+ACTIVE_REVEAL="${ACTIVE_REVEAL:-no}" # From Go brain
 
 # Baseline Discovery Data
 A1_CSV="${EVIDENCE_DIR}/a1_results.csv"
@@ -46,50 +53,68 @@ if [[ ! -f "$A1_CSV" ]]; then
     exit 1
 fi
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
 # 1. Identify which BSSIDs were originally hidden
 echo -e "${C_PROMPT}[*]${C_RESET} Loading baseline hidden networks from A1..."
-# ...
-# Extract hidden targets for the loop
-HIDDEN_LIST=$(echo "$HIDDEN_BSSIDS")
+HIDDEN_BSSIDS=$(awk -F',' '
+    NR > 1 {
+        bssid = $1; ssid = $14;
+        gsub(/^[ \t\r\n"<>]+|[ \t\r\n"<>]+$/, "", ssid);
+        gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
+        if (ssid == "" || ssid ~ /^length: 0/ || ssid == "HIDDEN") {
+            if (bssid ~ /^[0-9A-Fa-f:]{17}$/) print bssid;
+        }
+    }
+' "$A1_CSV" | sort -u)
 
-# 2. Active Reveal Selection
-echo -e "${C_PROMPT}[*]${C_RESET} Identifying clients associated with hidden BSSIDs for active reveal..."
-DISC_PREFIX="${EVIDENCE_DIR}/a3_discovery"
-airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 &
-DISC_PID=$!
-sleep 15
-kill "$DISC_PID" || true
-wait "$DISC_PID" 2>/dev/null || true
+if [[ -z "$HIDDEN_BSSIDS" ]]; then
+    echo -e "[+] No hidden networks detected. Nothing to deanonymize."
+    exit 0
+fi
 
-for bssid in $HIDDEN_LIST; do
-    # Find a client for this BSSID from the new discovery
-    client=$(awk -F',' -v b="$bssid" '$6 ~ b {print $1}' "${DISC_PREFIX}-01.csv" | head -1 | tr -d ' ' || true)
+# 2. Active Reveal
+if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
+    echo -e "${C_PROMPT}[*]${C_RESET} Executing active de-cloaking for hidden targets..."
     
-    if [[ -n "$client" ]]; then
-        echo -e "${C_PROMPT}[?]${C_RESET} Hidden BSSID ${C_VAR}$bssid${C_RESET} has active client ${C_VAR}$client${C_RESET}."
-        read -p "$(echo -e "${C_BOLD}[?] Force reveal via surgical deauth? [y/N]: ${C_RESET}")" choice
-        if [[ "$choice" == "y" ]]; then
-            echo -e "[*] Executing active de-cloaking for ${C_VAR}$bssid${C_RESET}..."
+    # Quick discovery to find clients
+    DISC_PREFIX="${EVIDENCE_DIR}/a3_discovery"
+    airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 &
+    DISC_PID=$!
+    sleep 10
+    kill "$DISC_PID" || true
+    wait "$DISC_PID" 2>/dev/null || true
+
+    for bssid in $HIDDEN_BSSIDS; do
+        client=$(awk -F',' -v b="$bssid" '$6 ~ b {print $1}' "${DISC_PREFIX}-01.csv" | head -1 | tr -d ' ' || true)
+        if [[ -n "$client" && "$client" =~ ^[0-9A-Fa-f:]{17}$ ]]; then
+            echo -e "[*] Deauthing client ${C_VAR}$client${C_RESET} on ${C_VAR}$bssid${C_RESET}..."
             aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" > /dev/null 2>&1 || true
         fi
-    fi
-done
+    done
+fi
 
-# 3. Start targeted discovery monitoring
-echo -e "${C_PROMPT}[*]${C_RESET} Initializing targeted SSID reveal monitoring on ${C_VAR}${INTERFACE}${C_RESET}..."
+# 3. Main Monitoring Phase (Passive Fallback)
+echo -e "${C_PROMPT}[*]${C_RESET} Monitoring for SSID reveals on ${C_VAR}${INTERFACE}${C_RESET}..."
 CSV_PREFIX="${OUTPUT_CSV%.csv}"
-airodump-ng "$INTERFACE" \
-    --write "$CSV_PREFIX" \
-    --output-format csv \
-    --band abg > "${EVIDENCE_DIR}/a3_airodump.log" 2>&1 &
+
+# If ACTIVE_REVEAL was yes, we might have already used some time.
+# We ensure we still monitor for a reasonable duration.
+MONITOR_TIME=$SCAN_TIME
+if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
+    echo -e "[*] Active reveal used. Starting follow-up passive monitoring..."
+fi
+
+airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv > /dev/null 2>&1 &
 AIRODUMP_PID=$!
 
-sleep "$SCAN_TIME"
+ELAPSED=0
+while [[ $ELAPSED -lt $MONITOR_TIME ]]; do
+    PERCENT=$(( ELAPSED * 100 / MONITOR_TIME ))
+    STATUS="Monitoring for SSID reveals... ($(( MONITOR_TIME - ELAPSED ))s left)"
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+    sleep 5
+    ((ELAPSED+=5))
+done
+
 kill "$AIRODUMP_PID" || true
 wait "$AIRODUMP_PID" 2>/dev/null || true
 
@@ -97,7 +122,7 @@ if [[ -f "${CSV_PREFIX}-01.csv" ]]; then
     mv "${CSV_PREFIX}-01.csv" "$OUTPUT_CSV"
 fi
 
-# 4. Intelligent Analysis & Reporting
+# 4. Analysis
 REVEALED_FILE="${EVIDENCE_DIR}/a3_revealed.txt"
 awk -F',' -v hidden_list="$HIDDEN_BSSIDS" '
     BEGIN {
@@ -120,7 +145,7 @@ if [[ -s "$REVEALED_FILE" ]]; then
     while read -r line; do
         [[ -z "$line" ]] && continue
         bssid="${line% -> *}"; ssid="${line#* -> }"
-        echo "[!] DEANONYMIZED: ${bssid} -> ${ssid}"
+        echo -e "[!] ${C_BOLD}DEANONYMIZED:${C_RESET} ${C_VAR}${bssid}${C_RESET} -> ${C_VAR}${ssid}${C_RESET}"
         $ASTRA_BIN record-finding \
             --session-dir "$SESSION_DIR" \
             --tc "$TC_ID" \
@@ -128,22 +153,13 @@ if [[ -s "$REVEALED_FILE" ]]; then
             --name "Hidden SSID Revealed" \
             --severity MEDIUM \
             --desc "Successfully revealed hidden network name: ${ssid} (BSSID: ${bssid})" \
-            --rationale "Revealed names provide further targets for assessment and indicate that clients are actively connecting to the hidden infrastructure." \
             --evidence "$OUTPUT_CSV"
-        ((REVEALED_COUNT++))
+        REVEALED_COUNT=$((REVEALED_COUNT + 1))
     done < "$REVEALED_FILE"
 fi
 
 if [[ $REVEALED_COUNT -eq 0 ]]; then
-    echo "[+] No hidden SSIDs were deanonymized."
-    $ASTRA_BIN record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type vulnerability \
-        --name "A3 Audit Complete" \
-        --severity INFO \
-        --desc "Scan completed. No previously hidden SSIDs were revealed." \
-        --rationale "Hidden SSID reveal is dependent on client interaction occurring during the monitoring window."
+    echo -e "[+] No hidden SSIDs deanonymized in this window."
 fi
 
 exit 0
