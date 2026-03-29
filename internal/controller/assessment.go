@@ -30,9 +30,10 @@ type AssessmentController struct {
 
 func NewAssessmentController(s *session.Session, mgr *executor.Manager, modDir string) *AssessmentController {
 	return &AssessmentController{
-		Session: s,
-		ExecMgr: mgr,
-		ModDir:  modDir,
+		Session:      s,
+		ExecMgr:      mgr,
+		ModDir:       modDir,
+		SupportProcs: make(map[string]*executor.Process),
 	}
 }
 
@@ -303,20 +304,85 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 	env = append(env, "ASTRA_COLOR_PROMPT=\033[1;34m")
 	env = append(env, "ASTRA_COLOR_VAR=\033[1;33m")
 	env = append(env, "ASTRA_COLOR_BOLD=\033[1m")
+	env = append(env, "ASTRA_COLOR_ACTION=\033[1;37;44m") // Bold White on Blue Background
 	env = append(env, "ASTRA_COLOR_RESET=\033[0m")
 
 	logging.Info("Starting module %s...", tcID)
 
 	// RESTORE TERMINAL STATE: Close readline before running the module
-	// This ensures the child process has a "clean" TTY for input.
 	ui.GetManager().Close()
+
+	// 🛰️ SMART PROGRESS MONITOR
+	pm := ui.NewProgressMonitor(tcID)
+	pm.Start(func() (int, string, bool) {
+		var p int
+		var s string
+		var updatedAt string
+		err := c.Session.DB.QueryRow("SELECT percent, status_text, updated_at FROM module_progress WHERE tc_id = ?", tcID).Scan(&p, &s, &updatedAt)
+		if err != nil {
+			return 0, "Initializing...", false
+		}
+		
+		// Stuck Detection: If not updated in 30s
+		t, _ := time.Parse("2006-01-02 15:04:05", updatedAt)
+		// SQLite CURRENT_TIMESTAMP is UTC
+		stuck := time.Since(t.UTC()).Seconds() > 30
+		
+		return p, s, stuck
+	})
+	defer pm.Stop()
 
 	ctx := context.Background()
 	exitCode, err := c.ExecMgr.RunWithEnv(ctx, tcID, matches[0], []string{}, logFile, env)
 	return exitCode, err
 }
 
-func (c *AssessmentController) DisplayEvidence(tcID string) {
+func (c *AssessmentController) LaunchSupportModule(tcID string) error {
+	// Find the module
+	modules, _ := module.DiscoverModules(c.ModDir)
+	var m *module.Module
+	for _, mod := range modules {
+		if mod.ID == tcID {
+			m = &mod
+			break
+		}
+	}
+	if m == nil {
+		return fmt.Errorf("support module %s not found", tcID)
+	}
+
+	logging.Info("Launching background support module: %s...", m.Name)
+	
+	// Prepare environment (re-use logic from runModuleWithCode)
+	// For brevity, we'll implement a helper or inline it
+	env := os.Environ()
+	env = append(env, fmt.Sprintf("%s=%s", constants.ConfigSessionID, c.Session.ID))
+	env = append(env, fmt.Sprintf("SESSION_DIR=%s", c.Session.BaseDir))
+	env = append(env, fmt.Sprintf("SESSION_EVIDENCE_DIR=%s", c.Session.EvidenceDir))
+	
+	// Re-load config from DB
+	rows, _ := c.Session.DB.Query("SELECT key, value FROM config")
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		rows.Scan(&k, &v)
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	logFile := filepath.Join(c.Session.LogDir, fmt.Sprintf("%s_bg.log", strings.ToLower(tcID)))
+	
+	modFile := filepath.Join(c.ModDir, fmt.Sprintf("%s_*.sh", strings.ToLower(tcID)))
+	matches, _ := filepath.Glob(modFile)
+	
+	proc, err := c.ExecMgr.SpawnWithEnv(context.Background(), tcID+"_bg", matches[0], []string{}, logFile, env)
+	if err != nil {
+		return err
+	}
+	
+	c.SupportProcs[tcID] = proc
+	logging.Success("Support module %s is now running in the background.", tcID)
+	return nil
+}
 	fmt.Println("\n📁 [Generated Evidence]")
 	files, _ := os.ReadDir(c.Session.EvidenceDir)
 	evidenceFound := false

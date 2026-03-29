@@ -91,6 +91,12 @@ func InitDB(path string) (*sql.DB, error) {
 			rationale TEXT,
 			detected_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS module_progress (
+			tc_id TEXT PRIMARY KEY,
+			percent INTEGER DEFAULT 0,
+			status_text TEXT,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 	}
 
 	for _, schema := range schemas {

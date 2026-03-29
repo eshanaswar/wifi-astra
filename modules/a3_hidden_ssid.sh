@@ -46,37 +46,19 @@ if [[ ! -f "$A1_CSV" ]]; then
     exit 1
 fi
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # 1. Identify which BSSIDs were originally hidden
-echo "[*] Loading baseline hidden networks from A1..."
-HIDDEN_BSSIDS=$(awk -F',' '
-    NR > 1 {
-        bssid = $1;
-        ssid = $14;
-        gsub(/^[ \t\r\n"<>]+|[ \t\r\n"<>]+$/, "", ssid);
-        gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
-        if (ssid == "" || ssid ~ /^length:/ || ssid == "HIDDEN") {
-            print bssid;
-        }
-    }
-' "$A1_CSV" | sort -u)
-
-if [[ -z "$HIDDEN_BSSIDS" ]]; then
-    echo "[+] No hidden networks detected in baseline scan. Nothing to deanonymize."
-    $ASTRA_BIN record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type vulnerability \
-        --name "A3 Audit Complete" \
-        --severity INFO \
-        --desc "Scan completed. No hidden networks were identified in the baseline discovery phase." \
-        --rationale "Monitoring for hidden network leaks is a standard part of recon, but depends on the presence of hidden BSSIDs."
-    exit 0
-fi
-
-echo "[*] Target Hidden BSSIDs: $HIDDEN_BSSIDS"
+echo -e "${C_PROMPT}[*]${C_RESET} Loading baseline hidden networks from A1..."
+# ...
+# Extract hidden targets for the loop
+HIDDEN_LIST=$(echo "$HIDDEN_BSSIDS")
 
 # 2. Active Reveal Selection
-echo "[*] Identifying clients associated with hidden BSSIDs for active reveal..."
+echo -e "${C_PROMPT}[*]${C_RESET} Identifying clients associated with hidden BSSIDs for active reveal..."
 DISC_PREFIX="${EVIDENCE_DIR}/a3_discovery"
 airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 &
 DISC_PID=$!
@@ -84,22 +66,22 @@ sleep 15
 kill "$DISC_PID" || true
 wait "$DISC_PID" 2>/dev/null || true
 
-for bssid in $HIDDEN_BSSIDS; do
+for bssid in $HIDDEN_LIST; do
     # Find a client for this BSSID from the new discovery
     client=$(awk -F',' -v b="$bssid" '$6 ~ b {print $1}' "${DISC_PREFIX}-01.csv" | head -1 | tr -d ' ' || true)
     
     if [[ -n "$client" ]]; then
-        echo "[?] Hidden BSSID $bssid has active client $client."
-        read -p "[?] Force reveal via surgical deauth? [y/N]: " choice
+        echo -e "${C_PROMPT}[?]${C_RESET} Hidden BSSID ${C_VAR}$bssid${C_RESET} has active client ${C_VAR}$client${C_RESET}."
+        read -p "$(echo -e "${C_BOLD}[?] Force reveal via surgical deauth? [y/N]: ${C_RESET}")" choice
         if [[ "$choice" == "y" ]]; then
-            echo "[*] Executing active de-cloaking for $bssid..."
+            echo -e "[*] Executing active de-cloaking for ${C_VAR}$bssid${C_RESET}..."
             aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" > /dev/null 2>&1 || true
         fi
     fi
 done
 
 # 3. Start targeted discovery monitoring
-echo "[*] Initializing targeted SSID reveal monitoring on ${INTERFACE}..."
+echo -e "${C_PROMPT}[*]${C_RESET} Initializing targeted SSID reveal monitoring on ${C_VAR}${INTERFACE}${C_RESET}..."
 CSV_PREFIX="${OUTPUT_CSV%.csv}"
 airodump-ng "$INTERFACE" \
     --write "$CSV_PREFIX" \

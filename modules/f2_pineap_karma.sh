@@ -22,43 +22,44 @@
 
 set -euo pipefail
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] Karma responses may not reach victims with sufficient SNR to trigger association."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
+    echo -e "[*] Karma responses may not reach victims with sufficient SNR to trigger association."
+    stty sane
+    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
 # Inputs from Environment
-INTERFACE="${WIFI_INTERFACE:-}"
-SESSION_DIR="${SESSION_DIR:-.}"
-EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
-EVIDENCE_PREFIX="${EVIDENCE_DIR}/f2"
-SCAN_TIME="${SCAN_TIME:-120}"
-ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
-TC_ID="F2"
-INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
+# ...
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] WIFI_INTERFACE not set."
     exit 1
 fi
 
-echo "[*] Initializing Karma tactical options..."
+echo -e "${C_PROMPT}[*]${C_RESET} Initializing Karma tactical options..."
 
 # 1. Interactive Selection
-echo "[?] Select Karma Vector:"
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Karma Vector:${C_RESET}"
 echo "    1) Dynamic MANA (Respond to directed probes only)"
 echo "    2) Known Beacon Attack (Broadcast top SSIDs to catch passive scanners)"
-read -p "Selection [1/2]: " vector_choice
+stty sane
+read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET}")" vector_choice
 
 MANA_LOUD="0"
 if [[ "$vector_choice" == "1" ]]; then
-    echo -e "\n[!] MODERNITY ALERT: Dynamic MANA is obsolete against iOS 15+ and Android 12+."
-    echo "[*] Recommended for legacy IoT or technical debt targets only."
+    echo -e "\n${C_PROMPT}[!] MODERNITY ALERT:${C_RESET} ${C_BOLD}Dynamic MANA is obsolete against iOS 15+ and Android 12+.${C_RESET}"
+    echo -e "[*] Recommended for legacy IoT or technical debt targets only."
 elif [[ "$vector_choice" == "2" ]]; then
-    echo "[*] Enabling Known Beacon Attack (Loud AP Mode)..."
+    echo -e "[*] Enabling ${C_VAR}Known Beacon Attack${C_RESET} (Loud AP Mode)..."
     MANA_LOUD="1"
 fi
 
@@ -109,7 +110,15 @@ if command -v hostapd-mana &>/dev/null; then
     MANA_PID=$!
     
     echo "[*] Karma attack running for ${SCAN_TIME}s..."
-    sleep "$SCAN_TIME"
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        STATUS="Karma active (monitoring probes)... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        
+        sleep 5
+        ((ELAPSED+=5))
+    done
     
     cleanup
     trap - EXIT

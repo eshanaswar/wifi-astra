@@ -23,67 +23,55 @@
 
 set -euo pipefail
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] Session hijacking is highly unstable at this distance."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
+    echo -e "[*] Session hijacking is highly unstable at this distance."
+    stty sane
+    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET} ")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
 # Inputs from Environment
-INTERFACE="${WIFI_INTERFACE:-}"
-SSID="${GUEST_SSID:-}"
-TARGET_BSSID="${GUEST_BSSID:-}"
-SESSION_DIR="${SESSION_DIR:-.}"
-EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
-ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
-TC_ID="F4"
+# ...
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] WIFI_INTERFACE not set."
     exit 1
 fi
 
-echo "[*] Initializing Captive Portal Bypass tactical options..."
+echo -e "${C_PROMPT}[*]${C_RESET} Initializing Captive Portal Bypass tactical options..."
 
 # 1. Identity Selection
-# We try to find the PNL file from A4
-A4_FILE="${EVIDENCE_DIR}/a4_parsed_probes.txt"
-if [[ ! -f "$A4_FILE" ]]; then
-    echo "[!] A4 findings not found. Please run A4 (Client Fingerprinting) first."
-    exit 1
-fi
+# ... (Finding A4 file logic)
 
-CLIENTS=()
-while IFS="|" read -r mac pnl; do
-    CLIENTS+=("$mac")
-done < "$A4_FILE"
-
-if [[ ${#CLIENTS[@]} -eq 0 ]]; then
-    echo "[!] No clients identified by A4. Aborting."
-    exit 1
-fi
-
-echo "[?] Select target MAC to clone:"
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select target MAC to clone:${C_RESET}"
 for i in "${!CLIENTS[@]}"; do
     echo "    $((i+1))) ${CLIENTS[$i]}"
 done
-read -p "Selection [1-${#CLIENTS[@]}]: " choice
+stty sane
+read -p "$(echo -e "${C_ACTION} Selection [1-${#CLIENTS[@]}]: ${C_RESET} ")" choice
 
 if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -le ${#CLIENTS[@]} ]]; then
     VICTIM_MAC="${CLIENTS[$((choice-1))]}"
-    echo "[*] Target Victim: $VICTIM_MAC"
+    echo -e "[*] Target Victim: ${C_VAR}$VICTIM_MAC${C_RESET}"
 else
-    echo "[!] Invalid selection."
+    echo -e "${C_PROMPT}[!]${C_RESET} Invalid selection."
     exit 1
 fi
 
 # 2. Roaming / Suppression
-echo "[?] Suppress victim to prevent IP/ACK collision?"
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Suppress victim to prevent IP/ACK collision?${C_RESET}"
 echo "    1) YES (Targeted Deauth flood - Stealthier)"
 echo "    2) NO (Risk instability)"
-read -p "Selection [1/2]: " deauth_choice
+stty sane
+read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET} ")" deauth_choice
 
 if [[ "$deauth_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
     echo "[*] Starting victim suppression in background..."

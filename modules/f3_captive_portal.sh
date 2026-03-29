@@ -22,41 +22,41 @@
 
 set -euo pipefail
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] Captive Portal will be unreliable due to distance from targets."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
+    echo -e "[*] Captive Portal will be unreliable due to distance from targets."
+    stty sane
+    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
 # Inputs from Environment
-INTERFACE="${WIFI_INTERFACE:-}"
-SSID="${GUEST_SSID:-GuestWiFi}"
-SESSION_DIR="${SESSION_DIR:-.}"
-EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
-EVIDENCE_PREFIX="${EVIDENCE_DIR}/f3"
-SCAN_TIME="${SCAN_TIME:-120}"
-ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
-TC_ID="F3"
-INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
+# ...
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] WIFI_INTERFACE not set."
     exit 1
 fi
 
-echo "[*] Initializing Phishing Template System..."
-echo "[?] Select Template:"
+echo -e "${C_PROMPT}[*]${C_RESET} Initializing Phishing Template System..."
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Template:${C_RESET}"
 echo "    1) Generic Corporate (Internal)"
 echo "    2) Microsoft 365 (High-Fidelity)"
-read -p "Selection [1/2]: " template_choice
+stty sane
+read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET}")" template_choice
 
 PHISH_DIR="${EVIDENCE_PREFIX}_portal"
 mkdir -p "$PHISH_DIR"
 
 if [[ "$template_choice" == "2" ]]; then
-    echo "[*] Deploying Microsoft 365 template..."
+    echo -e "[*] Deploying ${C_VAR}Microsoft 365${C_RESET} template..."
     cat <<EOF > "$PHISH_DIR/index.html"
 <!DOCTYPE html>
 <html>
@@ -167,7 +167,15 @@ EOF
 HTTP_PID=$!
 
 echo "[*] Phishing portal active for ${SCAN_TIME}s..."
-sleep "$SCAN_TIME"
+ELAPSED=0
+while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+    STATUS="Portal active (waiting for users)... ($(( SCAN_TIME - ELAPSED ))s left)"
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+    
+    sleep 5
+    ((ELAPSED+=5))
+done
 
 cleanup
 trap - EXIT

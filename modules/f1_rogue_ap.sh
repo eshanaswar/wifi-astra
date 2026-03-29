@@ -23,56 +23,56 @@
 
 set -euo pipefail
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
-    echo "[*] Rogue AP will be significantly weaker than the legitimate AP, making roams unlikely."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
+    echo -e "[*] Rogue AP will be significantly weaker than the legitimate AP, making roams unlikely."
+    stty sane
+    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
 # Inputs from Environment
-INTERFACE="${WIFI_INTERFACE:-}"
-SSID="${GUEST_SSID:-}"
-TARGET_BSSID="${GUEST_BSSID:-}"
-SESSION_DIR="${SESSION_DIR:-.}"
-EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
-EVIDENCE_PREFIX="${EVIDENCE_DIR}/f1"
-SCAN_TIME="${SCAN_TIME:-120}"
-ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
-TC_ID="F1"
-INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
+# ...
 
 if [[ -z "$INTERFACE" || -z "$SSID" ]]; then
     echo "[!] WIFI_INTERFACE or GUEST_SSID not set."
     exit 1
 fi
 
-echo "[*] Initializing Rogue AP tactical options..."
+echo -e "${C_PROMPT}[*]${C_RESET} Initializing Rogue AP tactical options..."
 
 # Intelligence Insight
 if [[ "${ASTRA_TARGET_PMF:-}" != "None" ]]; then
-    echo -e "\n[!] INTELLIGENCE ALERT: Target supports PMF (802.11w)."
-    echo "[*] Deauthentication may be ignored. CSA Catalyst (Option 3) is recommended."
+    echo -e "\n${C_PROMPT}[!] INTELLIGENCE ALERT:${C_RESET} ${C_BOLD}Target supports PMF (802.11w).${C_RESET}"
+    echo -e "[*] Deauthentication may be ignored. CSA Catalyst (Option 3) is recommended."
 fi
 
 # 1. Interactive Selection
-echo "[?] Select Rogue AP Mode:"
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Rogue AP Mode:${C_RESET}"
 echo "    1) SSID Only (Random BSSID)"
-echo "    2) BSSID Clone (Match Target AP MAC: ${TARGET_BSSID:-Unknown})"
-read -p "Selection [1/2]: " mode_choice
+echo -e "    2) BSSID Clone (Match Target AP MAC: ${C_VAR}${TARGET_BSSID:-Unknown}${C_RESET})"
+stty sane
+read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET}")" mode_choice
 
 BSSID_LINE=""
 if [[ "$mode_choice" == "2" ]] && [[ -n "$TARGET_BSSID" ]]; then
-    echo "[*] Cloning BSSID: $TARGET_BSSID"
+    echo -e "[*] Cloning BSSID: ${C_VAR}$TARGET_BSSID${C_RESET}"
     BSSID_LINE="bssid=$TARGET_BSSID"
 fi
 
-echo "[?] Select Roaming Catalyst:"
+echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Roaming Catalyst:${C_RESET}"
 echo "    1) None (Wait for natural roam)"
 echo "    2) Targeted Deauth (Surgical)"
 echo "    3) CSA (Channel Switch Announcement - Stealthier)"
-read -p "Selection [1-3]: " catalyst_choice
+stty sane
+read -p "$(echo -e "${C_ACTION} Selection [1-3]: ${C_RESET}")" catalyst_choice
 
 # 2. Configuration
 HOSTAPD_CONF="${EVIDENCE_PREFIX}_hostapd.conf"
@@ -139,8 +139,25 @@ elif [[ "$catalyst_choice" == "3" ]] && [[ -n "$TARGET_BSSID" ]]; then
     fi
 fi
 
-echo "[*] Rogue AP active for ${SCAN_TIME}s. Monitoring for connections..."
-sleep "$SCAN_TIME"
+echo -e "${C_PROMPT}[*]${C_RESET} Rogue AP active for ${C_VAR}${SCAN_TIME}s${C_RESET}. Monitoring for connections..."
+
+# Support Module Hook: Responder (Spec Section 5)
+stty sane
+read -p "$(echo -e "${C_ACTION} [?] Launch Responder pivot in background? [y/N]: ${C_RESET}")" responder_choice
+if [[ "$responder_choice" == "y" ]]; then
+    echo -e "${C_PROMPT}[*]${C_RESET} Spawning Responder support module..."
+    "$ASTRA_BIN" launch-support --tc "G6" --session-dir "$SESSION_DIR"
+fi
+
+ELAPSED=0
+while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+    STATUS="AP active (monitoring for roams)... ($(( SCAN_TIME - ELAPSED ))s left)"
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+    
+    sleep 5
+    ((ELAPSED+=5))
+done
 
 # 4. Cleanup early to finalize logs
 cleanup

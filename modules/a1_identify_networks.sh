@@ -36,12 +36,16 @@ fi
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
+
+# TTY Hardening: Ensure cooked mode and echo are on for the prompt
+stty sane
 
 echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Scan Depth:${C_RESET}"
 echo "    1) Standard (60s)"
 echo "    2) Deep Scan (120s - Recommended for DFS/5GHz)"
-read -p "$(echo -e "${C_BOLD}Selection [1/2]: ${C_RESET}")" depth_choice
+read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET} ")" depth_choice
 
 if [[ "$depth_choice" == "2" ]]; then
     SCAN_TIME=120
@@ -62,8 +66,19 @@ airodump-ng "$INTERFACE" \
     --band abg > "${EVIDENCE_DIR}/${TC_ID}_airodump.log" 2>&1 &
 AIRODUMP_PID=$!
 
-# Wait for the specified time
-sleep "$SCAN_TIME"
+# Wait for the specified time with real-time progress updates
+ELAPSED=0
+while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+    STATUS="Scanning channels... ($(( SCAN_TIME - ELAPSED ))s left)"
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+    
+    sleep 2
+    ((ELAPSED+=2))
+done
+
+# Final progress
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Scan complete. Processing results..."
 
 # Stop airodump-ng
 kill "$AIRODUMP_PID" || true
