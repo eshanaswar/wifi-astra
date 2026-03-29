@@ -17,11 +17,18 @@
 
 set -euo pipefail
 
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
+
 # SNR Safeguard (Red Team Hardening)
 if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
     echo -e "\n[!] WARNING: Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm)."
     echo "[*] OWE scanning/spoofing is unreliable at this distance."
-    read -p "[?] Continue anyway? [y/N]: " snr_continue
+    stty sane
+    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET} ")" snr_continue
     [[ "$snr_continue" != "y" ]] && exit 0
 fi
 
