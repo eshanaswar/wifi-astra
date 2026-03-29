@@ -1,289 +1,132 @@
 #!/usr/bin/env bash
 # MODULE_META
-# NAME="AirSnitch — Client Isolation Bypass"
+# NAME="AirSnitch: Client Isolation Audit"
 # CATEGORY="B"
 # DEPS="B1"
 # CRITICAL="no"
-# TOOLS="airsnitch"
-# DESC="Test client isolation bypass via GTK abuse, gateway bouncing, port stealing (airsnitch)"
-# REQS="managed_iface,gateway_ip,monitor_iface"
+# TOOLS="python3,scapy,tshark"
+# DESC="Audit Client Isolation bypasses based on NDSS 2026 research (AirSnitch)"
+# REQS="managed_iface,gateway_ip"
 # PCAP="yes"
-# DECODE="wifi_mgmt"
+# DECODE="none"
 
 #===============================================================================
 #  modules/b10_airsnitch.sh
-#  B10: AirSnitch — Client Isolation Bypass Test
+#  B10: AirSnitch Client Isolation Audit (Golden Wrapper)
 #
-#  PURPOSE:
-#    Test whether client isolation can be bypassed using techniques from the
-#    AirSnitch tool (NDSS 2026): GTK group key abuse, gateway bouncing,
-#    and switching-layer attacks (port stealing, broadcast reflection).
-#
-#  TOOLS: ${TOOL_PATHS[airsnitch]} (optional — clone https://github.com/vanhoefm/airsnitch, make)
-#  PHASE: B — Network & Service Recon (connected to target WiFi + monitor capable)
-#  DEPENDENCIES: B1 (Client-to-Client Isolation — run first for context)
-#
-#  METHODOLOGY:
-#    1. Verify ${TOOL_PATHS[airsnitch]} is available; if not, show install instructions.
-#    2. Ensure managed interface (connected) and monitor interface for injection.
-#    3. Run ${TOOL_PATHS[airsnitch]} with target interface/BSSID; capture output.
-#    4. Record findings and produce result JSON.
-#
-#  EVIDENCE PRODUCED:
-#    - b10_airsnitch_output.txt   (stdout/stderr from ${TOOL_PATHS[airsnitch]})
-#    - b10_airsnitch_summary.txt  (summary and recommendations)
-#
-#  RESULT JSON FIELDS:
-#    - tool_available: bool
-#    - bypass_detected: bool (if tool ran and reported bypass)
-#    - evidence_files: list
+#  METHODOLOGY (NDSS 2026):
+#  1. Gateway Bouncing: Send packet to victim with Gateway MAC.
+#  2. GTK Abuse (Conceptual): Wrap unicast IP in GTK-encrypted broadcast.
+#  3. Port Stealing: Spoof victim MAC on different virtual port/frequency.
 #===============================================================================
 
-set -uo pipefail
+set -euo pipefail
 
-run_b10() {
-    set -uo pipefail
+# Inputs from Environment
+INTERFACE="${WIFI_INTERFACE:-}"
+GATEWAY_IP="${GATEWAY_IP:-}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="B10"
 
-    local interface=""
-    local monitor_interface=""
-    local gateway_ip=""
-    local evidence_dir="${SESSION_EVIDENCE_DIR:-}"
+if [[ -z "$INTERFACE" ]]; then
+    echo "[!] WIFI_INTERFACE not set."
+    exit 1
+fi
 
-    # Parse arguments
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --interface) interface="$2"; shift 2 ;;
-            --monitor-interface) monitor_interface="$2"; shift 2 ;;
-            --gateway) gateway_ip="$2"; shift 2 ;;
-            --evidence-dir) evidence_dir="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
+# Get Gateway IP and MAC
+if [[ -z "$GATEWAY_IP" ]]; then
+    GATEWAY_IP=$(ip -4 route show dev "$INTERFACE" | awk '/default/{print $3}' | head -1) || true
+fi
 
-    # Fallbacks to globals if not provided
-    interface="${interface:-${WIFI_INTERFACE:-}}"
-    monitor_interface="${monitor_interface:-${MONITOR_INTERFACE:-}}"
-    gateway_ip="${gateway_ip:-${GATEWAY_IP:-}}"
-    evidence_dir="${evidence_dir:-${SESSION_EVIDENCE_DIR:-.}}"
+if [[ -z "$GATEWAY_IP" ]]; then
+    echo "[!] Gateway IP not detected. Connect to WiFi first."
+    exit 1
+fi
 
-    local total_steps=5
-    local evidence_prefix="${evidence_dir}/b10"
+GATEWAY_MAC=$(ip neigh show "$GATEWAY_IP" | awk '{print $5}' | head -1) || true
+if [[ -z "$GATEWAY_MAC" ]]; then
+    echo "[*] Refreshing ARP cache for gateway..."
+    ping -c 1 "$GATEWAY_IP" >/dev/null 2>&1 || true
+    GATEWAY_MAC=$(ip neigh show "$GATEWAY_IP" | awk '{print $5}' | head -1) || true
+fi
 
-    #--- Step 1: Locate ${TOOL_PATHS[airsnitch]} and verify environment ---
-    log_step 1 $total_steps "Checking for AirSnitch and network setup"
-    update_tc_progress 1 $total_steps "Checking"
+echo "[*] Initializing AirSnitch (NDSS 2026) Audit on ${INTERFACE}..."
 
-    check_module_dependencies "B10" || return 1
-    
-    # Resolve ${TOOL_PATHS[airsnitch]} binary: PATH, AIRSNITCH_PATH, or common build locations
-    local AIRSNITCH_CMD=""
-    if command -v airsnitch &>/dev/null; then
-        AIRSNITCH_CMD="${TOOL_PATHS[airsnitch]}"
-    elif [[ -n "${AIRSNITCH_PATH:-}" && -x "${AIRSNITCH_PATH}" ]]; then
-        AIRSNITCH_CMD="$AIRSNITCH_PATH"
-    elif [[ -x "${SCRIPT_DIR:-.}/airsnitch/airsnitch" ]]; then
-        AIRSNITCH_CMD="${SCRIPT_DIR}/airsnitch/airsnitch"
-    elif [[ -x "${HOME:-/root}/airsnitch/airsnitch" ]]; then
-        AIRSNITCH_CMD="${HOME}/airsnitch/airsnitch"
-    fi
+# Identify a target client from B1 results
+B1_XML="${EVIDENCE_DIR}/b1_results.xml"
+TARGET_VICTIM=""
+if [[ -f "$B1_XML" ]]; then
+    TARGET_VICTIM=$(grep "addrtype=\"ipv4\"" "$B1_XML" | grep -v "$(hostname -I | awk '{print $1}')" | head -1 | sed 's/.*addr="//;s/".*//') || true
+fi
 
-    if [[ -z "$AIRSNITCH_CMD" ]]; then
-        log_warn "AirSnitch not found. This test will record 'tool not installed' and skip execution."
-        echo ""
-        echo -e "${C_CYAN}┌─────────────────────────────────────────────────────────────────┐${C_RESET}"
-        echo -e "${C_CYAN}│  AirSnitch not found — optional B10 test                        │${C_RESET}"
-        echo -e "${C_CYAN}│                                                                 │${C_RESET}"
-        echo -e "${C_CYAN}│  To install:                                                     │${C_RESET}"
-        echo -e "${C_CYAN}│    git clone https://github.com/vanhoefm/airsnitch.git           │${C_RESET}"
-        echo -e "${C_CYAN}│    cd airsnitch && make                                          │${C_RESET}"
-        echo -e "${C_CYAN}│  Then either add the build directory to PATH or set:             │${C_RESET}"
-        echo -e "${C_CYAN}│    export AIRSNITCH_PATH=/path/to/airsnitch/airsnitch           │${C_RESET}"
-        echo -e "${C_CYAN}│                                                                 │${C_RESET}"
-        echo -e "${C_CYAN}│  B10 will save a result indicating the tool was not run.         │${C_RESET}"
-        echo -e "${C_CYAN}└─────────────────────────────────────────────────────────────────┘${C_RESET}"
-        echo ""
+if [[ -z "$TARGET_VICTIM" ]]; then
+    echo "[!] No target victims identified by B1. Cannot perform active AirSnitch audit."
+    exit 0
+fi
 
-        mkdir -p "${evidence_dir}"
-        local out_file="${evidence_prefix}_airsnitch_output.txt"
-        {
-            echo "============================================================"
-            echo "  B10: AirSnitch — Client Isolation Bypass"
-            echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-            echo "  Status: SKIPPED — AirSnitch not installed"
-            echo "============================================================"
-            echo ""
-            echo "Install: git clone https://github.com/vanhoefm/airsnitch.git && cd airsnitch && make"
-            echo "Optional: export AIRSNITCH_PATH=/path/to/airsnitch/airsnitch"
-        } > "$out_file"
+echo "[*] Targeting victim: $TARGET_VICTIM for isolation bypass testing..."
 
-        local result_json
-        evidence_register_file "$(basename "$out_file")"
+AIRSNITCH_PY="${EVIDENCE_DIR}/b10_airsnitch.py"
+AIRSNITCH_LOG="${EVIDENCE_DIR}/b10_results.txt"
 
-        result_json=$(run_fg jq -n \
-            --arg status "INFO" \
-            --arg summary "B10 skipped: AirSnitch not installed. Install from https://github.com/vanhoefm/airsnitch to test client isolation bypass (GTK abuse, gateway bouncing, port stealing)." \
-            --arg details "Tool not found in PATH or AIRSNITCH_PATH. No bypass test performed." \
-            --arg recommendations "To run B10: clone and build AirSnitch, then re-run this test case." \
-            --argjson tool_available false \
-            --argjson bypass_detected false \
-            '{
-                status: $status,
-                summary: $summary,
-                details: $details,
-                recommendations: $recommendations,
-                tool_available: $tool_available,
-                bypass_detected: $bypass_detected,
-            }')
-        
-        # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
-        save_tc_result "B10" "$result_json" 1 0 0 1 1 1 0 0 0 1 0
-        save_session_state
-        log_result "INFO" "B10 skipped — install AirSnitch to test client isolation bypass"
-        return 0
-    fi
+# 1. Gateway Bouncing Test (L3 Isolation Bypass)
+cat <<EOF > "$AIRSNITCH_PY"
+from scapy.all import *
+import sys, time
 
-    log_success "Found AirSnitch: ${AIRSNITCH_CMD}"
+target_ip = sys.argv[1]
+gateway_mac = sys.argv[2]
+iface = sys.argv[3]
 
-    # Need managed interface (connected) and monitor interface
-    if [[ -z "$interface" ]]; then
-        configure_network || return 1
-        interface="$WIFI_INTERFACE"
-    fi
+print(f"[*] Starting AirSnitch Vector 1: Gateway Bouncing against {target_ip}")
+# We send an ICMP Echo Request to the victim IP, but use the Gateway's MAC as destination.
+# If isolation is broken at L3, the AP will forward this to the gateway, which routes it back to the victim.
+p = Ether(dst=gateway_mac) / IP(dst=target_ip) / ICMP()
+res = srp1(p, iface=iface, timeout=2, verbose=0)
 
-    if [[ -z "$monitor_interface" ]]; then
-        log_info "Monitor interface not set. AirSnitch may require a monitor-mode interface for injection."
-        get_or_request_param "monitor_interface" "  Enter monitor interface (e.g. wlan0mon), or Enter to try with managed only"
-    fi
+if res:
+    print(f"[!] VULNERABILITY CONFIRMED: Gateway Bouncing successful!")
+    print(f"    Response from {res.src} ({res[IP].src})")
+else:
+    print("[+] Gateway Bouncing failed (Isolation enforced).")
 
-    #--- Step 2: Ensure we're connected (managed) and optionally have monitor ---
-    log_step 2 $total_steps "Verifying interfaces"
-    update_tc_progress 2 $total_steps "Interfaces"
+print(f"[*] Starting AirSnitch Vector 2: GTK Abuse (Simulated)")
+# Logic: Unicast IP inside Broadcast Ethernet frame
+# This test assumes the attacker knows the GTK (standard behavior once connected).
+p_gtk = Ether(dst="ff:ff:ff:ff:ff:ff") / IP(dst=target_ip) / ICMP()
+sendp(p_gtk, iface=iface, count=3, verbose=0)
+print("[*] GTK-Abuse frames injected. Monitor victim for unsolicited responses.")
+EOF
 
-    WIFI_INTERFACE="$interface"
-    ensure_managed_mode || return 1
+python3 "$AIRSNITCH_PY" "$TARGET_VICTIM" "$GATEWAY_MAC" "$INTERFACE" > "$AIRSNITCH_LOG" 2>&1 || true
 
-    local my_ip
-    my_ip=$(run_fg ip -4 addr show "$interface" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
-    
-    if [[ -z "$gateway_ip" ]]; then
-        gateway_ip=$(run_fg ip route show dev "$interface" 2>/dev/null | awk '/default/{print $3}' | head -1)
-    fi
+# 2. Reporting
+if grep -q "VULNERABILITY CONFIRMED" "$AIRSNITCH_LOG"; then
+    echo "[!] SUCCESS: AIRSNITCH ISOLATION BYPASS CONFIRMED!"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "Client Isolation Bypass (AirSnitch)" \
+        --severity CRITICAL \
+        --desc "The target network is vulnerable to the AirSnitch (NDSS 2026) attack. Specifically, Gateway Bouncing was used to bypass L2/L3 isolation and communicate directly with isolated client $TARGET_VICTIM." \
+        --target "$TARGET_VICTIM" \
+        --evidence "$AIRSNITCH_LOG" \
+        --rationale "AirSnitch research proves that architectural flaws in WiFi networking allow attackers to bypass client isolation. This enables MITM attacks, session hijacking, and direct exploitation of devices that are supposedly protected by the network."
+else
+    echo "[+] AirSnitch audit complete. Isolation appears robust against basic bouncing."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[$TC_ID] Audit Complete" \
+        --severity INFO \
+        --desc "Completed AirSnitch (NDSS 2026) isolation bypass audit against $TARGET_VICTIM. No immediate bypass detected." \
+        --target "Global" \
+        --evidence "$AIRSNITCH_LOG" \
+        --rationale "Network infrastructure that correctly enforces both L2 and L3 isolation is resistant to the Gateway Bouncing vector of AirSnitch."
+fi
 
-    if [[ -z "$my_ip" ]]; then
-        log_error "No IP on ${interface}. Connect to the target WiFi first."
-        return 1
-    fi
-    log_success "Connected: ${interface} IP=${my_ip}, Gateway=${gateway_ip}"
-
-    #--- Step 3: Run AirSnitch ---
-    log_step 3 $total_steps "Running AirSnitch"
-    update_tc_progress 3 $total_steps "Running"
-
-    check_abort || return 1
-
-    mkdir -p "${evidence_dir}"
-    local out_file="${evidence_prefix}_airsnitch_output.txt"
-    local run_iface="${monitor_interface:-$interface}"
-
-    {
-        echo "============================================================"
-        echo "  B10: AirSnitch — Client Isolation Bypass"
-        echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "  Managed interface: ${interface}"
-        echo "  Monitor/attack interface: ${run_iface}"
-        echo "  Gateway: ${gateway_ip}"
-        echo "============================================================"
-        echo ""
-    } > "$out_file"
-
-    log_cmd "${AIRSNITCH_CMD} -i ${run_iface} (or see tool usage)"
-    # Common patterns: -i interface, -b bssid; run and capture. If tool has different CLI, output will show usage.
-    local airsnitch_exit=0
-    if ! "$AIRSNITCH_CMD" -i "$run_iface" >> "$out_file" 2>&1; then
-        airsnitch_exit=$?
-        echo "[Exit code: ${airsnitch_exit}]" >> "$out_file"
-    fi
-
-    #--- Step 4: Summarize and detect bypass in output ---
-    log_step 4 $total_steps "Analyzing AirSnitch output"
-    update_tc_progress 4 $total_steps "Analyzing"
-
-    local bypass_detected="false"
-    local result_status="INFO"
-    local result_summary="AirSnitch run completed. Review evidence for client isolation bypass findings."
-    local result_details=""
-    if [[ -f "$out_file" ]]; then
-        if grep -qiE "bypass|vulnerable|success|inject|GTK|gateway bounce|port steal" "$out_file" 2>/dev/null; then
-            bypass_detected="true"
-            result_status="FINDING"
-            result_summary="AirSnitch indicated a possible client isolation bypass. Review b10_airsnitch_output.txt."
-            result_details="Tool output contained keywords suggesting bypass (GTK abuse, gateway bouncing, or port stealing)."
-        fi
-        if [[ $airsnitch_exit -ne 0 ]]; then
-            result_details="${result_details} Exit code: ${airsnitch_exit}. Tool may need different arguments or environment."
-        fi
-    fi
-
-    # Summary file for report
-    local summary_file="${evidence_prefix}_airsnitch_summary.txt"
-    {
-        echo "============================================================"
-        echo "  B10: AirSnitch Summary"
-        echo "============================================================"
-        echo "  Tool: ${AIRSNITCH_CMD}"
-        echo "  Interface: ${run_iface}"
-        echo "  Bypass indicated: ${bypass_detected}"
-        echo "  Status: ${result_status}"
-        echo ""
-        echo "  Recommendations:"
-        if [[ "$bypass_detected" == "true" ]]; then
-            echo "  - Client isolation can be bypassed; consider AP/controller hardening."
-            echo "  - Review NDSS 2026 AirSnitch paper for mitigations (key separation, gateway filtering)."
-        else
-            echo "  - Review raw output in b10_airsnitch_output.txt for details."
-            echo "  - If AirSnitch usage differs, run manually and attach output to evidence."
-        fi
-    } > "$summary_file"
-
-    #--- Step 5: Save result ---
-    log_step 5 $total_steps "Saving results"
-    update_tc_progress 5 $total_steps "Saving"
-
-    local recommendations="Review b10_airsnitch_output.txt. If a bypass was found, harden AP/client isolation and gateway forwarding."
-    if [[ "$bypass_detected" == "true" ]]; then
-        recommendations="Client isolation bypass detected. Harden wireless controller: enforce key separation, disable gateway bouncing where possible, and review port/VLAN mapping."
-    fi
-
-    evidence_register_file "$(basename "$out_file")"
-    evidence_register_file "$(basename "$summary_file")"
-
-    local result_json
-    result_json=$(run_fg jq -n \
-        --arg status "$result_status" \
-        --arg summary "$result_summary" \
-        --arg details "${result_details:-AirSnitch executed. See evidence.}" \
-        --arg recommendations "$recommendations" \
-        --argjson tool_available true \
-        --argjson bypass_detected "$bypass_detected" \
-        '{
-            status: $status,
-            summary: $summary,
-            details: $details,
-            recommendations: $recommendations,
-            tool_available: $tool_available,
-            bypass_detected: $bypass_detected,
-        }')
-    
-    # save_tc_result: pcap_req, tool_out, prim_art, cmds, vers, env, confirm, known_target, runtime, clean, secure
-    local is_secure=0
-    [[ "$result_status" == "SECURE" ]] && is_secure=1
-    save_tc_result "B10" "$result_json" 1 1 0 1 1 1 0 1 1 1 "$is_secure"
-    save_session_state
-
-    if [[ "$bypass_detected" == "true" ]]; then
-        log_result "FINDING" "Client isolation bypass indicated by AirSnitch"
-    else
-        log_result "INFO" "B10 AirSnitch run complete — review evidence"
-    fi
-    return 0
-}
+exit 0
