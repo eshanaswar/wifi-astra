@@ -161,6 +161,15 @@ func (m *Manager) start(ctx context.Context, id, command string, args []string, 
 	return p, nil
 }
 
+// KillGroup sends SIGKILL to the process group of the given PID.
+func KillGroup(pid int) {
+	pgid, err := syscall.Getpgid(pid)
+	if err == nil {
+		logging.Debug("Sending SIGKILL to process group %d", pgid)
+		syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+}
+
 func (m *Manager) Stop(id string) error {
 	m.mu.Lock()
 	p, exists := m.processes[id]
@@ -184,7 +193,7 @@ func (m *Manager) Stop(id string) error {
 		time.Sleep(500 * time.Millisecond)
 		
 		// If it's still there, force it
-		syscall.Kill(-pgid, syscall.SIGKILL)
+		KillGroup(p.PID)
 	}
 
 	m.mu.Lock()
@@ -200,10 +209,7 @@ func (m *Manager) Cleanup() {
 
 	for id, p := range m.processes {
 		logging.Debug("Cleanup: Killing process %s (PID: %d)", id, p.PID)
-		pgid, err := syscall.Getpgid(p.PID)
-		if err == nil {
-			syscall.Kill(-pgid, syscall.SIGKILL)
-		}
+		KillGroup(p.PID)
 		p.cancel()
 		delete(m.processes, id)
 	}

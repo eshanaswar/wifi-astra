@@ -11,6 +11,7 @@ import (
 	"wifi-astra/internal/config"
 	"wifi-astra/internal/controller"
 	"wifi-astra/internal/headless"
+	"wifi-astra/internal/ingest"
 	"wifi-astra/internal/logging"
 	"wifi-astra/internal/module"
 	"wifi-astra/internal/report"
@@ -52,8 +53,9 @@ var startCmd = &cobra.Command{
 		if info, err := os.Stat(ouiPath); os.IsNotExist(err) || (err == nil && time.Since(info.ModTime()) > 30*24*time.Hour) {
 			logging.Info("OUI database is missing or outdated. Refreshing in background...")
 			go func() {
-				os.MkdirAll(filepath.Dir(ouiPath), 0755)
-				// Actual update logic triggered here
+				dataDir := filepath.Dir(ouiPath)
+				os.MkdirAll(dataDir, 0755)
+				ingest.UpdateOUIDatabase(dataDir)
 			}()
 		}
 

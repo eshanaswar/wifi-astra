@@ -35,6 +35,11 @@ if [[ -z "$INTERFACE" ]]; then
     exit 1
 fi
 
+# Intelligence Insight
+if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
+    echo "[!] WARNING: Low Signal Strength (${ASTRA_TARGET_RSSI}dBm). Isolation bypass packets may be dropped."
+fi
+
 # Get Gateway IP and MAC
 if [[ -z "$GATEWAY_IP" ]]; then
     GATEWAY_IP=$(ip -4 route show dev "$INTERFACE" | awk '/default/{print $3}' | head -1) || true
@@ -54,11 +59,6 @@ fi
 
 echo "[*] Initializing AirSnitch (NDSS 2026) Audit on ${INTERFACE}..."
 
-# Intelligence Insight
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo "[!] WARNING: Low Signal Strength (${ASTRA_TARGET_RSSI}dBm). Isolation bypass packets may be dropped."
-fi
-
 # Identify a target client from B1 results
 B1_XML="${EVIDENCE_DIR}/b1_results.xml"
 TARGET_VICTIM=""
@@ -77,6 +77,7 @@ AIRSNITCH_PY="${EVIDENCE_DIR}/b10_airsnitch.py"
 AIRSNITCH_LOG="${EVIDENCE_DIR}/b10_results.txt"
 
 # 1. Gateway Bouncing Test (L3 Isolation Bypass)
+# Enhanced scapy script to support Cross-Band / Multi-Interface if needed
 cat <<EOF > "$AIRSNITCH_PY"
 from scapy.all import *
 import sys, time

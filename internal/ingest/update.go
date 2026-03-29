@@ -11,8 +11,8 @@ import (
 	"wifi-astra/internal/logging"
 )
 
-// UpdateOUIDB downloads the latest OUI data from IEEE and updates the local data/oui.json file.
-func UpdateOUIDB(dataDir string) error {
+// UpdateOUIDatabase downloads the latest OUI data from IEEE and updates the local data/oui.json file.
+func UpdateOUIDatabase(dataDir string) error {
 	url := "https://linuxnet.ca/ieee/oui.txt" // A cleaner version of the IEEE OUI list
 	logging.Info("Downloading latest OUI data from %s...", url)
 

@@ -15,7 +15,7 @@ var updateOuiCmd = &cobra.Command{
 		// Determine data directory (default to internal/ingest/data in the source or current working directory)
 		dataDir := "./internal/ingest/data"
 		
-		if err := ingest.UpdateOUIDB(dataDir); err != nil {
+		if err := ingest.UpdateOUIDatabase(dataDir); err != nil {
 			logging.Error("Update failed: %v", err)
 			os.Exit(1)
 		}

@@ -5,82 +5,93 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"wifi-astra/internal/config"
 	"wifi-astra/internal/logging"
-	"wifi-astra/internal/ui"
 
 	"github.com/spf13/cobra"
 )
 
+var (
+	olderThan int
+	dryRun    bool
+)
+
 var cleanCmd = &cobra.Command{
 	Use:   "clean",
-	Short: "Manage old assessment sessions (archive or delete)",
+	Short: "Archive or delete old session data",
 	Run: func(cmd *cobra.Command, args []string) {
-		days, _ := cmd.Flags().GetInt("days")
-		force, _ := cmd.Flags().GetBool("force")
-		
 		baseDir := "./sessions"
+		if config.GlobalConfig != nil && config.GlobalConfig.SessionDir != "" {
+			baseDir = config.GlobalConfig.SessionDir
+		}
+
+		logging.Info("Scanning for sessions older than %d days in %s...", olderThan, baseDir)
+
 		entries, err := os.ReadDir(baseDir)
 		if err != nil {
 			logging.Error("Failed to read sessions directory: %v", err)
-			os.Exit(1)
+			return
 		}
 
-		cutoff := time.Now().AddDate(0, 0, -days)
+		now := time.Now()
 		count := 0
-		
-		fmt.Printf("\n--- WiFi-Astra: Session Cleanup ---\n")
-		fmt.Printf("Searching for sessions older than %d days...\n", days)
+		var totalSize int64
 
 		for _, entry := range entries {
 			if !entry.IsDir() {
 				continue
 			}
 
+			path := filepath.Join(baseDir, entry.Name())
 			info, err := entry.Info()
 			if err != nil {
 				continue
 			}
 
-			if info.ModTime().Before(cutoff) {
+			if now.Sub(info.ModTime()) > time.Duration(olderThan)*24*time.Hour {
 				count++
-				path := filepath.Join(baseDir, entry.Name())
-				
-				if force {
-					os.RemoveAll(path)
-					fmt.Printf("   [!] Deleted: %s\n", entry.Name())
+				size := getDirSize(path)
+				totalSize += size
+
+				if dryRun {
+					fmt.Printf("[DRY-RUN] Would delete: %s (%d MB)\n", entry.Name(), size/(1024*1024))
 				} else {
-					fmt.Printf("   [?] Old session found: %s (Last modified: %s)\n", 
-						entry.Name(), info.ModTime().Format("2006-01-02"))
+					fmt.Printf("[*] Deleting session: %s...\n", entry.Name())
+					if err := os.RemoveAll(path); err != nil {
+						logging.Error("Failed to delete %s: %v", entry.Name(), err)
+					}
 				}
 			}
 		}
 
 		if count == 0 {
-			logging.Info("No old sessions found.")
-			return
-		}
-
-		if !force {
-			if ui.PromptConfirm(fmt.Sprintf("Delete these %d sessions?", count), false) {
-				for _, entry := range entries {
-					if !entry.IsDir() { continue }
-					info, _ := entry.Info()
-					if info.ModTime().Before(cutoff) {
-						os.RemoveAll(filepath.Join(baseDir, entry.Name()))
-					}
-				}
-				logging.Success("Cleanup complete.")
-			} else {
-				fmt.Println("Cleanup aborted.")
-			}
+			logging.Info("No stale sessions found.")
 		} else {
-			logging.Success("Cleanup complete. %d sessions removed.", count)
+			if dryRun {
+				logging.Success("Scan complete. %d sessions identified for cleanup (Total: %d MB).", count, totalSize/(1024*1024))
+			} else {
+				logging.Success("Cleanup complete. Removed %d sessions, freeing %d MB.", count, totalSize/(1024*1024))
+			}
 		}
 	},
 }
 
+func getDirSize(path string) int64 {
+	var size int64
+	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size
+}
+
 func init() {
-	cleanCmd.Flags().Int("days", 30, "Delete sessions older than X days")
-	cleanCmd.Flags().Bool("force", false, "Delete without confirmation")
+	cleanCmd.Flags().IntVarP(&olderThan, "older-than", "t", 30, "Cleanup sessions older than N days")
+	cleanCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Scan only without deleting")
 	RootCmd.AddCommand(cleanCmd)
 }
