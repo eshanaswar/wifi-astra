@@ -227,8 +227,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 			os.Setenv("LAUNCH_RESPONDER", "yes")
 		}
 	case "F2":
-		opts := []string{"Dynamic MANA (Directed Probes)", "Known Beacon Attack (Loud)"}
-		if ui.PromptList("Select Karma Vector", opts) == 1 {
+		opts := []string{"Dynamic MANA (Directed Probes)", "Known Beacon Attack (Loud - Recommended)"}
+		choice := ui.PromptList("Select Karma Vector", opts)
+		if choice == 1 || choice == -1 { // Default to index 1 (Loud) or if aborted
 			os.Setenv("KARMA_MODE", "loud")
 		} else {
 			os.Setenv("KARMA_MODE", "mana")
