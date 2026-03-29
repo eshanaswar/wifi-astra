@@ -111,6 +111,17 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		defer hw.UnlockInterface(monIface)
 		defer hw.DisableMonitorMode(monIface)
 		os.Setenv(constants.ConfigMonitorIface, monIface)
+
+		// SMART TACTICAL: Scout target defenses if BSSID is known
+		targetBSSID := config[constants.ConfigGuestBSSID]
+		if targetBSSID != "" {
+			intel, err := hw.ScoutTarget(targetBSSID, monIface)
+			if err == nil {
+				for k, v := range intel {
+					os.Setenv("ASTRA_TARGET_"+k, v)
+				}
+			}
+		}
 	} else if strings.Contains(m.Reqs, constants.ReqManagedIface) {
 		os.Setenv(constants.ConfigWifiInterface, iface)
 	}
