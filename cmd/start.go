@@ -115,6 +115,10 @@ func sessionWizard() {
 		}
 
 		choice := ui.PromptString("Select an option", "1")
+		if choice == "" {
+			fmt.Println("\n[!] Operation cancelled.")
+			os.Exit(0)
+		}
 
 		if choice == "1" {
 			fmt.Println("\n--- New Session Setup ---")
@@ -134,6 +138,9 @@ func sessionWizard() {
 				fmt.Printf("%d) %s\n", i+1, s.Name())
 			}
 			sIdx := ui.PromptString("Select session to resume", "")
+			if sIdx == "" {
+				continue
+			}
 			idx, _ := strconv.Atoi(sIdx)
 			if idx >= 1 && idx <= len(existing) {
 				s, err := session.LoadSession(filepath.Join(baseDir, existing[idx-1].Name()))
@@ -151,6 +158,9 @@ func sessionWizard() {
 				fmt.Printf("%d) %s\n", i+1, s.Name())
 			}
 			sIdx := ui.PromptString("Select session to delete (or 0 to cancel)", "0")
+			if sIdx == "" {
+				continue
+			}
 			idx, _ := strconv.Atoi(sIdx)
 			if idx >= 1 && idx <= len(existing) {
 				sessionID := existing[idx-1].Name()
