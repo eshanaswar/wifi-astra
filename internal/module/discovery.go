@@ -18,6 +18,7 @@ type Module struct {
 	Desc          string `json:"desc"`
 	Reqs          string `json:"reqs"`
 	PCAP          bool   `json:"pcap"`
+	Timed         bool   `json:"timed"`
 	DecodeProfile string `json:"decode_profile"`
 	FilePath      string `json:"file_path"`
 }
@@ -98,6 +99,8 @@ func parseModuleMeta(filePath string) (*Module, error) {
 			m.Reqs = val
 		case "PCAP":
 			m.PCAP = (val == "yes")
+		case "TIMED":
+			m.Timed = (val == "yes")
 		case "DECODE":
 			m.DecodeProfile = val
 		}
