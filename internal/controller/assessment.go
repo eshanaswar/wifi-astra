@@ -154,6 +154,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		durationOpts := []string{"Timed (Surgical - Default)", "Indefinite (Until Ctrl+C)"}
 		if ui.PromptList("Select Duration Mode", durationOpts) == 1 {
 			os.Setenv("ASTRA_INDEFINITE", "true")
+			// Set very large timeouts to effectively bypass 'timeout' commands in scripts
+			os.Setenv("SCAN_TIME", "36000")
+			os.Setenv("CAPTURE_TIME", "36000")
 			fmt.Printf("\n%s[*] Indefinite mode active. Results will be recorded as they occur.%s\n", constants.ThemeSuccess, constants.ColorReset)
 		} else {
 			os.Setenv("ASTRA_INDEFINITE", "false")
@@ -199,11 +202,13 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	// C. Module-Specific Logic
 	switch m.ID {
 	case "A1":
-		options := []string{"Standard (60s)", "Deep Scan (120s - Recommended for DFS/5GHz)"}
-		if ui.PromptList("Select Scan Depth", options) == 1 {
-			os.Setenv("SCAN_TIME", "120")
-		} else {
-			os.Setenv("SCAN_TIME", "60")
+		if os.Getenv("ASTRA_INDEFINITE") != "true" {
+			options := []string{"Standard (60s)", "Deep Scan (120s - Recommended for DFS/5GHz)"}
+			if ui.PromptList("Select Scan Depth", options) == 1 {
+				os.Setenv("SCAN_TIME", "120")
+			} else {
+				os.Setenv("SCAN_TIME", "60")
+			}
 		}
 	case "A3":
 		if ui.PromptConfirm("Force reveal via surgical deauth?", true) {
@@ -213,8 +218,12 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		options := []string{"Pixie Dust (Fast, 1 transaction)", "Online Brute-Force (Sequential)"}
 		if ui.PromptList("Select WPS Vector", options) == 1 {
 			os.Setenv("WPS_ATTACK", "online")
-			delay := ui.PromptString("Enter delay (seconds)", "300")
-			os.Setenv("WPS_DELAY", delay)
+			if os.Getenv("ASTRA_INDEFINITE") != "true" {
+				delay := ui.PromptString("Enter delay (seconds)", "300")
+				os.Setenv("WPS_DELAY", delay)
+			} else {
+				os.Setenv("WPS_DELAY", "0")
+			}
 		} else {
 			os.Setenv("WPS_ATTACK", "pixie")
 		}
