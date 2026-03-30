@@ -49,8 +49,13 @@ echo "[*] [$TC_ID] Identifying broadcast/multicast leaks on ${INTERFACE} for ${S
 ) &
 TELEMETRY_PID=$!
 
-timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
-    "broadcast or multicast" > "$LOG_FILE" 2>&1 || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+        "broadcast or multicast" || true
+else
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+        "broadcast or multicast" > "$LOG_FILE" 2>&1 || true
+fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 

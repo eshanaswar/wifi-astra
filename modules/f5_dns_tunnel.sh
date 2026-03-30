@@ -16,16 +16,17 @@
 #
 #  METHODOLOGY (SPEC SECTION 6.2):
 #  1. Establish a DNS tunnel client connection to a remote iodine server.
-#  2. Bypass Captive Portals that allow outbound DNS queries.
+#  2. Use tactical domain and password from Go brain.
 #  3. Provide a virtual tunnel interface (dns0) for encapsulated traffic.
 #===============================================================================
 
 set -euo pipefail
 
-# SNR Safeguard (Inherited from core)
+# Intelligence Insight (Colors)
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
@@ -35,71 +36,66 @@ EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="F5"
 
+# Tactical Selections from Go Brain
+TUNNEL_DOMAIN="${TUNNEL_DOMAIN:-}"
+TUNNEL_PASS="${TUNNEL_PASS:-}"
+
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] WIFI_INTERFACE not set."
     exit 1
 fi
 
-echo -e "${C_PROMPT}[*]${C_RESET} Initializing DNS Tunnel tactical options..."
-
-# 1. Interactive Selection
-read -p "$(echo -e "${C_BOLD}[?] Enter iodine server tunnel domain: ${C_RESET}")" tunnel_domain
-read -p "$(echo -e "${C_BOLD}[?] Enter tunnel password: ${C_RESET}")" tunnel_pass
-
-if [[ -z "$tunnel_domain" || -z "$tunnel_pass" ]]; then
-    echo "[!] Tunnel domain and password are required."
-    exit 1
+if [[ -z "$TUNNEL_DOMAIN" ]]; then
+    echo "[!] Tunnel domain not specified. DNS tunneling requires a target domain."
+    exit 0
 fi
 
-echo -e "${C_PROMPT}[*]${C_RESET} Attempting to establish DNS tunnel via ${C_VAR}${tunnel_domain}${C_RESET}..."
+echo -e "${C_PROMPT}[*]${C_RESET} Attempting DNS tunnel via ${C_VAR}${TUNNEL_DOMAIN}${C_RESET}..."
 
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_iodine.log"
 
-# 2. Execution
+# Execution
 if command -v iodine &>/dev/null; then
-    # -f: foreground, -P: password
-    # Note: iodine requires root to create the tun interface
-    iodine -f -P "$tunnel_pass" "$tunnel_domain" > "$LOG_FILE" 2>&1 &
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" 2>&1 | tee "$LOG_FILE" &
+    else
+        iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" > "$LOG_FILE" 2>&1 &
+    fi
     IODINE_PID=$!
     
-    # Cleanup function
-    cleanup() {
-        echo "[*] Tearing down DNS tunnel..."
-        kill "$IODINE_PID" 2>/dev/null || true
-    }
+    cleanup() { kill "$IODINE_PID" 2>/dev/null || true; }
     trap cleanup EXIT
 
-    # 3. Monitor and Record Progress
     SCAN_TIME=120
     ELAPSED=0
+    SUCCESS=0
     while [[ $ELAPSED -lt $SCAN_TIME ]]; do
         PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-        STATUS="Tunneling via $tunnel_domain... ($(( SCAN_TIME - ELAPSED ))s left)"
+        STATUS="Tunneling via $TUNNEL_DOMAIN... ($(( SCAN_TIME - ELAPSED ))s left)"
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
         
-        # Check if tunnel is up
         if ip addr show dns0 >/dev/null 2>&1; then
-            echo "[!] SUCCESS: DNS TUNNEL ESTABLISHED (dns0)!"
+            echo -e "[!] ${C_BOLD}SUCCESS: DNS TUNNEL ESTABLISHED!${C_RESET}"
             "$ASTRA_BIN" record-finding \
                 --session-dir "$SESSION_DIR" \
                 --tc "$TC_ID" \
                 --type vulnerability \
                 --name "DNS Tunneling Successful" \
                 --severity HIGH \
-                --desc "Successfully established an encapsulated DNS tunnel via $tunnel_domain." \
-                --target "Global" \
-                --evidence "$LOG_FILE" \
-                --rationale "DNS tunneling allows an attacker to bypass firewalls and captive portals by encapsulating traffic within standard DNS queries."
+                --desc "Established tunnel via $TUNNEL_DOMAIN." \
+                --evidence "$LOG_FILE"
+            SUCCESS=1
             break
         fi
-        
         sleep 5
         ((ELAPSED+=5))
     done
     
-    wait "$IODINE_PID" 2>/dev/null || true
+    [[ $SUCCESS -eq 0 ]] && echo -e "[+] Tunnel attempt timed out."
+    cleanup
+    trap - EXIT
 else
-    echo "[!] iodine tool not found."
+    echo "[!] iodine not found."
     exit 1
 fi
 

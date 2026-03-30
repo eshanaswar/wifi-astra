@@ -53,10 +53,18 @@ echo "[*] [$TC_ID] Identifying SNMP exposure on ${GATEWAY}..."
 ) &
 TELEMETRY_PID=$!
 
-if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
-    onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY" > "$BRUTE_FILE" 2>/dev/null || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
+        onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY" 2>&1 | tee "$BRUTE_FILE" || true
+    else
+        onesixtyone "$GATEWAY" 2>&1 | tee "$BRUTE_FILE" || true
+    fi
 else
-    onesixtyone "$GATEWAY" > "$BRUTE_FILE" 2>/dev/null || true
+    if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
+        onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
+    else
+        onesixtyone "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
+    fi
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
@@ -69,7 +77,11 @@ if [[ -n "$COMM_STRINGS" ]]; then
     while read -r comm; do
         [[ -z "$comm" ]] && continue
         echo "[!] SNMP COMMUNITY STRING FOUND: ${comm}!"
-        SYS_INFO=$(snmpwalk -v2c -c "$comm" "$GATEWAY" system 2>/dev/null | head -n 5 || true)
+        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+            SYS_INFO=$(snmpwalk -v2c -c "$comm" "$GATEWAY" system | head -n 5 || true)
+        else
+            SYS_INFO=$(snmpwalk -v2c -c "$comm" "$GATEWAY" system 2>/dev/null | head -n 5 || true)
+        fi
         
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \

@@ -13,14 +13,16 @@
 #===============================================================================
 #  modules/a4_client_fingerprinting.sh
 #  A4: Client Fingerprinting (Golden Wrapper)
-#
-#  METHODOLOGY (SPEC ALIGNED):
-#  1. Targeted scan of the specific BSSID to identify associated stations.
-#  2. Parse BOTH associated MACs and their Probed ESSIDs (PNLs) from the CSV.
-#  3. Record detailed findings for each client to build the PNL database.
 #===============================================================================
 
 set -euo pipefail
+
+# Intelligence Insight (Colors)
+C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
+C_VAR="${ASTRA_COLOR_VAR:-}"
+C_BOLD="${ASTRA_COLOR_BOLD:-}"
+C_ACTION="${ASTRA_COLOR_ACTION:-}"
+C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
@@ -38,21 +40,40 @@ if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
     exit 1
 fi
 
-echo "[*] Starting client fingerprinting on ${INTERFACE} (BSSID: ${BSSID}, CH: ${CHANNEL:-auto})..."
+echo -e "${C_PROMPT}[*]${C_RESET} Starting client fingerprinting on ${C_VAR}${INTERFACE}${C_RESET} (BSSID: ${C_VAR}${BSSID}${C_RESET})..."
 
 CSV_PREFIX="${OUTPUT_CSV%.csv}"
 
 # 1. Start airodump-ng to map clients
-airodump-ng "$INTERFACE" \
-    --bssid "$BSSID" \
-    --channel "${CHANNEL:-0}" \
-    --write "$CSV_PREFIX" \
-    --output-format csv \
-    --band abg > "${EVIDENCE_DIR}/${TC_ID}_airodump.log" 2>&1 &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    airodump-ng "$INTERFACE" \
+        --bssid "$BSSID" \
+        --channel "${CHANNEL:-0}" \
+        --write "$CSV_PREFIX" \
+        --output-format csv \
+        --band abg &
+else
+    airodump-ng "$INTERFACE" \
+        --bssid "$BSSID" \
+        --channel "${CHANNEL:-0}" \
+        --write "$CSV_PREFIX" \
+        --output-format csv \
+        --band abg > "${EVIDENCE_DIR}/${TC_ID}_airodump.log" 2>&1 &
+fi
 AIRODUMP_PID=$!
 
-# Wait for completion
-sleep "$SCAN_TIME"
+# 2. Wait for completion with Progress Telemetry
+ELAPSED=0
+while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+    STATUS="Mapping clients... ($(( SCAN_TIME - ELAPSED ))s left)"
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+    
+    sleep 2
+    ((ELAPSED+=2))
+done
+
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Processing results..."
 
 # Cleanup
 kill "$AIRODUMP_PID" || true
@@ -63,12 +84,11 @@ if [[ -f "${CSV_PREFIX}-01.csv" ]]; then
     mv "${CSV_PREFIX}-01.csv" "$OUTPUT_CSV"
 fi
 
-# 2. Spec-Aligned Parsing (Single Pass)
-# Extracts Station MAC (Col 1) and Probed ESSIDs (Col 7+ in Station section)
+# 3. Spec-Aligned Parsing (Single Pass)
 PARSED_PROBES="${EVIDENCE_DIR}/a4_parsed_probes.txt"
 
 if [[ -f "$OUTPUT_CSV" && -s "$OUTPUT_CSV" ]]; then
-    echo "[*] Extracting Client PNLs from CSV..."
+    echo -e "${C_PROMPT}[*]${C_RESET} Extracting Client PNLs from CSV..."
     
     awk -F',' '
         /Station/ {found=1; next}
@@ -76,7 +96,6 @@ if [[ -f "$OUTPUT_CSV" && -s "$OUTPUT_CSV" ]]; then
             mac = $1; gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", mac);
             if (mac !~ /^[0-9A-Fa-f:]{17}$/) next;
 
-            # PNLs start at field 7. Handle multiple comma-separated probes if present.
             pnl = "";
             for(i=7; i<=NF; i++) {
                 p = $i; gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", p);
@@ -97,47 +116,36 @@ FOUND_COUNT=0
 if [[ -f "$PARSED_PROBES" ]]; then
     while IFS="|" read -r mac pnl; do
         [[ -z "$mac" ]] && continue
-        ((FOUND_COUNT++))
+        FOUND_COUNT=$((FOUND_COUNT + 1)) # SAFE INCREMENT
         
         if [[ "$pnl" == "<NONE>" ]]; then
-            echo "[+] Found station: $mac (No PNL leaked)"
+            echo -e "[+] Found station: ${C_VAR}$mac${C_RESET} (No PNL leaked)"
             $ASTRA_BIN record-finding \
                 --session-dir "$SESSION_DIR" \
                 --tc "$TC_ID" \
                 --type vulnerability \
                 --name "Client Identified" \
                 --severity INFO \
-                --desc "Station $mac identified associated with $BSSID. No PNL leaked in this window." \
+                --desc "Station $mac identified associated with $BSSID." \
                 --target "$mac" \
-                --evidence "$OUTPUT_CSV" \
-                --rationale "Passive identification of associated stations is the first step in client-side targeting."
+                --evidence "$OUTPUT_CSV"
         else
-            echo "[!] LEAK DETECTED: $mac probes for [$pnl]"
+            echo -e "[!] ${C_BOLD}PNL LEAK DETECTED:${C_RESET} ${C_VAR}$mac${C_RESET} probes for ${C_VAR}[$pnl]${C_RESET}"
             $ASTRA_BIN record-finding \
                 --session-dir "$SESSION_DIR" \
                 --tc "$TC_ID" \
                 --type vulnerability \
                 --name "PNL Leak Detected" \
                 --severity HIGH \
-                --desc "Station $mac leaked its Preferred Network List (PNL): $pnl. This data enables targeted Karma attacks." \
+                --desc "Station $mac leaked its PNL: $pnl." \
                 --target "$mac" \
-                --evidence "$OUTPUT_CSV" \
-                --rationale "Clients broadcasting directed probes for past networks (PNL) are highly vulnerable to Karma attacks. Spoofer APs can reactively claim these SSIDs to force automatic association."
+                --evidence "$OUTPUT_CSV"
         fi
     done < "$PARSED_PROBES"
 fi
 
 if [[ $FOUND_COUNT -eq 0 ]]; then
-    echo "[*] No active clients discovered for $BSSID."
-    $ASTRA_BIN record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type vulnerability \
-        --name "[$TC_ID] Audit Complete" \
-        --severity INFO \
-        --desc "Scan completed. No active clients were identified in this interval." \
-        --evidence "${EVIDENCE_DIR}/${TC_ID}_airodump.log" \
-        --rationale "Lack of user activity during the scan window reduces the immediate attack surface for client-side exploits."
+    echo -e "${C_PROMPT}[*]${C_RESET} No active clients discovered for $BSSID."
 fi
 
 exit 0

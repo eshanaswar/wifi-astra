@@ -52,9 +52,29 @@ echo "--- WPA3 Dragonblood Test Results for ${SSID} ---" > "$DRAGON_OUT"
 
 # 1. Dragonslayer (Side-channel analysis)
 VULN_FOUND=0
+
+# Start dynamic telemetry heartbeat
+(
+    HEARTBEAT_ELAPSED=0
+    # Total scan time for both tests
+    TOTAL_SCAN_TIME=$((SCAN_TIME * 2))
+    while [[ $HEARTBEAT_ELAPSED -lt $TOTAL_SCAN_TIME ]]; do
+        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / TOTAL_SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+        sleep 2
+        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 if command -v dragonslayer &>/dev/null; then
     echo "[*] Running Dragonslayer side-channel test..."
-    timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
+    else
+        timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+    fi
     
     # Use awk for robust vulnerability detection
     if awk 'tolower($0) ~ /vulnerable/ {exit 0} END {exit 1}' "$DRAGON_OUT"; then
@@ -77,7 +97,11 @@ fi
 # 2. Dragondrain (SAE group forcing / Resource exhaustion)
 if command -v dragondrain &>/dev/null; then
     echo "[*] Running Dragondrain resource exhaustion test..."
-    timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
+    else
+        timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+    fi
     
     if [[ "$VULN_FOUND" -eq 0 ]] && awk 'tolower($0) ~ /vulnerable/ {exit 0} END {exit 1}' "$DRAGON_OUT"; then
         VULN_FOUND=1
@@ -96,7 +120,7 @@ else
     echo "[!] dragondrain tool not found. Skipping resource exhaustion test." >> "$DRAGON_OUT"
 fi
 
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Aggregating WPA3 findings..."
+kill "$TELEMETRY_PID" 2>/dev/null || true
 
 echo "[+] WPA3 Dragonblood testing complete."
 if [[ "$VULN_FOUND" -eq 0 ]]; then
@@ -111,5 +135,7 @@ if [[ "$VULN_FOUND" -eq 0 ]]; then
         --rationale "WPA3 is significantly more secure than WPA2, but early implementations must be audited for the known Dragonblood class of vulnerabilities."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
 0
+

@@ -52,7 +52,11 @@ TELEMETRY_PID=$!
 # 1. Active discovery using avahi-browse if available
 AVAHI_OUT="${EVIDENCE_PREFIX}_avahi_raw.txt"
 if command -v avahi-browse &>/dev/null; then
-    timeout "$((SCAN_TIME/2))" avahi-browse -art > "$AVAHI_OUT" 2>/dev/null || true
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        timeout "$((SCAN_TIME/2))" avahi-browse -art 2>&1 | tee "$AVAHI_OUT" || true
+    else
+        timeout "$((SCAN_TIME/2))" avahi-browse -art > "$AVAHI_OUT" 2>/dev/null || true
+    fi
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
@@ -71,7 +75,11 @@ kill "$TELEMETRY_PID" 2>/dev/null || true
 TELEMETRY_PID=$!
 
 # 2. Passive capture of mDNS traffic (UDP 5353)
-timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" 2>&1 | tee "$LOG_FILE" || true
+else
+    timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 || true
+fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 

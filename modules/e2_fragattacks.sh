@@ -36,6 +36,7 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
 BSSID="${GUEST_BSSID:-}"
+SCAN_TIME="${SCAN_TIME:-120}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 EVIDENCE_PREFIX="${EVIDENCE_DIR}/e2"
@@ -56,9 +57,29 @@ FRAG_LOG="${EVIDENCE_DIR}/${TC_ID}_fragattack.log"
 FRAG_SCRIPT=$(find /opt/ /usr/share/ "${SCRIPT_DIR:-.}" -name "fragattack.py" 2>/dev/null | head -1)
 
 if [[ -n "$FRAG_SCRIPT" ]]; then
-    echo "[*] Running FragAttacks test script: ${FRAG_SCRIPT}..."
-    timeout 120 python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" > "$FRAG_LOG" 2>&1 || true
+    echo "[*] Running FragAttacks test script: ${FRAG_SCRIPT} (${SCAN_TIME}s)..."
+
+    # Start dynamic telemetry heartbeat
+    (
+        HEARTBEAT_ELAPSED=0
+        while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+            PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
+            [[ $PCT -gt 90 ]] && PCT=90
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+            sleep 2
+            HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+        done
+    ) &
+    TELEMETRY_PID=$!
+
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" 2>&1 | tee "$FRAG_LOG" || true
+    else
+        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" > "$FRAG_LOG" 2>&1 || true
+    fi
     
+    kill "$TELEMETRY_PID" 2>/dev/null || true
+
     if grep -qi "vulnerable" "$FRAG_LOG"; then
         cp "$FRAG_LOG" "$RES_FILE"
         "$ASTRA_BIN" record-finding \
@@ -75,8 +96,6 @@ if [[ -n "$FRAG_SCRIPT" ]]; then
 else
     echo "[!] FragAttacks test tool not found." > "$FRAG_LOG"
 fi
-
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Finalizing FragAttacks audit..."
 
 # Audit Complete finding if no critical vulnerability was recorded above
 if [[ ! -f "$RES_FILE" ]]; then
@@ -95,4 +114,5 @@ else
     echo "[+] FragAttacks testing complete."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0

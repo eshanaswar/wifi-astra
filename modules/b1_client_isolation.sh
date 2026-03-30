@@ -47,11 +47,17 @@ fi
 echo "[*] Testing client isolation on ${INTERFACE} (${MY_IP}) in subnet ${SUBNET}..."
 
 # 1. ARP Scan to find other clients (Produce XML for Go ingest)
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 10 --status "Running ARP scan (nmap)..."
 echo "[*] Running ARP scan (nmap -sn -PR)..."
-# Redirect stdout/stderr to a log to prevent terminal pollution
-nmap -sn -PR "$SUBNET" -oX "$OUTPUT_XML" > "${EVIDENCE_DIR}/${TC_ID}_nmap.log" 2>&1
+# Redirect stdout/stderr to a log to prevent terminal pollution unless ASTRA_IN_WINDOW=true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    nmap -sn -PR "$SUBNET" -oX "$OUTPUT_XML" 2>&1 | tee "${EVIDENCE_DIR}/${TC_ID}_nmap.log"
+else
+    nmap -sn -PR "$SUBNET" -oX "$OUTPUT_XML" > "${EVIDENCE_DIR}/${TC_ID}_nmap.log" 2>&1
+fi
 
 # 2. Analyze results
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Parsing results..."
 CLIENT_COUNT=$(grep "<address addr=" "$OUTPUT_XML" | grep "addrtype=\"ipv4\"" | grep -v "$MY_IP" | wc -l)
 echo "[+] Discovered ${CLIENT_COUNT} other clients on the network."
 

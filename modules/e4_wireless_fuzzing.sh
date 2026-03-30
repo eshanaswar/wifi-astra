@@ -34,6 +34,7 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 BSSID="${GUEST_BSSID:-}"
+SCAN_TIME="${SCAN_TIME:-120}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 EVIDENCE_PREFIX="${EVIDENCE_DIR}/e4"
@@ -52,12 +53,32 @@ FUZZ_OUT="${EVIDENCE_PREFIX}_mdk4_results.txt"
 # 1. Use mdk4 for fuzzing
 if command -v mdk4 &>/dev/null; then
     echo "[*] Running mdk4 fuzzer (Authentication/Association fuzzing)..."
+
+    # Start dynamic telemetry heartbeat
+    (
+        HEARTBEAT_ELAPSED=0
+        while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+            PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
+            [[ $PCT -gt 90 ]] && PCT=90
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+            sleep 2
+            HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+        done
+    ) &
+    TELEMETRY_PID=$!
+
     # Note: Fuzzing can be highly disruptive, run for a short duration
-    timeout 60 mdk4 "$INTERFACE" a -a "$BSSID" > "$FUZZ_OUT" 2>&1 || true
-    echo "--- Beacon Fuzzing ---" >> "$FUZZ_OUT"
-    timeout 60 mdk4 "$INTERFACE" m -t "$BSSID" >> "$FUZZ_OUT" 2>&1 || true
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" 2>&1 | tee "$FUZZ_OUT" || true
+        echo "--- Beacon Fuzzing ---" | tee -a "$FUZZ_OUT"
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" 2>&1 | tee -a "$FUZZ_OUT" || true
+    else
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" > "$FUZZ_OUT" 2>&1 || true
+        echo "--- Beacon Fuzzing ---" >> "$FUZZ_OUT"
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" >> "$FUZZ_OUT" 2>&1 || true
+    fi
     
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing fuzzer impact..."
+    kill "$TELEMETRY_PID" 2>/dev/null || true
 
     echo "[+] Wireless fuzzing test complete."
 
@@ -89,4 +110,5 @@ else
     exit 1
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0

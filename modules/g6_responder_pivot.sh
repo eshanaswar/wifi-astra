@@ -50,7 +50,11 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_responder.log"
 if command -v responder &>/dev/null; then
     # -I: Interface, -d: DHCP, -w: WPAD, -P: Proxy
     # We run in foreground but the Go orchestrator can spawn us in background
-    responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        responder -I "$INTERFACE" -dwP 2>&1 | tee "$LOG_FILE"
+    else
+        responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1
+    fi
 else
     echo "[!] responder tool not found."
     exit 1

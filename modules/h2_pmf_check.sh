@@ -31,6 +31,7 @@ BSSID="${GUEST_BSSID:-}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 EVIDENCE_PREFIX="${EVIDENCE_DIR}/h2"
+SCAN_TIME="${SCAN_TIME:-60}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="H2"
 
@@ -55,10 +56,33 @@ trap cleanup EXIT
 if command -v tshark &>/dev/null; then
     echo "[*] Analyzing RSN capabilities with tshark..."
     # Capture one beacon
-    timeout 10 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" > /dev/null 2>&1 || true
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" &
+    else
+        tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" > /dev/null 2>&1 &
+    fi
+    TCPDUMP_PID=$!
+    
+    # Wait with real-time progress updates
+    ELAPSED=0
+    WAIT_TIME=10
+    while [[ $ELAPSED -lt $WAIT_TIME ]]; do
+        PERCENT=$(( 20 + (ELAPSED * 40 / WAIT_TIME) )) # Start from 20%, up to 60%
+        STATUS="Capturing management frames... ($(( WAIT_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        
+        sleep 2
+        ((ELAPSED+=2))
+    done
+    kill "$TCPDUMP_PID" 2>/dev/null || true
+    wait "$TCPDUMP_PID" 2>/dev/null || true
     
     if [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
-        tshark -r "$PCAP_FILE" -V | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
+        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+            tshark -r "$PCAP_FILE" -V 2>/dev/null | tee /dev/stderr | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
+        else
+            tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
+        fi
         
         if grep -qi "Required" "$MFP_FILE"; then
             echo "[+] PMF IS REQUIRED BY THE AP."
@@ -120,4 +144,5 @@ else
 fi
 
 echo "[+] PMF check complete."
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "PMF configuration audit complete."
 exit 0

@@ -51,13 +51,21 @@ echo "[*] [$TC_ID] Identifying IPv6 leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 TELEMETRY_PID=$!
 
 # 1. Listen for ICMPv6 RA
-timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" > "$LOG_FILE" 2>&1 || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" || true
+else
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" > "$LOG_FILE" 2>&1 || true
+fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 
 # 2. Check current addresses
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Checking IPv6 configuration..."
-ip -6 addr show dev "$INTERFACE" > "$STATUS_FILE" 2>/dev/null || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    ip -6 addr show dev "$INTERFACE" | tee "$STATUS_FILE" || true
+else
+    ip -6 addr show dev "$INTERFACE" > "$STATUS_FILE" 2>/dev/null || true
+fi
 
 # Verify
 FOUND=0

@@ -29,6 +29,7 @@ ng is unreliable at this distance."
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
+SCAN_TIME="${SCAN_TIME:-15}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
@@ -49,14 +50,32 @@ fi
 echo "[*] Testing OWE downgrade / transition mode for ${SSID}..."
 
 # 1. Monitor for OWE beacons using airodump-ng
-echo "[*] Scanning for OWE Transition Mode beacons (15s)..."
-airodump-ng --essid "$SSID" --write "$SCAN_PREFIX" --output-format csv "$INTERFACE" > /dev/null 2>&1 &
+echo "[*] Scanning for OWE Transition Mode beacons (${SCAN_TIME}s)..."
+
+# Start dynamic telemetry heartbeat
+(
+    HEARTBEAT_ELAPSED=0
+    while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+        sleep 2
+        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    airodump-ng --essid "$SSID" --write "$SCAN_PREFIX" --output-format csv "$INTERFACE" &
+else
+    airodump-ng --essid "$SSID" --write "$SCAN_PREFIX" --output-format csv "$INTERFACE" > /dev/null 2>&1 &
+fi
 AIRODUMP_PID=$!
-sleep 15
+sleep "$SCAN_TIME"
 kill "$AIRODUMP_PID" || true
 wait "$AIRODUMP_PID" 2>/dev/null || true
 
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing OWE scan results..."
+kill "$TELEMETRY_PID" 2>/dev/null || true
 
 # 2. Check if OWE is present in scan results using awk
 # airodump CSV format: BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, Authentication, ESSID
@@ -86,4 +105,5 @@ else
         --rationale "Ensuring that modern encryption standards are not misconfigured with insecure backward compatibility modes is a critical audit step. Lack of OWE Transition Mode indicates a more focused security posture."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0

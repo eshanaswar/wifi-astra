@@ -49,8 +49,13 @@ echo "[*] [$TC_ID] Identifying CDP/LLDP leaks on ${INTERFACE} for ${SCAN_TIME}s.
 TELEMETRY_PID=$!
 
 # Identify & Target
-timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
-    "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" > "$LOG_FILE" 2>&1 || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+        "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" || true
+else
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+        "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" > "$LOG_FILE" 2>&1 || true
+fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 

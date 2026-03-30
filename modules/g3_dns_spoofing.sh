@@ -29,9 +29,6 @@ C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-ng packets may not reach victims reliably at this distance."
-    fi
-
 # Inputs from Environment
 INTERFACE="${WIFI_INTERFACE:-}"
 SESSION_DIR="${SESSION_DIR:-.}"
@@ -72,15 +69,30 @@ dns.spoof on
 events.stream on
 EOF
 
-    bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" 2>&1 | tee "$LOG_FILE" &
+    else
+        bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
+    fi
     BC_PID=$!
 
-    sleep "$SCAN_TIME"
+    # Wait for the specified time with real-time progress updates
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        # Cap at 90% during the loop to leave room for final processing
+        [[ $PERCENT -gt 90 ]] && PERCENT=90
+        STATUS="DNS Spoofing in progress... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        
+        sleep 2
+        ((ELAPSED+=2))
+    done
     
     cleanup
     trap - EXIT
     
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Checking DNS redirection results..."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Checking DNS redirection results..."
 
     # 2. Reporting
     if [[ -f "$JSON_LOG" && -s "$JSON_LOG" ]]; then
@@ -111,4 +123,5 @@ else
     exit 1
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "DNS Spoofing test complete."
 exit 0

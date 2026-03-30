@@ -64,18 +64,38 @@ if command -v mitmproxy &>/dev/null; then
     echo "[*] Starting mitmproxy transparent proxy..."
     
     # Setup iptables redirect
-    iptables -t nat -A PREROUTING -i "$INTERFACE" -p tcp --dport 80 -j REDIRECT --to-port 8080 || true
-    iptables -t nat -A PREROUTING -i "$INTERFACE" -p tcp --dport 443 -j REDIRECT --to-port 8080 || true
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        iptables -t nat -A PREROUTING -i "$INTERFACE" -p tcp --dport 80 -j REDIRECT --to-port 8080 || true
+        iptables -t nat -A PREROUTING -i "$INTERFACE" -p tcp --dport 443 -j REDIRECT --to-port 8080 || true
+    else
+        iptables -t nat -A PREROUTING -i "$INTERFACE" -p tcp --dport 80 -j REDIRECT --to-port 8080 >/dev/null 2>&1 || true
+        iptables -t nat -A PREROUTING -i "$INTERFACE" -p tcp --dport 443 -j REDIRECT --to-port 8080 >/dev/null 2>&1 || true
+    fi
     
-    mitmproxy --mode transparent --save-stream "$FLOW_FILE" > "$MITM_LOG" 2>&1 &
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        mitmproxy --mode transparent --save-stream "$FLOW_FILE" 2>&1 | tee "$MITM_LOG" &
+    else
+        mitmproxy --mode transparent --save-stream "$FLOW_FILE" > "$MITM_LOG" 2>&1 &
+    fi
     MITM_PID=$!
 
-    sleep "$SCAN_TIME"
+    # Wait for the specified time with real-time progress updates
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        # Cap at 90% during the loop to leave room for final processing
+        [[ $PERCENT -gt 90 ]] && PERCENT=90
+        STATUS="SSL Interception in progress... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        
+        sleep 2
+        ((ELAPSED+=2))
+    done
     
     cleanup
     trap - EXIT
     
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Reviewing SSL flows..."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Reviewing SSL flows..."
 
     # 2. Reporting
     if [[ -f "$FLOW_FILE" && -s "$FLOW_FILE" ]]; then
@@ -106,5 +126,5 @@ else
     exit 1
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "SSL Interception test complete."
 exit 0
-0

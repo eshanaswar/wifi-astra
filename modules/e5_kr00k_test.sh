@@ -35,6 +35,7 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 BSSID="${GUEST_BSSID:-}"
+SCAN_TIME="${SCAN_TIME:-60}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 EVIDENCE_PREFIX="${EVIDENCE_DIR}/e5"
@@ -55,9 +56,29 @@ KROOK_LOG="${EVIDENCE_DIR}/${TC_ID}_krook.log"
 KROOK_SCRIPT=$(find /opt/ /usr/share/ "${SCRIPT_DIR:-.}" -name "kr00k-test.py" 2>/dev/null | head -1)
 
 if [[ -n "$KROOK_SCRIPT" ]]; then
-    echo "[*] Running Kr00k test script: ${KROOK_SCRIPT}..."
-    timeout 60 python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" > "$KROOK_LOG" 2>&1 || true
+    echo "[*] Running Kr00k test script: ${KROOK_SCRIPT} (${SCAN_TIME}s)..."
+
+    # Start dynamic telemetry heartbeat
+    (
+        HEARTBEAT_ELAPSED=0
+        while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+            PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
+            [[ $PCT -gt 90 ]] && PCT=90
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+            sleep 2
+            HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+        done
+    ) &
+    TELEMETRY_PID=$!
+
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" 2>&1 | tee "$KROOK_LOG" || true
+    else
+        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" > "$KROOK_LOG" 2>&1 || true
+    fi
     
+    kill "$TELEMETRY_PID" 2>/dev/null || true
+
     if grep -qi "vulnerable" "$KROOK_LOG"; then
         cp "$KROOK_LOG" "$RES_FILE"
         "$ASTRA_BIN" record-finding \
@@ -77,8 +98,6 @@ else
     echo "BSSID OUI: $OUI" >> "$KROOK_LOG"
 fi
 
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Finalizing Kr00k audit..."
-
 # Audit Complete finding if no critical vulnerability was recorded above
 if [[ ! -f "$RES_FILE" ]]; then
     echo "[+] Kr00k testing complete (no active vulnerabilities confirmed)."
@@ -96,5 +115,5 @@ else
     echo "[+] Kr00k testing complete."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
-xit 0

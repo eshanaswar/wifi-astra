@@ -51,17 +51,30 @@ echo "[*] [$TC_ID] Identifying DHCP architecture on ${INTERFACE}..."
 TELEMETRY_PID=$!
 
 # Start passive capture
-timeout 30 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" > "$LOG_FILE" 2>&1 &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout 30 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" 2>&1 | tee "$LOG_FILE" &
+else
+    timeout 30 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" > "$LOG_FILE" 2>&1 &
+fi
 TCPDUMP_PID=$!
 
 # Force DHCP renewal to trigger traffic
 if command -v dhclient &>/dev/null; then
-    dhclient -v -r "$INTERFACE" 2>/dev/null || true
-    dhclient -v "$INTERFACE" 2>/dev/null || true
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        dhclient -v -r "$INTERFACE" || true
+        dhclient -v "$INTERFACE" || true
+    else
+        dhclient -v -r "$INTERFACE" 2>/dev/null || true
+        dhclient -v "$INTERFACE" 2>/dev/null || true
+    fi
 fi
 
 # Active discovery
-nmap --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>/dev/null || true
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    nmap --script broadcast-dhcp-discover -e "$INTERFACE" 2>&1 | tee "$NMAP_OUT" || true
+else
+    nmap --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>&1 || true
+fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 
