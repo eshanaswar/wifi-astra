@@ -147,6 +147,17 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		}
 	}
 
+	// A2. Duration Mode (Global for Timed modules)
+	if m.Timed {
+		durationOpts := []string{"Timed (Surgical - Default)", "Indefinite (Until Ctrl+C)"}
+		if ui.PromptList("Select Duration Mode", durationOpts) == 1 {
+			os.Setenv("ASTRA_INDEFINITE", "true")
+			fmt.Printf("\n%s[*] Indefinite mode active. Results will be recorded as they occur.%s\n", constants.ThemeSuccess, constants.ColorReset)
+		} else {
+			os.Setenv("ASTRA_INDEFINITE", "false")
+		}
+	}
+
 	// PMF Intelligence Guard
 	pmf, _ := db.GetConfig(c.Session.DB, "ASTRA_TARGET_PMF")
 	if pmf == "Required" && (m.ID == "A3" || m.ID == "F4") {

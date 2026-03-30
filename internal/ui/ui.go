@@ -174,3 +174,44 @@ func PromptConfirm(prompt string, defaultValue bool) bool {
 	}
 	return input == "y" || input == "yes"
 }
+
+func PromptList(title string, options []string) int {
+	mgr := GetManager()
+	if mgr.rl == nil {
+		fmt.Printf("\n--- %s ---\n", title)
+		for i, opt := range options {
+			fmt.Printf("%d) %s\n", i+1, opt)
+		}
+		fmt.Print("Select an option: ")
+		var input string
+		fmt.Scanln(&input)
+		choice, _ := strconv.Atoi(input)
+		return choice - 1
+	}
+
+	fmt.Printf("\n--- %s ---\n", title)
+	for i, opt := range options {
+		fmt.Printf("%d) %s\n", i+1, opt)
+	}
+
+	for {
+		mgr.rl.SetPrompt("Select an option: ")
+		line, err := mgr.rl.Readline()
+		if err != nil {
+			return -1
+		}
+
+		input := strings.TrimSpace(line)
+		if input == "" {
+			return -1
+		}
+
+		choice, err := strconv.Atoi(input)
+		if err != nil || choice < 1 || choice > len(options) {
+			fmt.Println("Invalid choice. Please try again.")
+			continue
+		}
+
+		return choice - 1
+	}
+}
