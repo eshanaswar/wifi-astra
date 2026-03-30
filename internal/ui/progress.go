@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -64,14 +65,25 @@ func (pm *ProgressMonitor) renderBar() {
 	}
 
 	width := 40
-	completed := (pm.percent * width) / 100
-	if completed > width { completed = width }
+	bar := ""
+	percentStr := fmt.Sprintf("%d%%", pm.percent)
+	statusPrefix := "RUNNING"
 	
-	bar := strings.Repeat("█", completed) + strings.Repeat("░", width-completed)
+	if os.Getenv("ASTRA_INDEFINITE") == "true" {
+		statusPrefix = "INDEFINITE"
+		percentStr = "∞"
+		// Animated sliding bar for indefinite mode
+		pos := int(time.Since(pm.StartTime).Seconds()) % width
+		bar = strings.Repeat(" ", pos) + "🛰️" + strings.Repeat(" ", width-pos-2)
+		if len(bar) > width { bar = bar[:width] }
+	} else {
+		completed := (pm.percent * width) / 100
+		if completed > width { completed = width }
+		bar = strings.Repeat("█", completed) + strings.Repeat("░", width-completed)
+	}
 	
 	color := constants.ThemeInfo
-	statusPrefix := "RUNNING"
-	if pm.stuck {
+	if pm.stuck && os.Getenv("ASTRA_INDEFINITE") != "true" {
 		color = constants.ThemeHigh
 		statusPrefix = "STUCK?"
 	} else if pm.percent >= 100 {
@@ -81,13 +93,9 @@ func (pm *ProgressMonitor) renderBar() {
 
 	elapsed := time.Since(pm.StartTime).Round(time.Second)
 	
-	// Move to bottom of terminal (standard hack: save, jump to big row, print, restore)
-	// Actually, we'll just print it on the current line but use \r to keep it updated 
-	// IF there are no logs. But since there are logs, we MUST use save/restore.
-	
-	fmt.Printf("\033[s\033[1000;1H\033[K%s[%s]%s [%s] %d%% %s | %s\033[u", 
+	fmt.Printf("\033[s\033[1000;1H\033[K%s[%s]%s [%s] %s %s | %s\033[u", 
 		color, statusPrefix, constants.ColorReset, 
-		bar, pm.percent, pm.status, elapsed)
+		bar, percentStr, pm.status, elapsed)
 }
 
 func (pm *ProgressMonitor) clearBar() {
