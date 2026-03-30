@@ -152,7 +152,11 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	// A2. Duration Mode (Global for Timed modules)
 	if m.Timed {
 		durationOpts := []string{"Timed (Surgical - Default)", "Indefinite (Until Ctrl+C)"}
-		if ui.PromptList("Select Duration Mode", durationOpts) == 1 {
+		choice := ui.PromptList("Select Duration Mode", durationOpts)
+		if choice == -1 {
+			return nil
+		}
+		if choice == 1 {
 			os.Setenv("ASTRA_INDEFINITE", "true")
 			// Set very large timeouts to effectively bypass 'timeout' commands in scripts
 			os.Setenv("SCAN_TIME", "36000")
@@ -169,7 +173,10 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		fmt.Printf("\n%s[!] INTELLIGENCE ALERT: Target enforces PMF (802.11w).%s\n", constants.ThemeHigh, constants.ColorReset)
 		fmt.Println("[*] Active deauthentication WILL FAIL. Passive monitoring is recommended.")
 		if m.ID == "A3" {
-			if !ui.PromptConfirm("Continue with active reveal anyway?", false) {
+			confirm := ui.PromptConfirm("Continue with active reveal anyway?", false)
+			// PromptConfirm doesn't return -1, it returns default. 
+			// But for mission safety, let's assume it might be better to check if it matches default
+			if !confirm {
 				os.Setenv("ACTIVE_REVEAL", "no")
 			}
 		} else if m.ID == "F4" {
@@ -191,6 +198,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 			}
 			
 			choice := ui.PromptList("Select Target Client", options)
+			if choice == -1 {
+				return nil
+			}
 			if m.ID == "D1" && choice == len(clients) {
 				os.Setenv("TARGET_CLIENT", "FF:FF:FF:FF:FF:FF")
 			} else if choice >= 0 {
@@ -204,7 +214,11 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	case "A1":
 		if os.Getenv("ASTRA_INDEFINITE") != "true" {
 			options := []string{"Standard (60s)", "Deep Scan (120s - Recommended for DFS/5GHz)"}
-			if ui.PromptList("Select Scan Depth", options) == 1 {
+			choice := ui.PromptList("Select Scan Depth", options)
+			if choice == -1 {
+				return nil
+			}
+			if choice == 1 {
 				os.Setenv("SCAN_TIME", "120")
 			} else {
 				os.Setenv("SCAN_TIME", "60")
@@ -216,10 +230,15 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		}
 	case "D3":
 		options := []string{"Pixie Dust (Fast, 1 transaction)", "Online Brute-Force (Sequential)"}
-		if ui.PromptList("Select WPS Vector", options) == 1 {
+		choice := ui.PromptList("Select WPS Vector", options)
+		if choice == -1 {
+			return nil
+		}
+		if choice == 1 {
 			os.Setenv("WPS_ATTACK", "online")
 			if os.Getenv("ASTRA_INDEFINITE") != "true" {
 				delay := ui.PromptString("Enter delay (seconds)", "300")
+				// PromptString returns empty on error if we are not careful
 				os.Setenv("WPS_DELAY", delay)
 			} else {
 				os.Setenv("WPS_DELAY", "0")
@@ -229,21 +248,33 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		}
 	case "D7":
 		options := []string{"Targeted Deauth (Surgical)", "CSA (Stealthier)"}
-		if ui.PromptList("Select Roaming Catalyst", options) == 1 {
+		choice := ui.PromptList("Select Roaming Catalyst", options)
+		if choice == -1 {
+			return nil
+		}
+		if choice == 1 {
 			os.Setenv("CATALYST", "csa")
 		} else {
 			os.Setenv("CATALYST", "deauth")
 		}
 	case "F1":
 		opts := []string{"SSID Only (Random BSSID)", "BSSID Clone (Match Target)"}
-		if ui.PromptList("Select Rogue AP Mode", opts) == 1 {
+		choice := ui.PromptList("Select Rogue AP Mode", opts)
+		if choice == -1 {
+			return nil
+		}
+		if choice == 1 {
 			os.Setenv("AP_MODE", "clone")
 		} else {
 			os.Setenv("AP_MODE", "ssid")
 		}
 		
 		catOpts := []string{"None", "Targeted Deauth", "CSA"}
-		os.Setenv("CATALYST", strconv.Itoa(ui.PromptList("Select Roaming Catalyst", catOpts)))
+		catChoice := ui.PromptList("Select Roaming Catalyst", catOpts)
+		if catChoice == -1 {
+			return nil
+		}
+		os.Setenv("CATALYST", strconv.Itoa(catChoice))
 		
 		if ui.PromptConfirm("Launch Responder pivot in background?", true) {
 			os.Setenv("LAUNCH_RESPONDER", "yes")
@@ -251,6 +282,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	case "F2":
 		opts := []string{"Dynamic MANA (Directed Probes)", "Known Beacon Attack (Loud - Recommended)"}
 		choice := ui.PromptList("Select Karma Vector", opts)
+		if choice == -1 {
+			return nil
+		}
 		if choice == 1 || choice == -1 { // Default to index 1 (Loud) or if aborted
 			os.Setenv("KARMA_MODE", "loud")
 		} else {
@@ -258,16 +292,26 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		}
 	case "F3":
 		opts := []string{"Generic Corporate", "Microsoft 365 (High-Fidelity)"}
-		if ui.PromptList("Select Phishing Template", opts) == 1 {
+		choice := ui.PromptList("Select Phishing Template", opts)
+		if choice == -1 {
+			return nil
+		}
+		if choice == 1 {
 			os.Setenv("PHISH_TEMPLATE", "m365")
 		} else {
 			os.Setenv("PHISH_TEMPLATE", "generic")
 		}
 	case "F5":
-		os.Setenv("TUNNEL_DOMAIN", ui.PromptString("Enter tunnel domain", ""))
-		os.Setenv("TUNNEL_PASS", ui.PromptString("Enter tunnel password", ""))
+		domain := ui.PromptString("Enter tunnel domain", "")
+		if domain == "" { return nil }
+		os.Setenv("TUNNEL_DOMAIN", domain)
+		
+		pass := ui.PromptString("Enter tunnel password", "")
+		os.Setenv("TUNNEL_PASS", pass)
 	case "G5":
-		os.Setenv("ROGUE_BSSID", ui.PromptString("Enter Rogue AP BSSID", ""))
+		bssid := ui.PromptString("Enter Rogue AP BSSID", "")
+		if bssid == "" { return nil }
+		os.Setenv("ROGUE_BSSID", bssid)
 	}
 
 	// 5. Run the Module
