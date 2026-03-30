@@ -136,6 +136,9 @@ func PromptString(prompt string, defaultValue string) string {
 	mgr.rl.SetPrompt(fullPrompt)
 	line, err := mgr.rl.Readline()
 	if err != nil {
+		if err.Error() == "Interrupt" || strings.Contains(strings.ToLower(err.Error()), "interrupt") {
+			return ""
+		}
 		return defaultValue
 	}
 
