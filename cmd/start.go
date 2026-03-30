@@ -91,28 +91,44 @@ func init() {
 }
 
 func sessionWizard() {
-	ui.GetManager().ClearScreen()
-	baseDir := "./sessions"
-	if config.GlobalConfig != nil && config.GlobalConfig.SessionDir != "" {
-		baseDir = config.GlobalConfig.SessionDir
-	}
-
-	fmt.Println("\n--- WiFi-Astra: Session Manager ---")
-
-	sessions, _ := os.ReadDir(baseDir)
-	var existing []os.DirEntry
-	for _, s := range sessions {
-		if s.IsDir() {
-			existing = append(existing, s)
+	for {
+		ui.GetManager().ClearScreen()
+		baseDir := "./sessions"
+		if config.GlobalConfig != nil && config.GlobalConfig.SessionDir != "" {
+			baseDir = config.GlobalConfig.SessionDir
 		}
-	}
 
-	if len(existing) > 0 {
+		fmt.Println("\n--- WiFi-Astra: Session Manager ---")
+
+		sessions, _ := os.ReadDir(baseDir)
+		var existing []os.DirEntry
+		for _, s := range sessions {
+			if s.IsDir() {
+				existing = append(existing, s)
+			}
+		}
+
 		fmt.Println("1) Create New Session")
-		fmt.Println("2) Resume Existing Session")
+		if len(existing) > 0 {
+			fmt.Println("2) Resume Existing Session")
+			fmt.Println("3) Delete Existing Session")
+		}
+
 		choice := ui.PromptString("Select an option", "1")
 
-		if choice == "2" {
+		if choice == "1" {
+			fmt.Println("\n--- New Session Setup ---")
+			name := ui.PromptString("Enter session name (optional)", "")
+			s, err := session.NewSession(name, baseDir)
+			if err != nil {
+				logging.Error("Failed to create session: %v", err)
+				os.Exit(1)
+			}
+			logging.InitLogger(s.LogDir, Verbose)
+			logging.Success("Session initialized: %s", s.ID)
+			launchMainMenu(s)
+			return
+		} else if choice == "2" && len(existing) > 0 {
 			fmt.Println("\n--- Available Sessions ---")
 			for i, s := range existing {
 				fmt.Printf("%d) %s\n", i+1, s.Name())
@@ -129,19 +145,30 @@ func sessionWizard() {
 				}
 				logging.Error("Failed to load session: %v", err)
 			}
+		} else if choice == "3" && len(existing) > 0 {
+			fmt.Println("\n--- Available Sessions for Deletion ---")
+			for i, s := range existing {
+				fmt.Printf("%d) %s\n", i+1, s.Name())
+			}
+			sIdx := ui.PromptString("Select session to delete (or 0 to cancel)", "0")
+			idx, _ := strconv.Atoi(sIdx)
+			if idx >= 1 && idx <= len(existing) {
+				sessionID := existing[idx-1].Name()
+				warning := fmt.Sprintf("\n[!] WARNING: This will permanently delete all logs, evidence, and results for session %s.", sessionID)
+				fmt.Println(warning)
+				if ui.PromptConfirm("Are you sure?", false) {
+					path := filepath.Join(baseDir, sessionID)
+					if err := os.RemoveAll(path); err != nil {
+						logging.Error("Failed to delete session %s: %v", sessionID, err)
+					} else {
+						logging.Success("Session %s deleted successfully.", sessionID)
+					}
+					time.Sleep(1 * time.Second)
+				}
+			}
+			continue
 		}
 	}
-
-	fmt.Println("\n--- New Session Setup ---")
-	name := ui.PromptString("Enter session name (optional)", "")
-	s, err := session.NewSession(name, baseDir)
-	if err != nil {
-		logging.Error("Failed to create session: %v", err)
-		os.Exit(1)
-	}
-	logging.InitLogger(s.LogDir, Verbose)
-	logging.Success("Session initialized: %s", s.ID)
-	launchMainMenu(s)
 }
 
 func launchMainMenu(s *session.Session) {
