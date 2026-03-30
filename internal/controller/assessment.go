@@ -238,7 +238,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 			os.Setenv("WPS_ATTACK", "online")
 			if os.Getenv("ASTRA_INDEFINITE") != "true" {
 				delay := ui.PromptString("Enter delay (seconds)", "300")
-				// PromptString returns empty on error if we are not careful
+				if delay == "" {
+					return nil
+				}
 				os.Setenv("WPS_DELAY", delay)
 			} else {
 				os.Setenv("WPS_DELAY", "0")
