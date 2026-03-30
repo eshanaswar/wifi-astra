@@ -8,6 +8,7 @@
 # DESC="Test if AP/client are vulnerable to Kr00k (CVE-2019-15126) decryption"
 # REQS="monitor_iface,target_bssid"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -61,7 +62,7 @@ if [[ -n "$KROOK_SCRIPT" ]]; then
     # Start dynamic telemetry heartbeat
     (
         HEARTBEAT_ELAPSED=0
-        while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+        while [[ "${ASTRA_INDEFINITE:-}" == "true" || $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
             PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
             [[ $PCT -gt 90 ]] && PCT=90
             "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."

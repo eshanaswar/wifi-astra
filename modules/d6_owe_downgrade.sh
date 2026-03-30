@@ -8,6 +8,7 @@
 # DESC="Test if OWE networks can be downgraded to Open by spoofing transition mode"
 # REQS="monitor_iface,target_ssid"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="owe"
 
 #===============================================================================

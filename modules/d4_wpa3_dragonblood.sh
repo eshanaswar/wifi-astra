@@ -8,6 +8,7 @@
 # DESC="Test for WPA3-SAE side-channel and downgrade vulnerabilities (Dragonblood)"
 # REQS="monitor_iface,target_ssid"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="wpa3"
 
 #===============================================================================

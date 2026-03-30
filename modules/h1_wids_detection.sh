@@ -8,6 +8,7 @@
 # DESC="Test if infrastructure detects deauth, fake AP, and auth flood attacks"
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================

@@ -8,6 +8,7 @@
 # DESC="Serve a phishing page to clients connected to the rogue AP"
 # REQS="managed_iface,target_ssid,nat"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="http"
 
 #===============================================================================
@@ -140,7 +141,7 @@ trap cleanup EXIT
 # Start dynamic telemetry heartbeat
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
         STATUS="Portal active (waiting for users)... ($(( SCAN_TIME - ELAPSED ))s left)"
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"

@@ -8,6 +8,7 @@
 # DESC="Detect mDNS/Bonjour service announcements from corporate devices"
 # REQS="managed_iface"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="none"
 
 set -euo pipefail

@@ -8,6 +8,7 @@
 # DESC="Deploy evil twin AP to test client susceptibility and WIDS response"
 # REQS="managed_iface,target_ssid,nat"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="dhcp"
 
 #===============================================================================
@@ -99,7 +100,7 @@ trap cleanup EXIT
 # Start dynamic telemetry heartbeat
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
         STATUS="AP Active (monitoring roams)... ($(( SCAN_TIME - ELAPSED ))s left)"
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"

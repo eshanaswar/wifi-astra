@@ -8,6 +8,7 @@
 # DESC="Capture CDP/LLDP frames leaking infrastructure details"
 # REQS="managed_iface"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="none"
 
 set -euo pipefail
@@ -38,7 +39,7 @@ echo "[*] [$TC_ID] Identifying CDP/LLDP leaks on ${INTERFACE} for ${SCAN_TIME}s.
 # Identify & Target
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( ELAPSED * 100 / SCAN_TIME ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Capturing CDP/LLDP frames..."

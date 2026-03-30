@@ -8,6 +8,7 @@
 # DESC="Enumerate all connected clients and their probe lists"
 # REQS="monitor_iface,target_bssid,target_channel"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -47,7 +48,7 @@ CSV_PREFIX="${OUTPUT_CSV%.csv}"
 # Start telemetry background
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
         STATUS="Mapping clients... ($(( SCAN_TIME - ELAPSED ))s left)"
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"

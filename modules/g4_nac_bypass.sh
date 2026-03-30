@@ -8,6 +8,7 @@
 # DESC="Attempt to bypass Network Access Control via Full Identity Spoofing"
 # REQS="managed_iface"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="none"
 
 #===============================================================================

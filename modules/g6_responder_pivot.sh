@@ -8,6 +8,7 @@
 # DESC="Run Responder to capture LLMNR/NBT-NS hashes from connected clients"
 # REQS="managed_iface"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="none"
 
 #===============================================================================
@@ -54,7 +55,7 @@ fi
 # 1. 🛰️ DYNAMIC TELEMETRY HEARTBEAT (Background)
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PERCENT=$(( 20 + (ELAPSED * 70 / SCAN_TIME) ))
         [[ $PERCENT -gt 90 ]] && PERCENT=90
         STATUS="Responder active on ${INTERFACE}... ($(( SCAN_TIME - ELAPSED ))s left)"

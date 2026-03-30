@@ -8,6 +8,7 @@
 # DESC="Test for EAP-level vulnerabilities (GTC downgrade, certificate validation bypass)"
 # REQS="monitor_iface,target_ssid"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="eap"
 
 #===============================================================================

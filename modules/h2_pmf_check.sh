@@ -8,6 +8,7 @@
 # DESC="Passive check for Protected Management Frames (PMF) support"
 # REQS="monitor_iface,target_bssid"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================

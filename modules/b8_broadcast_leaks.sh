@@ -8,6 +8,7 @@
 # DESC="Analyze UDP traffic for SSDP/LLMNR/NetBIOS storms bleeding from corporate"
 # REQS="managed_iface"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="none"
 
 #  modules/b8_broadcast_leaks.sh
@@ -38,7 +39,7 @@ echo "[*] [$TC_ID] Identifying broadcast/multicast leaks on ${INTERFACE} for ${S
 # Identify & Target
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Capturing broadcast traffic..."

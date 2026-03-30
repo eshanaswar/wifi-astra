@@ -8,6 +8,7 @@
 # DESC="Test client susceptibility to Karma/Loud AP attacks (responding to all probes)"
 # REQS="managed_iface,nat"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="dhcp"
 
 #===============================================================================
@@ -96,7 +97,7 @@ trap cleanup EXIT
 # Start dynamic telemetry heartbeat
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
         STATUS="Karma active (monitoring probes)... ($(( SCAN_TIME - ELAPSED ))s left)"
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"

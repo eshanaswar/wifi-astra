@@ -8,6 +8,7 @@
 # DESC="Send malformed management frames to test AP robustness"
 # REQS="monitor_iface,target_bssid"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="none"
 
 #===============================================================================
@@ -57,7 +58,7 @@ if command -v mdk4 &>/dev/null; then
     # Start dynamic telemetry heartbeat
     (
         HEARTBEAT_ELAPSED=0
-        while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+        while [[ "${ASTRA_INDEFINITE:-}" == "true" || $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
             PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
             [[ $PCT -gt 90 ]] && PCT=90
             "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."

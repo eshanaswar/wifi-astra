@@ -8,6 +8,7 @@
 # DESC="Attempt to force WPA3-SAE clients to downgrade to WPA2-PSK"
 # REQS="monitor_iface,target_ssid,nat"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="wpa3"
 
 #===============================================================================
@@ -86,7 +87,7 @@ trap cleanup EXIT
 # 3. Start dynamic telemetry heartbeat
 (
     HEARTBEAT_ELAPSED=0
-    while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."

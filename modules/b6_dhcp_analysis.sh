@@ -8,6 +8,7 @@
 # DESC="Analyze DHCP configuration and check for rogue DHCP servers"
 # REQS="managed_iface"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="none"
 
 set -euo pipefail
@@ -39,7 +40,7 @@ echo "[*] [$TC_ID] Identifying DHCP architecture on ${INTERFACE}..."
 # Identify & Target
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing DHCP discovery..."

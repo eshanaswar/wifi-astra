@@ -8,6 +8,7 @@
 # DESC="Attempt to ARP-spoof the gateway to intercept traffic"
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="mitm_arp_tls"
 
 #===============================================================================
@@ -82,7 +83,7 @@ EOF
     # 1. 🛰️ DYNAMIC TELEMETRY HEARTBEAT (Background)
     (
         ELAPSED=0
-        while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
             PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
             [[ $PERCENT -gt 90 ]] && PERCENT=90
             STATUS="ARP Spoofing in progress... ($(( SCAN_TIME - ELAPSED ))s left)"

@@ -8,6 +8,7 @@
 # DESC="Test WPA2 key reinstallation (CVE-2017-13077), nonce reuse, GTK reinstall"
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="yes"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================

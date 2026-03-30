@@ -8,6 +8,7 @@
 # DESC="Enumerate all SSIDs, BSSIDs, channels, encryption using monitor mode"
 # REQS="monitor_iface"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -46,7 +47,7 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_airodump.log"
 # 1. 🛰️ DYNAMIC TELEMETRY HEARTBEAT (Background)
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( ELAPSED * 100 / SCAN_TIME ))
         [[ $PCT -gt 95 ]] && PCT=95
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Scanning channels..."

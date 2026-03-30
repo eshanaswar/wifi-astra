@@ -8,6 +8,7 @@
 # DESC="Test for SSL/TLS interception susceptibility (HSTS, certificate pinning)"
 # REQS="managed_iface"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="tls"
 
 #===============================================================================
@@ -75,7 +76,7 @@ if command -v mitmproxy &>/dev/null; then
     # 1. 🛰️ DYNAMIC TELEMETRY HEARTBEAT (Background)
     (
         ELAPSED=0
-        while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
             PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
             [[ $PERCENT -gt 90 ]] && PERCENT=90
             STATUS="SSL Interception in progress... ($(( SCAN_TIME - ELAPSED ))s left)"

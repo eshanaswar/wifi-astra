@@ -8,6 +8,7 @@
 # DESC="Detect WPS-enabled APs and test for PIN/PBC vulnerabilities"
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="no"
+# TIMED="yes"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
