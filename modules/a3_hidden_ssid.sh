@@ -104,31 +104,35 @@ fi
 echo -e "${C_PROMPT}[*]${C_RESET} Monitoring for SSID reveals on ${C_VAR}${INTERFACE}${C_RESET}..."
 CSV_PREFIX="${OUTPUT_CSV%.csv}"
 
-# If ACTIVE_REVEAL was yes, we might have already used some time.
-# We ensure we still monitor for a reasonable duration.
-MONITOR_TIME=$SCAN_TIME
-if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
-    echo -e "[*] Active reveal used. Starting follow-up passive monitoring..."
-fi
+# Start telemetry background
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        STATUS="Monitoring for SSID reveals... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        sleep 5
+        ((ELAPSED+=5))
+    done
+) &
+TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv &
+    # Run in foreground
+    timeout "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv || true
+    RET=$?
 else
+    # Run with redirection
     airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv > /dev/null 2>&1 &
+    TOOL_PID=$!
+    # Wait for SCAN_TIME
+    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
+    wait "$TOOL_PID" 2>/dev/null || true
+    RET=$?
 fi
-AIRODUMP_PID=$!
 
-ELAPSED=0
-while [[ $ELAPSED -lt $MONITOR_TIME ]]; do
-    PERCENT=$(( ELAPSED * 100 / MONITOR_TIME ))
-    STATUS="Monitoring for SSID reveals... ($(( MONITOR_TIME - ELAPSED ))s left)"
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
-    sleep 5
-    ((ELAPSED+=5))
-done
-
-kill "$AIRODUMP_PID" || true
-wait "$AIRODUMP_PID" 2>/dev/null || true
+kill "$TELEMETRY_PID" 2>/dev/null || true
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Scan Complete"
 
 if [[ -f "${CSV_PREFIX}-01.csv" ]]; then
     mv "${CSV_PREFIX}-01.csv" "$OUTPUT_CSV"

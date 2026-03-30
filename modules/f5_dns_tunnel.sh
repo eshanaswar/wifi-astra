@@ -55,18 +55,17 @@ echo -e "${C_PROMPT}[*]${C_RESET} Attempting DNS tunnel via ${C_VAR}${TUNNEL_DOM
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_iodine.log"
 
 # Execution
-if command -v iodine &>/dev/null; then
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" 2>&1 | tee "$LOG_FILE" &
-    else
-        iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" > "$LOG_FILE" 2>&1 &
-    fi
-    IODINE_PID=$!
-    
-    cleanup() { kill "$IODINE_PID" 2>/dev/null || true; }
-    trap cleanup EXIT
+cleanup() {
+    echo -e "${C_PROMPT}[*]${C_RESET} Tearing down DNS Tunneling environment..."
+    [[ -n "${IODINE_PID:-}" ]] && kill "$IODINE_PID" 2>/dev/null || true
+    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
 
-    SCAN_TIME=120
+SCAN_TIME=120
+
+# Start dynamic telemetry and verification heartbeat
+(
     ELAPSED=0
     SUCCESS=0
     while [[ $ELAPSED -lt $SCAN_TIME ]]; do
@@ -83,15 +82,30 @@ if command -v iodine &>/dev/null; then
                 --name "DNS Tunneling Successful" \
                 --severity HIGH \
                 --desc "Established tunnel via $TUNNEL_DOMAIN." \
-                --evidence "$LOG_FILE"
+                --target "$TUNNEL_DOMAIN" \
+                --evidence "$LOG_FILE" \
+                --rationale "DNS tunneling allows bypassing restrictive captive portals and firewalls by encapsulating traffic in DNS queries."
             SUCCESS=1
             break
         fi
         sleep 5
         ((ELAPSED+=5))
     done
+    [[ $SUCCESS -eq 0 ]] && echo -e "[+] Tunnel attempt timed out or failed."
+) &
+TEL_PID=$!
+
+if command -v iodine &>/dev/null; then
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        # FOREGROUND
+        timeout "$SCAN_TIME" iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" 2>&1 | tee "$LOG_FILE" || true
+    else
+        # BACKGROUND
+        iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" > "$LOG_FILE" 2>&1 &
+        IODINE_PID=$!
+        sleep "$SCAN_TIME"
+    fi
     
-    [[ $SUCCESS -eq 0 ]] && echo -e "[+] Tunnel attempt timed out."
     cleanup
     trap - EXIT
 else

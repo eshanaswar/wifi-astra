@@ -76,9 +76,11 @@ TELEMETRY_PID=$!
 
 # type 0x888e is EAPOL
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" 2>&1 | tee "$TCPDUMP_LOG" || true
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" || true
 else
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" > "$TCPDUMP_LOG" 2>&1 || true
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" > "$TCPDUMP_LOG" 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID || true
 fi
 
 # 2. Optional: Run specialized KRACK test scripts if available
@@ -88,9 +90,11 @@ VULN_DETECTED=0
 if [[ -n "$KRACK_SCRIPT" ]]; then
     echo "[*] Running KRACK test script: ${KRACK_SCRIPT}..."
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" 2>&1 | tee "$RES_FILE" || true
+        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" || true
     else
-        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" > "$RES_FILE" 2>&1 || true
+        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" > "$RES_FILE" 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID || true
     fi
     
     if awk 'tolower($0) ~ /vulnerable|reinstall|reuse/ {exit 0} END {exit 1}' "$RES_FILE"; then

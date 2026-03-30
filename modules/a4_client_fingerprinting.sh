@@ -44,40 +44,45 @@ echo -e "${C_PROMPT}[*]${C_RESET} Starting client fingerprinting on ${C_VAR}${IN
 
 CSV_PREFIX="${OUTPUT_CSV%.csv}"
 
-# 1. Start airodump-ng to map clients
+# Start telemetry background
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        STATUS="Mapping clients... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        sleep 2
+        ((ELAPSED+=2))
+    done
+) &
+TELEMETRY_PID=$!
+
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    airodump-ng "$INTERFACE" \
+    # Run in foreground
+    timeout "$SCAN_TIME" airodump-ng "$INTERFACE" \
         --bssid "$BSSID" \
         --channel "${CHANNEL:-0}" \
         --write "$CSV_PREFIX" \
         --output-format csv \
-        --band abg &
+        --band abg || true
+    RET=$?
 else
+    # Run with redirection
     airodump-ng "$INTERFACE" \
         --bssid "$BSSID" \
         --channel "${CHANNEL:-0}" \
         --write "$CSV_PREFIX" \
         --output-format csv \
         --band abg > "${EVIDENCE_DIR}/${TC_ID}_airodump.log" 2>&1 &
+    TOOL_PID=$!
+    # Wait for SCAN_TIME
+    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
+    wait "$TOOL_PID" 2>/dev/null || true
+    RET=$?
 fi
-AIRODUMP_PID=$!
 
-# 2. Wait for completion with Progress Telemetry
-ELAPSED=0
-while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-    PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-    STATUS="Mapping clients... ($(( SCAN_TIME - ELAPSED ))s left)"
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
-    
-    sleep 2
-    ((ELAPSED+=2))
-done
-
+kill "$TELEMETRY_PID" 2>/dev/null || true
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Processing results..."
-
-# Cleanup
-kill "$AIRODUMP_PID" || true
-wait "$AIRODUMP_PID" 2>/dev/null || true
 
 # Rename the file
 if [[ -f "${CSV_PREFIX}-01.csv" ]]; then

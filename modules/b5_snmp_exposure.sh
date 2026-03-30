@@ -40,36 +40,36 @@ BRUTE_FILE="${EVIDENCE_PREFIX}_brute.txt"
 echo "[*] [$TC_ID] Identifying SNMP exposure on ${GATEWAY}..."
 
 # Identify & Target
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
 (
     ELAPSED=0
     while [[ $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing scan..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        sleep 5
+        ELAPSED=$((ELAPSED + 5))
     done
 ) &
 TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
-        onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY" 2>&1 | tee "$BRUTE_FILE" || true
+        onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY"
     else
-        onesixtyone "$GATEWAY" 2>&1 | tee "$BRUTE_FILE" || true
+        onesixtyone "$GATEWAY"
     fi
+    RET=$?
 else
     if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
-        onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
+        onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY" > "$BRUTE_FILE" 2>&1 &
     else
-        onesixtyone "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
+        onesixtyone "$GATEWAY" > "$BRUTE_FILE" 2>&1 &
     fi
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
-
-# Verify
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Verifying community strings..."
 COMM_STRINGS=$(grep "\[" "$BRUTE_FILE" | awk '{print $2}' | tr -d '[]' || true)
 

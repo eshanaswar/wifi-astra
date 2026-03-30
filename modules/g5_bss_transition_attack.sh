@@ -82,7 +82,9 @@ EOF
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE"
 else
-    python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE" > /dev/null 2>&1
+    python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE" > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID || true
 fi
 
 # Reporting

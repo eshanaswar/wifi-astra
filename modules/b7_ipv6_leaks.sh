@@ -37,29 +37,32 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 echo "[*] [$TC_ID] Identifying IPv6 leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 
 # Identify & Target
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
 (
     ELAPSED=0
     while [[ $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing scan..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Capturing ICMPv6 RA frames..."
+        sleep 5
+        ELAPSED=$((ELAPSED + 5))
     done
 ) &
 TELEMETRY_PID=$!
 
-# 1. Listen for ICMPv6 RA
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Run in foreground
     timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" || true
+    RET=$?
 else
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" > "$LOG_FILE" 2>&1 || true
+    # Run with redirection
+    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" > "$LOG_FILE" 2>&1 &
+    TOOL_PID=$!
+    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
+    wait "$TOOL_PID" 2>/dev/null || true
+    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
-
-# 2. Check current addresses
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Checking IPv6 configuration..."
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     ip -6 addr show dev "$INTERFACE" | tee "$STATUS_FILE" || true

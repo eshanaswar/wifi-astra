@@ -17,13 +17,6 @@
 
 set -euo pipefail
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
-
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
@@ -46,96 +39,73 @@ if [[ -z "$SSID" ]]; then
 fi
 
 echo "[*] Starting WPA3 Dragonblood tests against ${SSID} (BSSID: ${BSSID:-Any})..."
-
-# Initialize output file
 echo "--- WPA3 Dragonblood Test Results for ${SSID} ---" > "$DRAGON_OUT"
 
-# 1. Dragonslayer (Side-channel analysis)
-VULN_FOUND=0
-
-# Start dynamic telemetry heartbeat
+# 1. Start Telemetry in Background
 (
-    HEARTBEAT_ELAPSED=0
-    # Total scan time for both tests
-    TOTAL_SCAN_TIME=$((SCAN_TIME * 2))
-    while [[ $HEARTBEAT_ELAPSED -lt $TOTAL_SCAN_TIME ]]; do
-        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / TOTAL_SCAN_TIME) ))
-        [[ $PCT -gt 90 ]] && PCT=90
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
-        sleep 2
-        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    ELAPSED=0
+    while true; do
+        PCT=$(( 10 + (ELAPSED % 85) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing Dragonblood audit..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
-TELEMETRY_PID=$!
+TEL_PID=$!
 
-if command -v dragonslayer &>/dev/null; then
-    echo "[*] Running Dragonslayer side-channel test..."
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+# 2. Run Primary Tools (dragonslayer + dragondrain)
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground Execution
+    if command -v dragonslayer &>/dev/null; then
         timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
-    else
-        timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
     fi
-    
-    # Use awk for robust vulnerability detection
-    if awk 'tolower($0) ~ /vulnerable/ {exit 0} END {exit 1}' "$DRAGON_OUT"; then
-        VULN_FOUND=1
-        echo "[!] VULNERABILITY DETECTED: WPA3 Side-Channel (SAE)"
-        "$ASTRA_BIN" record-finding \
-            --session-dir "$SESSION_DIR" \
-            --tc "$TC_ID" \
-            --type vulnerability \
-            --name "WPA3 SAE Side-Channel Vulnerability" \
-            --desc "The target network ${SSID} is vulnerable to Dragonblood side-channel leaks during the SAE (Simultaneous Authentication of Equals) handshake. This can allow for password-partitioning attacks to recover the WPA3 passphrase." \
-            --severity HIGH \
-            --evidence "$DRAGON_OUT" \
-            --rationale "Side-channel leaks in WPA3-SAE implementations allow attackers to bypass the security improvements of WPA3 and perform offline brute-force attacks similar to WPA2."
-    fi
-else
-    echo "[!] dragonslayer tool not found. Skipping side-channel test." >> "$DRAGON_OUT"
-fi
-
-# 2. Dragondrain (SAE group forcing / Resource exhaustion)
-if command -v dragondrain &>/dev/null; then
-    echo "[*] Running Dragondrain resource exhaustion test..."
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    if command -v dragondrain &>/dev/null; then
         timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
-    else
-        timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
     fi
-    
-    if [[ "$VULN_FOUND" -eq 0 ]] && awk 'tolower($0) ~ /vulnerable/ {exit 0} END {exit 1}' "$DRAGON_OUT"; then
-        VULN_FOUND=1
-        echo "[!] VULNERABILITY DETECTED: WPA3 Resource Exhaustion (SAE)"
-        "$ASTRA_BIN" record-finding \
-            --session-dir "$SESSION_DIR" \
-            --tc "$TC_ID" \
-            --type vulnerability \
-            --name "WPA3 SAE Resource Exhaustion" \
-            --desc "The target network ${SSID} is vulnerable to SAE resource exhaustion (group forcing). An attacker can overwhelm the AP by initiating multiple SAE handshakes with expensive cryptographic groups." \
-            --severity MEDIUM \
-            --evidence "$DRAGON_OUT" \
-            --rationale "SAE resource exhaustion can lead to Denial of Service (DoS) for the wireless infrastructure, preventing legitimate users from connecting."
-    fi
+    RET=$?
 else
-    echo "[!] dragondrain tool not found. Skipping resource exhaustion test." >> "$DRAGON_OUT"
+    # Background Execution
+    (
+        if command -v dragonslayer &>/dev/null; then
+            timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+        fi
+        if command -v dragondrain &>/dev/null; then
+            timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+        fi
+    ) > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
-kill "$TELEMETRY_PID" 2>/dev/null || true
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
 
-echo "[+] WPA3 Dragonblood testing complete."
-if [[ "$VULN_FOUND" -eq 0 ]]; then
+# Reporting
+VULN_FOUND=0
+if grep -qi "vulnerable" "$DRAGON_OUT" 2>/dev/null; then
+    VULN_FOUND=1
+fi
+
+if [[ "$VULN_FOUND" -eq 1 ]]; then
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "WPA3 SAE Vulnerability Detected" \
+        --desc "The target network ${SSID} is vulnerable to Dragonblood class attacks (SAE Side-Channel or Resource Exhaustion)." \
+        --severity HIGH \
+        --evidence "$DRAGON_OUT" \
+        --rationale "Dragonblood vulnerabilities allow attackers to bypass WPA3 security improvements."
+else
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
         --name "[$TC_ID] Audit Complete" \
-        --desc "Completed WPA3-SAE side-channel and resource exhaustion tests against ${SSID}. No vulnerabilities were successfully identified during the test window." \
+        --desc "Completed WPA3-SAE Dragonblood tests against ${SSID}. No vulnerabilities identified." \
         --severity INFO \
         --evidence "$DRAGON_OUT" \
-        --rationale "WPA3 is significantly more secure than WPA2, but early implementations must be audited for the known Dragonblood class of vulnerabilities."
+        --rationale "WPA3 is significantly more secure than WPA2."
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit 0
-0
-
+exit $RET

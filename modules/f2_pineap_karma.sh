@@ -89,8 +89,22 @@ cleanup() {
     echo -e "${C_PROMPT}[*]${C_RESET} Tearing down Karma environment..."
     [[ -n "${MANA_PID:-}" ]] && kill "$MANA_PID" 2>/dev/null || true
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
+    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Start dynamic telemetry heartbeat
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        STATUS="Karma active (monitoring probes)... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        sleep 5
+        ((ELAPSED+=5))
+    done
+) &
+TEL_PID=$!
 
 echo -e "[*] Starting DNS hijacker..."
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
@@ -103,22 +117,14 @@ DNSMASQ_PID=$!
 if command -v hostapd-mana &>/dev/null; then
     echo -e "[*] Starting hostapd-mana..."
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        hostapd-mana "$MANA_CONF" 2>&1 | tee "$MANA_LOG" &
+        # FOREGROUND
+        timeout "$SCAN_TIME" hostapd-mana "$MANA_CONF" 2>&1 | tee "$MANA_LOG" || true
     else
+        # BACKGROUND
         hostapd-mana "$MANA_CONF" > "$MANA_LOG" 2>&1 &
+        MANA_PID=$!
+        sleep "$SCAN_TIME"
     fi
-    MANA_PID=$!
-    
-    # 3. Progress Tracking
-    ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-        STATUS="Karma active (monitoring probes)... ($(( SCAN_TIME - ELAPSED ))s left)"
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
-        
-        sleep 5
-        ((ELAPSED+=5))
-    done
     
     cleanup
     trap - EXIT

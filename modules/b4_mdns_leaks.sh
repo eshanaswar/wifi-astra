@@ -35,33 +35,34 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 
 echo "[*] [$TC_ID] Identifying mDNS/Bonjour services on ${INTERFACE} for ${SCAN_TIME}s..."
 
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
-# Phase 1: 10% - 50%
-(
-    ELAPSED=0
-    HALF_TIME=$((SCAN_TIME / 2))
-    while [[ $ELAPSED -lt $HALF_TIME ]]; do
-        PCT=$(( 10 + (ELAPSED * 40 / HALF_TIME) ))
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Discovering mDNS services..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
-    done
-) &
-TELEMETRY_PID=$!
-
 # 1. Active discovery using avahi-browse if available
 AVAHI_OUT="${EVIDENCE_PREFIX}_avahi_raw.txt"
 if command -v avahi-browse &>/dev/null; then
+    # Start telemetry background
+    (
+        ELAPSED=0
+        HALF_TIME=$((SCAN_TIME / 2))
+        while [[ $ELAPSED -lt $HALF_TIME ]]; do
+            PCT=$(( 10 + (ELAPSED * 40 / HALF_TIME) ))
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Discovering mDNS services..."
+            sleep 2
+            ELAPSED=$((ELAPSED + 2))
+        done
+    ) &
+    TELEMETRY_PID=$!
+
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout "$((SCAN_TIME/2))" avahi-browse -art 2>&1 | tee "$AVAHI_OUT" || true
+        timeout "$((SCAN_TIME/2))" avahi-browse -art || true
+        RET=$?
     else
         timeout "$((SCAN_TIME/2))" avahi-browse -art > "$AVAHI_OUT" 2>/dev/null || true
+        RET=$?
     fi
+    kill "$TELEMETRY_PID" 2>/dev/null || true
 fi
 
-kill "$TELEMETRY_PID" 2>/dev/null || true
-
-# Phase 2: 50% - 90%
+# 2. Passive capture of mDNS traffic (UDP 5353)
+# Start telemetry background
 (
     ELAPSED=0
     HALF_TIME=$((SCAN_TIME / 2))
@@ -74,16 +75,18 @@ kill "$TELEMETRY_PID" 2>/dev/null || true
 ) &
 TELEMETRY_PID=$!
 
-# 2. Passive capture of mDNS traffic (UDP 5353)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" 2>&1 | tee "$LOG_FILE" || true
+    timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" || true
+    RET=$?
 else
-    timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 || true
+    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 &
+    TOOL_PID=$!
+    (sleep "$((SCAN_TIME/2))"; kill "$TOOL_PID" 2>/dev/null || true) &
+    wait "$TOOL_PID" 2>/dev/null || true
+    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
-
-# Verify
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing findings..."
 FOUND=0
 if [[ -f "$AVAHI_OUT" && -s "$AVAHI_OUT" ]]; then

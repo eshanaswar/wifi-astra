@@ -72,9 +72,11 @@ if [[ -n "$KROOK_SCRIPT" ]]; then
     TELEMETRY_PID=$!
 
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" 2>&1 | tee "$KROOK_LOG" || true
+        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" || true
     else
-        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" > "$KROOK_LOG" 2>&1 || true
+        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" > "$KROOK_LOG" 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID || true
     fi
     
     kill "$TELEMETRY_PID" 2>/dev/null || true

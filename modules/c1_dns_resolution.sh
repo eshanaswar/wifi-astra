@@ -50,44 +50,55 @@ AXFR_FILE="${EVIDENCE_PREFIX}_axfr.txt"
 
 echo "[*] [$TC_ID] Identifying internal DNS resolution via ${DNS_SERVER}..."
 
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+# 1. Start Telemetry in Background
 (
     ELAPSED=0
     while true; do
-        # Incrementally move from 10% to 60% during discovery
-        PCT=$(( 10 + (ELAPSED % 50) ))
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Probing internal hostnames..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        PCT=$(( 10 + (ELAPSED % 85) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Probing internal hostnames & AXFR..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
-TELEMETRY_PID=$!
+TEL_PID=$!
 
 # Dynamic Targets: Use the actual domain search suffix if available
 SEARCH_DOMAINS=$(grep "^search" /etc/resolv.conf 2>/dev/null | cut -d' ' -f2- || true)
 HOSTNAMES=("internal" "dc01" "mail" "vpn" "wifi" "proxy" "intranet" "portal" "git" "jira")
 
-for host in "${HOSTNAMES[@]}"; do
-    # Try raw host
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+# 2. Run Primary Tool (dig)
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground Loop
+    for host in "${HOSTNAMES[@]}"; do
         dig +short "@$DNS_SERVER" "$host" 2>&1 | tee -a "$RESOLUTION_FILE" || true
-    else
-        dig +short "@$DNS_SERVER" "$host" 2>/dev/null >> "$RESOLUTION_FILE" || true
-    fi
-    # Try with search suffixes
-    for suffix in $SEARCH_DOMAINS; do
-        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        for suffix in $SEARCH_DOMAINS; do
             dig +short "@$DNS_SERVER" "${host}.${suffix}" 2>&1 | tee -a "$RESOLUTION_FILE" || true
-        else
-            dig +short "@$DNS_SERVER" "${host}.${suffix}" 2>/dev/null >> "$RESOLUTION_FILE" || true
-        fi
+        done
     done
-done
+    for dom in $SEARCH_DOMAINS; do
+        dig "@$DNS_SERVER" "$dom" AXFR 2>&1 | tee -a "$AXFR_FILE" || true
+    done
+    RET=$?
+else
+    # Background Loop with Redirection
+    (
+        for host in "${HOSTNAMES[@]}"; do
+            dig +short "@$DNS_SERVER" "$host" 2>/dev/null >> "$RESOLUTION_FILE" || true
+            for suffix in $SEARCH_DOMAINS; do
+                dig +short "@$DNS_SERVER" "${host}.${suffix}" 2>/dev/null >> "$RESOLUTION_FILE" || true
+            done
+        done
+        for dom in $SEARCH_DOMAINS; do
+            dig "@$DNS_SERVER" "$dom" AXFR >> "$AXFR_FILE" 2>/dev/null || true
+        done
+    ) > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
+fi
 
-kill "$TELEMETRY_PID" 2>/dev/null || true
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
 
-# Verify
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 60 --status "Checking resolved hosts..."
+# Verify Findings
 FOUND=0
 RESOLVED_COUNT=$(grep -v "NOT FOUND" "$RESOLUTION_FILE" 2>/dev/null | grep -E "[0-9.]+" | wc -l || echo 0)
 
@@ -104,29 +115,6 @@ if [[ "$RESOLVED_COUNT" -gt 0 ]]; then
         --rationale "Access to internal DNS reveals infrastructure details and facilitates pivoting."
 fi
 
-# AXFR Attempt (Dynamic)
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 80 --status "Attempting DNS zone transfers..."
-(
-    ELAPSED=0
-    while true; do
-        PCT=$(( 80 + (ELAPSED % 15) ))
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Attempting DNS zone transfers..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
-    done
-) &
-TELEMETRY_PID=$!
-
-for dom in $SEARCH_DOMAINS; do
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        dig "@$DNS_SERVER" "$dom" AXFR 2>&1 | tee -a "$AXFR_FILE" || true
-    else
-        dig "@$DNS_SERVER" "$dom" AXFR >> "$AXFR_FILE" 2>/dev/null || true
-    fi
-done
-
-kill "$TELEMETRY_PID" 2>/dev/null || true
-
 if [[ -s "$AXFR_FILE" ]]; then
     if grep -q "SOA" "$AXFR_FILE"; then
         FOUND=1
@@ -142,7 +130,6 @@ if [[ -s "$AXFR_FILE" ]]; then
     fi
 fi
 
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Finalizing DNS audit..."
 if [[ $FOUND -eq 0 ]]; then
     echo "[+] No DNS leaks detected."
     "$ASTRA_BIN" record-finding \
@@ -159,5 +146,4 @@ fi
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
-# Cleanup
-exit 0
+exit $RET

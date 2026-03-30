@@ -79,27 +79,30 @@ net.sniff on
 events.stream on
 EOF
 
-    # Run bettercap
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" 2>&1 | tee "$LOG_FILE" &
-    else
-        bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
-    fi
-    BC_PID=$!
+    # 1. 🛰️ DYNAMIC TELEMETRY HEARTBEAT (Background)
+    (
+        ELAPSED=0
+        while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+            PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+            [[ $PERCENT -gt 90 ]] && PERCENT=90
+            STATUS="ARP Spoofing in progress... ($(( SCAN_TIME - ELAPSED ))s left)"
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+            sleep 2
+            ((ELAPSED+=2))
+        done
+    ) &
+    TEL_PID=$!
 
-    # Wait for the specified time with real-time progress updates
-    ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-        # Cap at 90% during the loop to leave room for final processing
-        [[ $PERCENT -gt 90 ]] && PERCENT=90
-        STATUS="ARP Spoofing in progress... ($(( SCAN_TIME - ELAPSED ))s left)"
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
-        
-        sleep 2
-        ((ELAPSED+=2))
-    done
-    
+    # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
+    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        timeout "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" || true
+    else
+        timeout "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID || true
+    fi
+
+    kill "$TEL_PID" 2>/dev/null || true
     cleanup
     trap - EXIT
     

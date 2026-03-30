@@ -37,48 +37,39 @@ NMAP_OUT="${EVIDENCE_PREFIX}_nmap_dhcp.txt"
 echo "[*] [$TC_ID] Identifying DHCP architecture on ${INTERFACE}..."
 
 # Identify & Target
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
 (
     ELAPSED=0
     while [[ $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing scan..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing DHCP discovery..."
+        sleep 5
+        ELAPSED=$((ELAPSED + 5))
     done
 ) &
 TELEMETRY_PID=$!
 
-# Start passive capture
-if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout 30 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" 2>&1 | tee "$LOG_FILE" &
-else
-    timeout 30 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" > "$LOG_FILE" 2>&1 &
-fi
+# Start passive capture in background (always background)
+timeout 30 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" > "$LOG_FILE" 2>&1 &
 TCPDUMP_PID=$!
 
 # Force DHCP renewal to trigger traffic
 if command -v dhclient &>/dev/null; then
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        dhclient -v -r "$INTERFACE" || true
-        dhclient -v "$INTERFACE" || true
-    else
-        dhclient -v -r "$INTERFACE" 2>/dev/null || true
-        dhclient -v "$INTERFACE" 2>/dev/null || true
-    fi
+    dhclient -v -r "$INTERFACE" >/dev/null 2>&1 || true
+    dhclient -v "$INTERFACE" >/dev/null 2>&1 || true
 fi
 
 # Active discovery
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    nmap --script broadcast-dhcp-discover -e "$INTERFACE" 2>&1 | tee "$NMAP_OUT" || true
+    nmap --script broadcast-dhcp-discover -e "$INTERFACE"
+    RET=$?
 else
-    nmap --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>&1 || true
+    nmap --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
-
-# Verify
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing DHCP architecture..."
 DHCP_SERVERS=$(grep "Server Identifier:" "$NMAP_OUT" | awk '{print $NF}' | sort -u || true)
 

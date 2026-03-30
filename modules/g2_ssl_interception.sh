@@ -72,26 +72,34 @@ if command -v mitmproxy &>/dev/null; then
         iptables -t nat -A PREROUTING -i "$INTERFACE" -p tcp --dport 443 -j REDIRECT --to-port 8080 >/dev/null 2>&1 || true
     fi
     
+    # 1. 🛰️ DYNAMIC TELEMETRY HEARTBEAT (Background)
+    (
+        ELAPSED=0
+        while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+            PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+            [[ $PERCENT -gt 90 ]] && PERCENT=90
+            STATUS="SSL Interception in progress... ($(( SCAN_TIME - ELAPSED ))s left)"
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+            sleep 2
+            ((ELAPSED+=2))
+        done
+    ) &
+    TEL_PID=$!
+
+    # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        mitmproxy --mode transparent --save-stream "$FLOW_FILE" 2>&1 | tee "$MITM_LOG" &
+        timeout "$SCAN_TIME" mitmproxy --mode transparent --save-stream "$FLOW_FILE" || true
     else
         mitmproxy --mode transparent --save-stream "$FLOW_FILE" > "$MITM_LOG" 2>&1 &
+        TOOL_PID=$!
+        # Use timeout if possible, or wait with manual kill
+        ( sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true ) &
+        WAIT_PID=$!
+        wait $TOOL_PID || true
+        kill "$WAIT_PID" 2>/dev/null || true
     fi
-    MITM_PID=$!
 
-    # Wait for the specified time with real-time progress updates
-    ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-        # Cap at 90% during the loop to leave room for final processing
-        [[ $PERCENT -gt 90 ]] && PERCENT=90
-        STATUS="SSL Interception in progress... ($(( SCAN_TIME - ELAPSED ))s left)"
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
-        
-        sleep 2
-        ((ELAPSED+=2))
-    done
-    
+    kill "$TEL_PID" 2>/dev/null || true
     cleanup
     trap - EXIT
     

@@ -39,16 +39,24 @@ echo "[*] Testing Management Exposure on ${GATEWAY}..."
 
 # Scan common management ports on the gateway
 echo "[*] Running Nmap scan for common management ports..."
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 10 --status "Scanning management ports (nmap)..."
-# Redirect stdout/stderr to a log to prevent terminal pollution unless ASTRA_IN_WINDOW=true
+(
+    while true; do
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 25 --status "Scanning management ports (nmap)..."
+        sleep 5
+    done
+) &
+TELEMETRY_PID=$!
+
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    nmap -Pn -p 22,23,80,443,161,8080,8443 "$GATEWAY" -sV -oG "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" -oX "${EVIDENCE_PREFIX}_nmap_mgmt.xml" 2>&1 | tee "${EVIDENCE_DIR}/${TC_ID}_nmap.log"
+    nmap -Pn -p 22,23,80,443,161,8080,8443 "$GATEWAY" -sV -oG "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" -oX "${EVIDENCE_PREFIX}_nmap_mgmt.xml"
+    RET=$?
 else
-    nmap -Pn -p 22,23,80,443,161,8080,8443 "$GATEWAY" -sV -oG "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" -oX "${EVIDENCE_PREFIX}_nmap_mgmt.xml" > "${EVIDENCE_DIR}/${TC_ID}_nmap.log" 2>&1
+    nmap -Pn -p 22,23,80,443,161,8080,8443 "$GATEWAY" -sV -oG "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" -oX "${EVIDENCE_PREFIX}_nmap_mgmt.xml" > "${EVIDENCE_DIR}/${TC_ID}_nmap.log" 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
-# Parse open ports using awk
-# GNMAP format for ports: Host: 192.168.1.1 ()	Ports: 22/open/tcp//ssh//OpenSSH 8.4p1/
+kill "$TELEMETRY_PID" 2>/dev/null || true
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing findings..."
 if [[ -f "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" ]]; then
     # Extract the Ports field and split by comma

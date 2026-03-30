@@ -109,7 +109,9 @@ TELEMETRY_PID=$!
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     timeout "$SCAN_TIME" dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
 else
-    timeout "$SCAN_TIME" dhclient -cf "$DHCP_CONF" "$INTERFACE" >/dev/null 2>&1 || true
+    timeout "$SCAN_TIME" dhclient -cf "$DHCP_CONF" "$INTERFACE" >/dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID || true
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
@@ -135,10 +137,3 @@ fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 exit 0
-0
-restricted access not achieved."
-fi
-
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit 0
-0

@@ -69,13 +69,17 @@ if command -v mdk4 &>/dev/null; then
 
     # Note: Fuzzing can be highly disruptive, run for a short duration
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" 2>&1 | tee "$FUZZ_OUT" || true
-        echo "--- Beacon Fuzzing ---" | tee -a "$FUZZ_OUT"
-        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" 2>&1 | tee -a "$FUZZ_OUT" || true
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" || true
+        echo "--- Beacon Fuzzing ---"
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" || true
     else
-        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" > "$FUZZ_OUT" 2>&1 || true
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" > "$FUZZ_OUT" 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID || true
         echo "--- Beacon Fuzzing ---" >> "$FUZZ_OUT"
-        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" >> "$FUZZ_OUT" 2>&1 || true
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" >> "$FUZZ_OUT" 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID || true
     fi
     
     kill "$TELEMETRY_PID" 2>/dev/null || true

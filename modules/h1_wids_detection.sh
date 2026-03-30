@@ -68,7 +68,9 @@ echo "[*] Signature 1: Sending deauthentication burst..." >> "$LOG_FILE"
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     aireplay-ng --deauth 20 -a "$BSSID" "$INTERFACE" || true
 else
-    aireplay-ng --deauth 20 -a "$BSSID" "$INTERFACE" > /dev/null 2>&1 || true
+    aireplay-ng --deauth 20 -a "$BSSID" "$INTERFACE" > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID || true
 fi
 sleep 5
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 30 --status "Deauth burst sent. Monitoring for response..."
@@ -80,7 +82,9 @@ if command -v mdk4 &>/dev/null; then
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
         timeout 20 mdk4 "$INTERFACE" b -n "$SSID" || true
     else
-        timeout 20 mdk4 "$INTERFACE" b -n "$SSID" > /dev/null 2>&1 || true
+        timeout 20 mdk4 "$INTERFACE" b -n "$SSID" > /dev/null 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID || true
     fi
     sleep 5
     "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 60 --status "Fake AP flood sent. Monitoring for response..."
@@ -93,7 +97,9 @@ if command -v mdk4 &>/dev/null; then
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
         timeout 20 mdk4 "$INTERFACE" a -a "$BSSID" || true
     else
-        timeout 20 mdk4 "$INTERFACE" a -a "$BSSID" > /dev/null 2>&1 || true
+        timeout 20 mdk4 "$INTERFACE" a -a "$BSSID" > /dev/null 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID || true
     fi
     sleep 5
     "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Auth flood sent. Monitoring for response..."

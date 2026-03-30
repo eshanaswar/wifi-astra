@@ -73,9 +73,11 @@ if [[ -n "$FRAG_SCRIPT" ]]; then
     TELEMETRY_PID=$!
 
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" 2>&1 | tee "$FRAG_LOG" || true
+        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" || true
     else
-        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" > "$FRAG_LOG" 2>&1 || true
+        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" > "$FRAG_LOG" 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID || true
     fi
     
     kill "$TELEMETRY_PID" 2>/dev/null || true

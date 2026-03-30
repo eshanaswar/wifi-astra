@@ -52,64 +52,56 @@ TARGETS=$(printf "%s\n" "${RANGES[@]}" | sort -u | grep -v "^$")
 
 echo "[*] Testing reachability for gateways: $(echo $TARGETS | xargs)"
 
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+# 1. Start Telemetry in Background
 (
     ELAPSED=0
     while true; do
-        PCT=$(( 10 + (ELAPSED % 50) ))
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Testing RFC1918 reachability (fping)..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        PCT=$(( 10 + (ELAPSED % 85) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing RFC1918 egress audit..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
-TELEMETRY_PID=$!
+TEL_PID=$!
 
+# 2. Run Primary Tools (fping + nmap)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground Execution
     fping -a -t 500 $TARGETS 2>&1 | tee "$REACHABLE_FILE" || true
+    REACHABLE=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
+    if [[ -n "$REACHABLE" ]]; then
+        nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" 2>&1 | tee "$NMAP_LOG" || true
+    fi
+    RET=$?
 else
-    fping -a -t 500 $TARGETS > "$REACHABLE_FILE" 2>&1 || true
+    # Background Execution
+    (
+        fping -a -t 500 $TARGETS > "$REACHABLE_FILE" 2>&1 || true
+        REACHABLE=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
+        if [[ -n "$REACHABLE" ]]; then
+            nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" > "$NMAP_LOG" 2>&1 || true
+        fi
+    ) > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
-kill "$TELEMETRY_PID" 2>/dev/null || true
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
 
 # Verify
-REACHABLE=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
-if [[ -n "$REACHABLE" ]]; then
-    echo "[!] REACHABLE HOSTS DETECTED: $REACHABLE"
-    
-    # 🛰️ DYNAMIC TELEMETRY HEARTBEAT (NMAP)
-    (
-        ELAPSED=0
-        while true; do
-            PCT=$(( 60 + (ELAPSED % 35) ))
-            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Scanning reachable internal hosts (nmap)..."
-            sleep 2
-            ELAPSED=$((ELAPSED + 2))
-        done
-    ) &
-    TELEMETRY_PID_NMAP=$!
-    
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" 2>&1 | tee "$NMAP_LOG" || true
-    else
-        nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" > "$NMAP_LOG" 2>&1 || true
-    fi
-    
-    kill "$TELEMETRY_PID_NMAP" 2>/dev/null || true
-    
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Analyzing internal egress..."
+REACHABLE_COUNT=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | wc -l || echo 0)
+if [[ "$REACHABLE_COUNT" -gt 0 ]]; then
+    REACHABLE_HOSTS=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type "vulnerability" \
         --name "Internal Network Reachability Detected" \
-        --desc "Guest network allows access to RFC1918 addresses: ${REACHABLE}" \
+        --desc "Guest network allows access to RFC1918 addresses: ${REACHABLE_HOSTS}" \
         --severity "HIGH" \
         --evidence "$OUTPUT_XML" \
         --rationale "Failure to segment guest WiFi from internal networks allows pivoting and direct attacks on internal assets."
 else
-    echo "[+] No internal gateways reachable."
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Finalizing scan..."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
@@ -124,5 +116,4 @@ fi
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
-# Cleanup
-exit 0
+exit $RET

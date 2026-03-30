@@ -35,31 +35,35 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 
 echo "[*] [$TC_ID] Identifying CDP/LLDP leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+# Identify & Target
 (
     ELAPSED=0
     while [[ $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( ELAPSED * 100 / SCAN_TIME ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Capturing CDP/LLDP frames..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        sleep 5
+        ELAPSED=$((ELAPSED + 5))
     done
 ) &
 TELEMETRY_PID=$!
 
-# Identify & Target
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Run in foreground
     timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
         "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" || true
+    RET=$?
 else
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
-        "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" > "$LOG_FILE" 2>&1 || true
+    # Run with redirection
+    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+        "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" > "$LOG_FILE" 2>&1 &
+    TOOL_PID=$!
+    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
+    wait "$TOOL_PID" 2>/dev/null || true
+    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
-
-# Verify
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing capture..."
 FOUND=0
 if command -v tshark &>/dev/null && [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then

@@ -17,15 +17,6 @@
 
 set -euo pipefail
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
-ng is unreliable at this distance."
-    fi
-
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
@@ -49,61 +40,59 @@ fi
 
 echo "[*] Testing OWE downgrade / transition mode for ${SSID}..."
 
-# 1. Monitor for OWE beacons using airodump-ng
-echo "[*] Scanning for OWE Transition Mode beacons (${SCAN_TIME}s)..."
-
-# Start dynamic telemetry heartbeat
+# 1. Start Telemetry in Background
 (
-    HEARTBEAT_ELAPSED=0
-    while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
-        PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
-        [[ $PCT -gt 90 ]] && PCT=90
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
-        sleep 2
-        HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
+    ELAPSED=0
+    while true; do
+        PCT=$(( 10 + (ELAPSED % 85) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Scanning for OWE transition mode..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
-TELEMETRY_PID=$!
+TEL_PID=$!
 
+# 2. Run Primary Tool (airodump-ng)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    airodump-ng --essid "$SSID" --write "$SCAN_PREFIX" --output-format csv "$INTERFACE" &
+    # Foreground Execution
+    timeout "$SCAN_TIME" airodump-ng --essid "$SSID" --write "$SCAN_PREFIX" --output-format csv "$INTERFACE" || true
+    RET=$?
 else
+    # Background Execution
     airodump-ng --essid "$SSID" --write "$SCAN_PREFIX" --output-format csv "$INTERFACE" > /dev/null 2>&1 &
+    AIRO_PID=$!
+    sleep "$SCAN_TIME"
+    kill "$AIRO_PID" 2>/dev/null || true
+    wait "$AIRO_PID" 2>/dev/null || true
+    RET=$?
 fi
-AIRODUMP_PID=$!
-sleep "$SCAN_TIME"
-kill "$AIRODUMP_PID" || true
-wait "$AIRODUMP_PID" 2>/dev/null || true
 
-kill "$TELEMETRY_PID" 2>/dev/null || true
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
 
-# 2. Check if OWE is present in scan results using awk
-# airodump CSV format: BSSID, First time seen, Last time seen, channel, Speed, Privacy, Cipher, Authentication, ESSID
+# Check findings
 OWE_PRESENT=$(awk -F, -v s="$SSID" 'tolower($14) ~ tolower(s) && $6 ~ /OWE/ {print "YES"}' "$CSV_FILE" 2>/dev/null || true)
 
 if [[ "$OWE_PRESENT" == "YES" ]]; then
-    echo "[!] OWE TRANSITION MODE DETECTED FOR ${SSID}."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
         --name "OWE Transition Mode Detected" \
-        --desc "The network ${SSID} uses OWE (Enhanced Open) Transition Mode. This broadcasts both an encrypted OWE BSSID and an unencrypted Open BSSID for backward compatibility." \
+        --desc "The network ${SSID} uses OWE Transition Mode, broadcasted both OWE and Open BSSIDs." \
         --severity MEDIUM \
         --evidence "$CSV_FILE" \
-        --rationale "Transition mode is susceptible to downgrade attacks where a rogue AP spoofs the Open half of the pair. If a client connects to the Open AP, its traffic is transmitted without encryption, defeating the purpose of OWE."
+        --rationale "Transition mode is susceptible to downgrade attacks."
 else
-    echo "[+] No OWE transition mode detected for ${SSID}."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
         --name "[$TC_ID] Audit Complete" \
-        --desc "Scanned for OWE transition mode vulnerabilities on SSID ${SSID}. The network appears to be using a different encryption standard (e.g., WPA2/WPA3-PSK) or is OWE-only." \
+        --desc "Scanned for OWE transition mode vulnerabilities on SSID ${SSID}. No issues identified." \
         --severity INFO \
         --evidence "$CSV_FILE" \
-        --rationale "Ensuring that modern encryption standards are not misconfigured with insecure backward compatibility modes is a critical audit step. Lack of OWE Transition Mode indicates a more focused security posture."
+        --rationale "Ensuring modern encryption standards are not misconfigured."
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit 0
+exit $RET

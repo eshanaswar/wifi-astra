@@ -36,60 +36,46 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 
 echo "[*] [$TC_ID] Identifying VLAN hopping / DTP leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
-# Phase 1: 10% - 60%
+# 1. Start Telemetry in Background
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
-        PCT=$(( 10 + (ELAPSED * 50 / SCAN_TIME) ))
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Monitoring for trunking protocols..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+    while true; do
+        PCT=$(( 10 + (ELAPSED % 85) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing trunking & DTP audit..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
-TELEMETRY_PID=$!
+TEL_PID=$!
 
-# Identify & Target
-# 1. Listen for DTP/VTP/CDP/STP
+# 2. Run Primary Tools (tcpdump + yersinia)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground Execution
     timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
         "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:00 or ether host 01:00:0c:cc:cc:cd" 2>&1 | tee "$LOG_FILE" || true
-else
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
-        "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:00 or ether host 01:00:0c:cc:cc:cd" > "$LOG_FILE" 2>&1 || true
-fi
-
-kill "$TELEMETRY_PID" 2>/dev/null || true
-
-# 2. Active DTP spoofing (Try to negotiate a trunk)
-if command -v yersinia &>/dev/null; then
-    echo "[*] Attempting DTP trunk negotiation..."
     
-    # 🛰️ DYNAMIC TELEMETRY HEARTBEAT (YERSINIA)
-    # Phase 2: 60% - 90%
-    (
-        ELAPSED=0
-        Y_TIME=30
-        while [[ $ELAPSED -lt $Y_TIME ]]; do
-            PCT=$(( 60 + (ELAPSED * 30 / Y_TIME) ))
-            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Attempting DTP trunk negotiation..."
-            sleep 2
-            ELAPSED=$((ELAPSED + 2))
-        done
-    ) &
-    TELEMETRY_PID_Y=$!
-    
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    if command -v yersinia &>/dev/null; then
+        echo "[*] Attempting DTP trunk negotiation..."
         timeout 30 yersinia dtp -i "$INTERFACE" -n 1 2>&1 | tee "$YERSINIA_OUT" || true
-    else
-        timeout 30 yersinia dtp -i "$INTERFACE" -n 1 > "$YERSINIA_OUT" 2>&1 || true
     fi
-    
-    kill "$TELEMETRY_PID_Y" 2>/dev/null || true
+    RET=$?
+else
+    # Background Execution
+    (
+        timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+            "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:00 or ether host 01:00:0c:cc:cc:cd" > "$LOG_FILE" 2>&1 || true
+        
+        if command -v yersinia &>/dev/null; then
+            timeout 30 yersinia dtp -i "$INTERFACE" -n 1 > "$YERSINIA_OUT" 2>&1 || true
+        fi
+    ) > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
+
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
 
 # Verify
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Analyzing VLAN findings..."
 FOUND=0
 if [[ -f "$YERSINIA_OUT" ]] && grep -qi "DTP" "$YERSINIA_OUT"; then
     FOUND=1
@@ -120,5 +106,4 @@ fi
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
-# Cleanup
-exit 0
+exit $RET

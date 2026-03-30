@@ -33,31 +33,33 @@ fi
 
 echo "[*] Testing outbound egress filtering from ${INTERFACE} to ${EGRESS_TARGET}..."
 
-# 🛰️ DYNAMIC TELEMETRY HEARTBEAT
+# 1. Start Telemetry in Background
 (
     ELAPSED=0
     while true; do
-        PCT=$(( 10 + (ELAPSED % 80) ))
+        PCT=$(( 10 + (ELAPSED % 85) ))
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Testing outbound port filtering (nmap)..."
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
+        sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
-TELEMETRY_PID=$!
+TEL_PID=$!
 
-# 1. Scan common outbound ports to an external IP
-# We use -e to specify the interface if needed, but nmap usually handles it via routing table
-echo "[*] Running Nmap egress scan for common ports..."
+# 2. Run Primary Tool (nmap)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground Execution
     nmap -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" || true
+    RET=$?
 else
-    nmap -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" > /dev/null 2>&1 || true
+    # Background Execution
+    nmap -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" > /dev/null 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
-kill "$TELEMETRY_PID" 2>/dev/null || true
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
 
 # Robust parsing of Nmap XML for open ports
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing egress policy..."
 OPEN_PORTS=$(awk -F'"' '/<port / {p=$4} /<state / {s=$4; if(s=="open") print p}' "$OUTPUT_XML" | xargs | sed 's/ /, /g')
 
 if [[ -n "$OPEN_PORTS" ]]; then
@@ -87,4 +89,4 @@ fi
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
-exit 0
+exit $RET

