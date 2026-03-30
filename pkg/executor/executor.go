@@ -170,37 +170,58 @@ func KillGroup(pid int) {
 	}
 }
 
+// Stop sends SIGTERM then SIGKILL to a process and its group.
 func (m *Manager) Stop(id string) error {
 	m.mu.Lock()
 	p, exists := m.processes[id]
+	if !exists {
+		m.mu.Unlock()
+		return nil // Idempotent
+	}
 	m.mu.Unlock()
 
-	if !exists {
-		return fmt.Errorf("process %s not found", id)
-	}
-
-	logging.Info("Stopping process %s (PID: %d)...", id, p.PID)
-
-	// Cancel the context to stop the process
-	p.cancel()
+	logging.Info("Stopping process %s (PID: %d) gracefully...", id, p.PID)
 
 	// Kill the entire process group
 	pgid, err := syscall.Getpgid(p.PID)
 	if err == nil {
+		// Send SIGTERM to the process group
 		syscall.Kill(-pgid, syscall.SIGTERM)
 		
-		// Give it a moment to die gracefully
-		time.Sleep(500 * time.Millisecond)
+		// Give it a moment to die gracefully (up to 2 seconds for reports)
+		for i := 0; i < 20; i++ {
+			time.Sleep(100 * time.Millisecond)
+			if !isProcessRunning(p.PID) {
+				break
+			}
+		}
 		
-		// If it's still there, force it
-		KillGroup(p.PID)
+		// If it's still there, force it with SIGKILL
+		if isProcessRunning(p.PID) {
+			logging.Warn("Process %s (PID: %d) still running after SIGTERM, sending SIGKILL", id, p.PID)
+			syscall.Kill(-pgid, syscall.SIGKILL)
+		}
 	}
+
+	// Cancel the context to stop the executor's Wait()
+	p.cancel()
 
 	m.mu.Lock()
 	delete(m.processes, id)
 	m.mu.Unlock()
 	
 	return nil
+}
+
+func isProcessRunning(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// On Unix-like systems, FindProcess always succeeds.
+	// We need to send signal 0 to check if the process exists.
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
 }
 
 func (m *Manager) Cleanup() {

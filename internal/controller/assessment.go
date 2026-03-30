@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"wifi-astra/internal/db"
@@ -438,7 +440,24 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 	})
 	defer pm.Stop()
 
-	ctx := context.Background()
+	// GRACEFUL STOP HANDLER (Ctrl+C for Indefinite Execution)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGINT)
+	
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer signal.Stop(sigChan)
+
+	go func() {
+		select {
+		case sig := <-sigChan:
+			logging.Info("\n[!] Received signal: %v. Stopping module %s gracefully...", sig, tcID)
+			c.ExecMgr.Stop(tcID)
+		case <-ctx.Done():
+			// Normal exit or module finished
+		}
+	}()
+
 	exitCode, err := c.ExecMgr.RunWithEnv(ctx, tcID, matches[0], []string{}, logFile, env)
 	return exitCode, err
 }
