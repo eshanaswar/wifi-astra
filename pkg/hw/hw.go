@@ -153,7 +153,7 @@ func GetInterfaceMode(iface string) string {
 	}
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
-		if strings.Contains(line, "type") {
+		if strings.HasPrefix(strings.TrimSpace(line), "type ") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				return parts[1]

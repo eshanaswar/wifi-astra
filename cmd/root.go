@@ -44,7 +44,7 @@ func Execute() {
 			fmt.Fprintf(os.Stderr, "\n[!] PANIC: %v\n", r)
 			fmt.Fprintln(os.Stderr, "[!] Attempting hardware recovery before exit...")
 			ExecMgr.Cleanup()
-			hw.Recover(false)
+			hw.Recover(true) // headless=true: panic context, stdin unreliable
 			os.Exit(2)
 		}
 	}()
