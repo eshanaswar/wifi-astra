@@ -63,6 +63,31 @@ func TestRoleRegistryIsManagement(t *testing.T) {
 	}
 }
 
+func TestRoleRegistryAssignRejectsDuplicateInterface(t *testing.T) {
+	// The same physical interface cannot be assigned to two different roles.
+	// This guard is independent of locking.
+	r := NewRoleRegistry()
+	if err := r.Assign(RoleMonitor, "wlan0"); err != nil {
+		t.Fatalf("first assign failed: %v", err)
+	}
+	// Attempting to assign the same interface to a different role must fail
+	err := r.Assign(RoleManagement, "wlan0")
+	if err == nil {
+		t.Error("expected error when assigning same interface to a second role")
+	}
+}
+
+func TestRoleRegistryAssertMonitorSingleAdapter(t *testing.T) {
+	// With only RoleMonitor assigned (no management interface), AssertMonitor
+	// should still pass for the monitor interface — single-adapter setup.
+	r := NewRoleRegistry()
+	r.Assign(RoleMonitor, "wlan0")
+
+	if err := r.AssertMonitor("wlan0"); err != nil {
+		t.Errorf("expected wlan0 to pass AssertMonitor on single-adapter setup: %v", err)
+	}
+}
+
 func TestRoleRegistryLocksPreventsReassign(t *testing.T) {
 	r := NewRoleRegistry()
 	r.Assign(RoleMonitor, "wlan0")
