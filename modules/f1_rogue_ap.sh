@@ -135,9 +135,9 @@ if [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
 elif [[ "$CATALYST" == "2" ]] && [[ -n "$TARGET_BSSID" ]] && command -v mdk4 &>/dev/null; then
     echo -e "[*] Starting ${C_BOLD}CSA Catalyst${C_RESET} (mdk4) for $SSID..."
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        mdk4 "$INTERFACE" b -n "$SSID" -c ${GUEST_CHANNEL:-6} &
+        mdk4 "$INTERFACE" b -n "$SSID" -c "${GUEST_CHANNEL:-6}" &
     else
-        mdk4 "$INTERFACE" b -n "$SSID" -c ${GUEST_CHANNEL:-6} > /dev/null 2>&1 &
+        mdk4 "$INTERFACE" b -n "$SSID" -c "${GUEST_CHANNEL:-6}" > /dev/null 2>&1 &
     fi
     CAT_PID=$!
 fi

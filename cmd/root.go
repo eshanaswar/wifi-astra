@@ -8,6 +8,7 @@ import (
 
 	"wifi-astra/internal/controller"
 	"wifi-astra/pkg/executor"
+	"wifi-astra/pkg/hw"
 	"wifi-astra/pkg/prereq"
 
 	"github.com/spf13/cobra"
@@ -36,6 +37,17 @@ var RootCmd = &cobra.Command{
 
 func Execute() {
 	ExecMgr = executor.NewManager()
+
+	// Ensure hardware is always recovered even on panic
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "\n[!] PANIC: %v\n", r)
+			fmt.Fprintln(os.Stderr, "[!] Attempting hardware recovery before exit...")
+			ExecMgr.Cleanup()
+			hw.Recover(true) // headless=true: panic context, stdin unreliable
+			os.Exit(2)
+		}
+	}()
 
 	// Global signal handling
 	sigChan := make(chan os.Signal, 1)

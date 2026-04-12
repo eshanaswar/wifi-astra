@@ -110,9 +110,10 @@ func ListInterfaces() ([]Interface, error) {
 func listInterfacesFallback() ([]Interface, error) {
 	logging.Debug("Running hardware discovery fallback (iw dev)...")
 	cmd := exec.Command("iw", "dev")
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		logging.Error("listInterfacesFallback: iw dev failed: %v (output: %s)", err, strings.TrimSpace(string(output)))
+		return nil, fmt.Errorf("iw dev failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
 
 	logging.Debug("iw dev output: %s", string(output))
@@ -145,10 +146,14 @@ func GetInterfaceMode(iface string) string {
 		return "invalid"
 	}
 	cmd := exec.Command("iw", "dev", iface, "info")
-	output, _ := cmd.Output()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logging.Debug("GetInterfaceMode: iw dev %s info failed: %v (output: %s)", iface, err, strings.TrimSpace(string(output)))
+		return "unknown"
+	}
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
-		if strings.Contains(line, "type") {
+		if strings.HasPrefix(strings.TrimSpace(line), "type ") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
 				return parts[1]
@@ -316,8 +321,13 @@ func Recover(headless bool) {
 	if strings.ToLower(response) == "y" {
 		for _, iface := range stuck {
 			fmt.Printf("    [*] Restoring %s... ", iface)
-			exec.Command("airmon-ng", "stop", iface).Run()
-			fmt.Println("DONE")
+			out, err := exec.Command("airmon-ng", "stop", iface).CombinedOutput()
+			if err != nil {
+				logging.Warn("airmon-ng stop %s failed: %v (output: %s)", iface, err, strings.TrimSpace(string(out)))
+				fmt.Println("FAILED (check logs)")
+			} else {
+				fmt.Println("DONE")
+			}
 		}
 		fmt.Print("    [*] Restart NetworkManager to restore connectivity? [y/N]: ")
 		fmt.Scanln(&response)

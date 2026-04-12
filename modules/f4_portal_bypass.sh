@@ -76,7 +76,7 @@ ip link set "$INTERFACE" down
 macchanger -m "$TARGET_CLIENT" "$INTERFACE"
 
 OLD_HOSTNAME=$(hostname)
-SPOOFED_HOSTNAME="iPad-of-$(echo $TARGET_CLIENT | cut -d: -f5,6 | tr -d ':')"
+SPOOFED_HOSTNAME="iPad-of-$(echo "$TARGET_CLIENT" | cut -d: -f5,6 | tr -d ':')"
 echo -e "[*] Temporarily spoofing hostname to ${C_VAR}$SPOOFED_HOSTNAME${C_RESET}..."
 hostname "$SPOOFED_HOSTNAME"
 trap "hostname $OLD_HOSTNAME; kill ${SUPPRESS_PID:-} 2>/dev/null || true" EXIT
