@@ -322,6 +322,35 @@ Operator sees a clear all-clear before disconnecting.
 
 ---
 
+## 3.11 Inline Offline Cracking Integration
+
+WiFi-Astra is a one-stop tool — the pentester should never need to export files to a separate terminal to crack captured material. After any module that produces crackable output, the controller offers an inline cracking step:
+
+**After D1 (WPA Handshake / PMKID):**
+- Prompt: `"Handshake captured. Run offline crack now? [wordlist path or skip]"`
+- If wordlist provided: run `hashcat -m 22000` (PMKID) or `hashcat -m 2500` (EAPOL) against it
+- Stream hashcat progress into the TUI mission feed in real time
+- If cracked: record the PSK as a credential finding with severity `CRITICAL`
+- If not cracked: log the attempt, wordlist used, and time spent — still useful evidence
+
+**After D5 (PEAP/MSCHAPv2):**
+- Auto-run `asleap` against captured challenge/response pairs immediately after capture
+- If `asleap` fails: offer `hashcat -m 5500` (NetNTLMv1) or `-m 5600` (NetNTLMv2) with wordlist
+- Cracked NTLM hash recorded as credential finding
+
+**After D3 (WPS):**
+- Pixie Dust attack runs inline as the primary path (via `oneshot` or `bully --pixie`)
+- PIN brute-force offered as fallback if Pixie Dust fails
+- Recovered WPS PIN and derived PSK recorded as credential finding
+
+**After D2 (WEP):**
+- `aircrack-ng` key recovery runs inline immediately after sufficient IVs captured
+- Recovered WEP key recorded as credential finding
+
+This keeps the full attack lifecycle — capture → crack → finding — inside one tool, matching the usability of airgeddon while producing structured, persisted results that airgeddon cannot.
+
+---
+
 ## 5. Implementation Phases
 
 | Phase | Focus | Modules / Files | Priority |
@@ -331,10 +360,11 @@ Operator sees a clear all-clear before disconnecting.
 | 3 | Dual adapter registry | `pkg/hw`, `internal/controller` | P1 |
 | 4 | Evidence system | `internal/controller`, new `internal/evidence` package | P1 |
 | 5 | Engagement workflow | `cmd/start.go`, `pkg/prereq`, `internal/module` | P1 |
-| 6 | Coverage: 6GHz + D1 PMKID | `modules/a1_*.sh`, `modules/d1_*.sh` | P1 |
-| 7 | Coverage: D4 WPA3, D5 PEAP, D8 new | `modules/d4_*.sh`, `modules/d5_*.sh`, new `modules/d8_*.sh` | P2 |
-| 8 | Coverage: A4 MAC corr, D6 OWE, F3 portal, G4 NAC | Respective modules | P2 |
-| 9 | Coverage: A5 Wi-Fi 6 detection | New `modules/a5_*.sh` | P3 |
+| 6 | Inline cracking integration | `modules/d1_*.sh`, `modules/d2_*.sh`, `modules/d3_*.sh`, `modules/d5_*.sh` | P1 |
+| 7 | Coverage: 6GHz + D1 PMKID | `modules/a1_*.sh`, `modules/d1_*.sh` | P1 |
+| 8 | Coverage: D4 WPA3, D5 PEAP, D8 new | `modules/d4_*.sh`, `modules/d5_*.sh`, new `modules/d8_*.sh` | P2 |
+| 9 | Coverage: A4 MAC corr, D6 OWE, F3 portal, G4 NAC | Respective modules | P2 |
+| 10 | Coverage: A5 Wi-Fi 6 detection | New `modules/a5_*.sh` | P3 |
 
 ---
 
@@ -350,3 +380,5 @@ The tool is professional when:
 6. D5 (PEAP) produces a crackable MSCHAPv2 hash when tested against a vulnerable enterprise network
 7. D8 (EAP cert validation) correctly identifies whether a client validates the RADIUS certificate
 8. All tools required for the session are surfaced as missing before any test begins
+9. After D1 captures a handshake/PMKID, the operator can crack it inline without leaving the tool
+10. After D3 WPS capture, Pixie Dust runs inline and the recovered PSK is stored as a finding
