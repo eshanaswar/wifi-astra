@@ -79,8 +79,8 @@ func (m *Manager) Run(ctx context.Context, id, command string, args []string, lo
 // RunWithEnv executes a command in the foreground with a custom environment.
 func (m *Manager) RunWithEnv(ctx context.Context, id, command string, args []string, logFile string, env []string) (int, error) {
 	logging.Info("Executing: %s %v", command, args)
-	
-	p, err := m.start(ctx, id, command, args, logFile, env)
+
+	p, err := m.start(ctx, id, command, args, logFile, SanitizeEnv(env))
 	if err != nil {
 		return -1, err
 	}
@@ -114,7 +114,7 @@ func (m *Manager) Spawn(ctx context.Context, id, command string, args []string, 
 // SpawnWithEnv executes a command in the background with a custom environment.
 func (m *Manager) SpawnWithEnv(ctx context.Context, id, command string, args []string, logFile string, env []string) (*Process, error) {
 	logging.Info("Spawning background process: %s %v", command, args)
-	p, err := m.start(ctx, id, command, args, logFile, env)
+	p, err := m.start(ctx, id, command, args, logFile, SanitizeEnv(env))
 	if err != nil {
 		return nil, err
 	}
