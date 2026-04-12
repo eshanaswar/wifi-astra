@@ -9,6 +9,7 @@
 # REQS="managed_iface,nat"
 # PCAP="yes"
 # TIMED="yes"
+# PROMPTS="karma_vector"
 # DECODE="dhcp"
 
 #===============================================================================
@@ -150,6 +151,13 @@ if command -v hostapd-mana &>/dev/null; then
 else
     echo "[!] hostapd-mana not found. Skipping Karma test."
     exit 1
+fi
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
 fi
 
 exit 0

@@ -9,6 +9,7 @@
 # REQS="managed_iface,dns_server"
 # PCAP="no"
 # DECODE="none"
+# PROMPTS="managed_connect"
 
 #  modules/c1_dns_resolution.sh
 #  C1: Internal DNS Resolution

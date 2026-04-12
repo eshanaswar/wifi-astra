@@ -74,9 +74,9 @@ if [[ -n "$FRAG_SCRIPT" ]]; then
     TELEMETRY_PID=$!
 
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" || true
+        timeout --foreground "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" || true
     else
-        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" > "$FRAG_LOG" 2>&1 &
+        timeout --foreground "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" > "$FRAG_LOG" 2>&1 &
         TOOL_PID=$!
         wait $TOOL_PID || true
     fi
@@ -118,4 +118,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

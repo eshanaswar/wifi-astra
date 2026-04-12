@@ -9,6 +9,7 @@
 # REQS="managed_iface"
 # PCAP="yes"
 # TIMED="yes"
+# PROMPTS="managed_connect"
 # DECODE="none"
 
 #  modules/c3_vlan_hopping.sh
@@ -51,7 +52,7 @@ TEL_PID=$!
 # 2. Run Primary Tools (tcpdump + yersinia)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Foreground Execution
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
         "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:00 or ether host 01:00:0c:cc:cc:cd" 2>&1 | tee "$LOG_FILE" || true
     
     if command -v yersinia &>/dev/null; then
@@ -62,7 +63,7 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
 else
     # Background Execution
     (
-        timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+        timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
             "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:00 or ether host 01:00:0c:cc:cc:cd" > "$LOG_FILE" 2>&1 || true
         
         if command -v yersinia &>/dev/null; then

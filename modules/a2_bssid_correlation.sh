@@ -62,7 +62,10 @@ fi
     # Field 1 is BSSID
     awk -F',' 'NR > 1 && $1 != "" && $1 != "BSSID" { print $1 }' "$A1_CSV" | cut -d':' -f1-3 | sort | uniq -c | sort -rn | while read -r count oui; do
         [[ -z "$oui" ]] && continue
-        echo "[*] OUI Group: $oui ($count BSSIDs)"
+        
+        # LOOKUP VENDOR NAME
+        VENDOR=$("$ASTRA_BIN" lookup-oui "$oui" 2>/dev/null || echo "Unknown")
+        echo "[*] OUI Group: $oui [$VENDOR] ($count BSSIDs)"
         
         # List all SSIDs in this group using awk
         # BSSID is field 1, ESSID is field 14
@@ -92,5 +95,12 @@ $ASTRA_BIN record-finding \
     --target "Global" \
     --evidence "$OUTPUT_FILE" \
     --rationale "Correlating BSSIDs helps identify multi-AP networks and roaming configurations."
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
 
 exit 0

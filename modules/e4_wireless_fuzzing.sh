@@ -70,9 +70,9 @@ if command -v mdk4 &>/dev/null; then
 
     # Note: Fuzzing can be highly disruptive, run for a short duration
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" || true
+        timeout --foreground $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" || true
         echo "--- Beacon Fuzzing ---"
-        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" || true
+        timeout --foreground $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" || true
     else
         timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" > "$FUZZ_OUT" 2>&1 &
         TOOL_PID=$!
@@ -116,4 +116,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

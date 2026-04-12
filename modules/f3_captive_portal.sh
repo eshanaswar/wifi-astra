@@ -9,6 +9,7 @@
 # REQS="managed_iface,target_ssid,nat"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="phishing_template"
 # DECODE="http"
 
 #===============================================================================
@@ -191,7 +192,7 @@ EOF
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # FOREGROUND
-    ( cd "$PHISH_DIR" && timeout "$SCAN_TIME" python3 server.py 2>&1 | tee "$SERVER_LOG" || true )
+    ( cd "$PHISH_DIR" && timeout --foreground "$SCAN_TIME" python3 server.py 2>&1 | tee "$SERVER_LOG" || true )
 else
     # BACKGROUND
     ( cd "$PHISH_DIR" && python3 server.py > "$SERVER_LOG" 2>&1 ) &
@@ -223,6 +224,13 @@ exit 0
 n technical encryption cannot be breached."
 else
     echo -e "[+] Mission complete. No data harvested."
+fi
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
 fi
 
 exit 0

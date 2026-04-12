@@ -60,8 +60,10 @@ func Execute() {
 				Ctrl.ExecMgr.Stop(Ctrl.Running)
 				Ctrl.Running = ""
 			} else {
-				fmt.Println("\n[!] Interrupt received. Cleaning up processes and exiting...")
+				fmt.Println("\n[!] Interrupt received. Cleaning up processes and restoring networking...")
 				ExecMgr.Cleanup()
+				// Restore system networking state
+				hw.Recover(false)
 				os.Exit(1)
 			}
 		}

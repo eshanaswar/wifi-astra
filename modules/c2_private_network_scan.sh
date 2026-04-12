@@ -8,12 +8,17 @@
 # DESC="Scan RFC1918 ranges for reachable corporate hosts from target WiFi"
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
+# 
 # DECODE="none"
+# PROMPTS="managed_connect"
 
 #  modules/c2_private_network_scan.sh
 #  C2: Private Network Egress Scan
 
 set -euo pipefail
+
+# Inputs from Environment
+SCAN_TIME="${SCAN_TIME:-60}"
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"

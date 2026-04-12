@@ -9,6 +9,7 @@
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="managed_connect"
 # DECODE="none"
 
 set -euo pipefail

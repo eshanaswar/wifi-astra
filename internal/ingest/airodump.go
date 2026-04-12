@@ -57,7 +57,7 @@ func loadOUIDB() {
 	})
 }
 
-func lookupVendor(mac string) string {
+func LookupVendor(mac string) string {
 	loadOUIDB()
 	mac = strings.ToUpper(strings.ReplaceAll(mac, "-", ":"))
 	if len(mac) < 8 {
@@ -69,13 +69,15 @@ func lookupVendor(mac string) string {
 	}
 
 	// Check for randomized MAC
-	if firstByte, err := strconv.ParseInt(mac[:2], 16, 64); err == nil {
-		if firstByte&0x02 != 0 {
-			return "Randomized/Private MAC"
+	if len(mac) >= 2 {
+		if firstByte, err := strconv.ParseInt(mac[:2], 16, 64); err == nil {
+			if firstByte&0x02 != 0 {
+				return "Randomized/Private MAC"
+			}
 		}
 	}
 
-	return "Unknown (" + prefix + ")"
+	return "Unknown"
 }
 
 // IngestAirodumpCSV parses an airodump-ng CSV and updates the database.
@@ -156,8 +158,7 @@ func IngestAirodumpCSV(database *sql.DB, tcID, filePath string) error {
 			}
 			signal, _ := strconv.Atoi(parts[3])
 			lastBSSID := parts[5]
-			vendor := lookupVendor(mac)
-			
+			vendor := LookupVendor(mac)			
 			_, err = database.Exec(`INSERT OR REPLACE INTO client (mac, vendor, last_signal, last_bssid, last_seen)
 				VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP);`,
 				mac, vendor, signal, lastBSSID)

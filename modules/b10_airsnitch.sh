@@ -9,6 +9,7 @@
 # REQS="managed_iface,gateway_ip"
 # PCAP="yes"
 # DECODE="none"
+# PROMPTS="managed_connect"
 
 #===============================================================================
 #  modules/b10_airsnitch.sh
@@ -139,6 +140,13 @@ else
         --target "Global" \
         --evidence "$AIRSNITCH_LOG" \
         --rationale "Network infrastructure that correctly enforces both L2 and L3 isolation is resistant to the Gateway Bouncing vector of AirSnitch."
+fi
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
 fi
 
 exit 0

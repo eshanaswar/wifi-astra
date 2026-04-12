@@ -55,7 +55,7 @@ TEL_PID=$!
 # 2. Run Primary Tool (airodump-ng)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Foreground Execution
-    timeout "$SCAN_TIME" airodump-ng --essid "$SSID" --write "$SCAN_PREFIX" --output-format csv "$INTERFACE" || true
+    timeout --foreground "$SCAN_TIME" airodump-ng --essid "$SSID" --write "$SCAN_PREFIX" --output-format csv "$INTERFACE" || true
     RET=$?
 else
     # Background Execution

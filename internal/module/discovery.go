@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -17,11 +18,12 @@ type Module struct {
 	Tools         string `json:"tools"`
 	Desc          string `json:"desc"`
 	Reqs          string `json:"reqs"`
-	PCAP          bool   `json:"pcap"`
-	Timed         bool   `json:"timed"`
-	DecodeProfile string `json:"decode_profile"`
-	FilePath      string `json:"file_path"`
-}
+	PCAP          bool     `json:"pcap"`
+	Timed         bool     `json:"timed"`
+	Prompts       []string `json:"prompts"`
+	DecodeProfile string   `json:"decode_profile"`
+	FilePath      string   `json:"file_path"`
+	}
 
 func DiscoverModules(modDir string) ([]Module, error) {
 	var modules []Module
@@ -43,7 +45,23 @@ func DiscoverModules(modDir string) ([]Module, error) {
 	}
 
 	sort.Slice(modules, func(i, j int) bool {
-		return modules[i].ID < modules[j].ID
+		idI := modules[i].ID
+		idJ := modules[j].ID
+		
+		// If categories are different, sort by category first
+		if idI[0] != idJ[0] {
+			return idI < idJ
+		}
+		
+		// Extract numeric part
+		numI, errI := strconv.Atoi(idI[1:])
+		numJ, errJ := strconv.Atoi(idJ[1:])
+		
+		if errI == nil && errJ == nil {
+			return numI < numJ
+		}
+		
+		return idI < idJ
 	})
 
 	return modules, nil
@@ -101,6 +119,10 @@ func parseModuleMeta(filePath string) (*Module, error) {
 			m.PCAP = (val == "yes")
 		case "TIMED":
 			m.Timed = (val == "yes")
+		case "PROMPTS":
+			if val != "" && val != "none" {
+				m.Prompts = strings.Split(val, ",")
+			}
 		case "DECODE":
 			m.DecodeProfile = val
 		}

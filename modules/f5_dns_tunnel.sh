@@ -9,6 +9,7 @@
 # REQS="managed_iface"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="tunnel_config"
 # DECODE="dns"
 
 #===============================================================================
@@ -22,6 +23,9 @@
 #===============================================================================
 
 set -euo pipefail
+
+# Inputs from Environment
+SCAN_TIME="${SCAN_TIME:-60}"
 
 # Intelligence Insight (Colors)
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"

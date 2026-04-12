@@ -9,6 +9,7 @@
 # REQS="managed_iface"
 # PCAP="yes"
 # TIMED="yes"
+# PROMPTS="managed_connect"
 # DECODE="none"
 
 #  modules/b7_ipv6_leaks.sh
@@ -52,7 +53,7 @@ TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" || true
+    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" || true
     RET=$?
 else
     # Run with redirection
@@ -118,4 +119,11 @@ fi
 
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

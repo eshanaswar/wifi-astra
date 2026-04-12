@@ -53,7 +53,7 @@ TEL_PID=$!
 # 2. Run Primary Tools
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Foreground execution
-    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$OUTPUT_BASE" --output-format pcap,csv "$INTERFACE" &
+    timeout --foreground "$SCAN_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$OUTPUT_BASE" --output-format pcap,csv "$INTERFACE" &
     AIRO_PID=$!
     aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" &
     AIRE_PID=$!

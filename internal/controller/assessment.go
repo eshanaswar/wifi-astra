@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"wifi-astra/internal/db"
 	"wifi-astra/internal/ingest"
 	"wifi-astra/internal/logging"
 	"wifi-astra/internal/module"
@@ -30,6 +29,7 @@ type AssessmentController struct {
 	ModDir       string
 	Running      string // ID of currently running module
 	SupportProcs map[string]*executor.Process
+	WindowCount  int    // Track number of open tactical windows
 }
 
 func NewAssessmentController(s *session.Session, mgr *executor.Manager, modDir string) *AssessmentController {
@@ -38,10 +38,76 @@ func NewAssessmentController(s *session.Session, mgr *executor.Manager, modDir s
 		ExecMgr:      mgr,
 		ModDir:       modDir,
 		SupportProcs: make(map[string]*executor.Process),
+		WindowCount:  0,
 	}
 }
 
+func (c *AssessmentController) getScreenGeometry() (int, int, int, int) {
+	// Default fallback (assuming 1080p if detection fails)
+	sw, sh := 1920, 1080
+	
+	out, err := exec.Command("sh", "-c", "xrandr | grep '*' | awk '{print $1}'").Output()
+	if err == nil {
+		parts := strings.Split(strings.TrimSpace(string(out)), "x")
+		if len(parts) == 2 {
+			w, _ := strconv.Atoi(parts[0])
+			h, _ := strconv.Atoi(parts[1])
+			if w > 0 && h > 0 {
+				sw, sh = w, h
+			}
+		}
+	}
+
+	// Calculate 1/4th size
+	w := sw / 2
+	h := sh / 2
+	
+	// Calculate position based on WindowCount
+	x, y := 0, 0
+	quadrant := c.WindowCount % 4
+	switch quadrant {
+	case 1: x = w
+	case 2: y = h
+	case 3: x = w; y = h
+	}
+	
+	c.WindowCount++
+	return x, y, w, h
+}
+
+func (c *AssessmentController) CheckPreviousRun(m *module.Module) bool {
+	// Skip for headless mode
+	if os.Getenv("ASTRA_HEADLESS") == "true" {
+		return true
+	}
+
+	var status string
+	err := c.Session.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", m.ID).Scan(&status)
+	if err != nil || status != constants.StatusCompleted {
+		return true // Proceed if not completed or error
+	}
+
+	ui.GetManager().ClearScreen()
+	fmt.Printf("\n%s[!] ATTENTION: Module %s (%s) was already completed in this session.%s\n", constants.ThemeHigh, m.ID, m.Name, constants.ColorReset)
+	
+	c.DisplayMissionSummary(m.ID)
+
+	fmt.Printf("\n%sWould you like to rerun this module?%s\n", constants.ColorBold, constants.ColorReset)
+	fmt.Println("Existing findings will be preserved, but rerunning may take additional time.")
+	
+	rerun := ui.PromptConfirm("Rerun?", false)
+	if !rerun {
+		ui.PromptString("\nPress Enter to return to menu", "")
+	}
+	return rerun
+}
+
 func (c *AssessmentController) ExecuteModule(m *module.Module) error {
+	// 0. Check for previous successful run
+	if !c.CheckPreviousRun(m) {
+		return nil
+	}
+
 	ui.GetManager().ClearScreen()
 	fmt.Printf("\n%s\n", strings.Repeat("═", 80))
 	fmt.Printf("🚀 MISSION START: %s (%s)\n", m.Name, m.ID)
@@ -149,7 +215,7 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		}
 	}
 
-	// A2. Duration Mode (Global for Timed modules)
+	// B. Duration Mode (Global for Timed modules)
 	if m.Timed {
 		durationOpts := []string{"Timed (Surgical - Default)", "Indefinite (Until Ctrl+C)"}
 		choice := ui.PromptList("Select Duration Mode", durationOpts)
@@ -167,153 +233,19 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		}
 	}
 
-	// PMF Intelligence Guard
-	pmf, _ := db.GetConfig(c.Session.DB, "ASTRA_TARGET_PMF")
-	if pmf == "Required" && (m.ID == "A3" || m.ID == "F4") {
-		fmt.Printf("\n%s[!] INTELLIGENCE ALERT: Target enforces PMF (802.11w).%s\n", constants.ThemeHigh, constants.ColorReset)
-		fmt.Println("[*] Active deauthentication WILL FAIL. Passive monitoring is recommended.")
-		if m.ID == "A3" {
-			confirm := ui.PromptConfirm("Continue with active reveal anyway?", false)
-			// PromptConfirm doesn't return -1, it returns default. 
-			// But for mission safety, let's assume it might be better to check if it matches default
-			if !confirm {
-				os.Setenv("ACTIVE_REVEAL", "no")
-			}
-		} else if m.ID == "F4" {
-			fmt.Println("[*] CSA suppression will be used as primary mechanism.")
-		}
-	}
-
-	// B. Target Client Selection (Global for relevant modules)
-	// Modules requiring a target client: D1, E3, F4, G4, G5
-	if strings.Contains("D1,E3,F4,G4,G5", m.ID) {
-		clients, err := db.ListClients(c.Session.DB)
-		if err == nil && len(clients) > 0 {
-			var options []string
-			for _, cl := range clients {
-				options = append(options, fmt.Sprintf("%s (%s) [%ddBm]", cl.MAC, cl.Vendor, cl.LastSignal))
-			}
-			if m.ID == "D1" {
-				options = append(options, "BROADCAST (Loud/Destructive)")
-			}
-			
-			choice := ui.PromptList("Select Target Client", options)
-			if choice == -1 {
-				return nil
-			}
-			if m.ID == "D1" && choice == len(clients) {
-				os.Setenv("TARGET_CLIENT", "FF:FF:FF:FF:FF:FF")
-			} else if choice >= 0 {
-				os.Setenv("TARGET_CLIENT", clients[choice].MAC)
-			}
-		}
-	}
-
-	// C. Module-Specific Logic
-	switch m.ID {
-	case "A1":
-		if os.Getenv("ASTRA_INDEFINITE") != "true" {
-			options := []string{"Standard (60s)", "Deep Scan (120s - Recommended for DFS/5GHz)"}
-			choice := ui.PromptList("Select Scan Depth", options)
-			if choice == -1 {
-				return nil
-			}
-			if choice == 1 {
-				os.Setenv("SCAN_TIME", "120")
-			} else {
-				os.Setenv("SCAN_TIME", "60")
-			}
-		}
-	case "A3":
-		if ui.PromptConfirm("Force reveal via surgical deauth?", true) {
-			os.Setenv("ACTIVE_REVEAL", "yes")
-		}
-	case "D3":
-		options := []string{"Pixie Dust (Fast, 1 transaction)", "Online Brute-Force (Sequential)"}
-		choice := ui.PromptList("Select WPS Vector", options)
-		if choice == -1 {
-			return nil
-		}
-		if choice == 1 {
-			os.Setenv("WPS_ATTACK", "online")
-			if os.Getenv("ASTRA_INDEFINITE") != "true" {
-				delay := ui.PromptString("Enter delay (seconds)", "300")
-				if delay == "" {
+	// C. Automated Tactical Prompts via Registry
+	for _, promptKey := range m.Prompts {
+		promptKey = strings.TrimSpace(promptKey)
+		if promptFn, ok := module.PromptRegistry[promptKey]; ok {
+			if err := promptFn(m, c.Session.DB); err != nil {
+				if err.Error() == "interrupted" {
 					return nil
 				}
-				os.Setenv("WPS_DELAY", delay)
-			} else {
-				os.Setenv("WPS_DELAY", "0")
+				logging.Warn("Tactical prompt %s failed: %v", promptKey, err)
 			}
 		} else {
-			os.Setenv("WPS_ATTACK", "pixie")
+			logging.Debug("No registry entry for required prompt: %s", promptKey)
 		}
-	case "D7":
-		options := []string{"Targeted Deauth (Surgical)", "CSA (Stealthier)"}
-		choice := ui.PromptList("Select Roaming Catalyst", options)
-		if choice == -1 {
-			return nil
-		}
-		if choice == 1 {
-			os.Setenv("CATALYST", "csa")
-		} else {
-			os.Setenv("CATALYST", "deauth")
-		}
-	case "F1":
-		opts := []string{"SSID Only (Random BSSID)", "BSSID Clone (Match Target)"}
-		choice := ui.PromptList("Select Rogue AP Mode", opts)
-		if choice == -1 {
-			return nil
-		}
-		if choice == 1 {
-			os.Setenv("AP_MODE", "clone")
-		} else {
-			os.Setenv("AP_MODE", "ssid")
-		}
-		
-		catOpts := []string{"None", "Targeted Deauth", "CSA"}
-		catChoice := ui.PromptList("Select Roaming Catalyst", catOpts)
-		if catChoice == -1 {
-			return nil
-		}
-		os.Setenv("CATALYST", strconv.Itoa(catChoice))
-		
-		if ui.PromptConfirm("Launch Responder pivot in background?", true) {
-			os.Setenv("LAUNCH_RESPONDER", "yes")
-		}
-	case "F2":
-		opts := []string{"Dynamic MANA (Directed Probes)", "Known Beacon Attack (Loud - Recommended)"}
-		choice := ui.PromptList("Select Karma Vector", opts)
-		if choice == -1 {
-			return nil
-		}
-		if choice == 1 || choice == -1 { // Default to index 1 (Loud) or if aborted
-			os.Setenv("KARMA_MODE", "loud")
-		} else {
-			os.Setenv("KARMA_MODE", "mana")
-		}
-	case "F3":
-		opts := []string{"Generic Corporate", "Microsoft 365 (High-Fidelity)"}
-		choice := ui.PromptList("Select Phishing Template", opts)
-		if choice == -1 {
-			return nil
-		}
-		if choice == 1 {
-			os.Setenv("PHISH_TEMPLATE", "m365")
-		} else {
-			os.Setenv("PHISH_TEMPLATE", "generic")
-		}
-	case "F5":
-		domain := ui.PromptString("Enter tunnel domain", "")
-		if domain == "" { return nil }
-		os.Setenv("TUNNEL_DOMAIN", domain)
-		
-		pass := ui.PromptString("Enter tunnel password", "")
-		os.Setenv("TUNNEL_PASS", pass)
-	case "G5":
-		bssid := ui.PromptString("Enter Rogue AP BSSID", "")
-		if bssid == "" { return nil }
-		os.Setenv("ROGUE_BSSID", bssid)
 	}
 
 	// 5. Run the Module
@@ -342,8 +274,14 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	duration := int(endTime.Sub(startTime).Seconds())
 
 	status := constants.StatusCompleted
-	if err != nil || exitCode != 0 {
-		status = constants.StatusFailed
+	// If exitCode is -1 (interrupted) or 130 (SIGINT in bash), and it's indefinite mode, it's a success
+	if (err != nil || exitCode != 0) {
+		if os.Getenv("ASTRA_INDEFINITE") == "true" && (exitCode == -1 || exitCode == 130 || exitCode == 143) {
+			status = constants.StatusCompleted
+			logging.Info("Indefinite mission %s stopped by user. Marking as completed.", m.ID)
+		} else {
+			status = constants.StatusFailed
+		}
 	}
 
 	_, dbErr := c.Session.DB.Exec(`UPDATE module_state SET status = ?, exit_code = ?, ended_at = ?, duration_sec = ?, command_run = ?
@@ -423,6 +361,34 @@ func (c *AssessmentController) DisplayMissionSummary(tcID string) {
 		credRows.Close()
 	}
 
+	// 3. Query discovered networks
+	netRows, err := c.Session.DB.Query(`SELECT ssid, bssid, channel FROM network WHERE tc_id = ?`, tcID)
+	if err == nil {
+		for netRows.Next() {
+			var ssid, bssid, channel string
+			if err := netRows.Scan(&ssid, &bssid, &channel); err != nil {
+				continue
+			}
+			found = true
+			fmt.Printf("   • %s[NETWORK]%s %s (%s) on CH %s\n", constants.ThemeSuccess, constants.ColorReset, ssid, bssid, channel)
+		}
+		netRows.Close()
+	}
+
+	// 4. Query client probes
+	probeRows, err := c.Session.DB.Query(`SELECT mac, ssid FROM client_probe WHERE tc_id = ?`, tcID)
+	if err == nil {
+		for probeRows.Next() {
+			var mac, ssid string
+			if err := probeRows.Scan(&mac, &ssid); err != nil {
+				continue
+			}
+			found = true
+			fmt.Printf("   • %s[PROBE]%s Client %s searching for %s\n", constants.ThemeSuccess, constants.ColorReset, mac, ssid)
+		}
+		probeRows.Close()
+	}
+
 	if !found {
 		fmt.Printf("   %s• No findings recorded during this mission.%s\n", constants.ColorGray, constants.ColorReset)
 	}
@@ -463,17 +429,38 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 		}
 	}
 
+	// Create a map for easy lookup during window spawning
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
 	// Inject Colors for Module Highlighting
 	env = append(env, "ASTRA_COLOR_PROMPT=\033[1;34m")
 	env = append(env, "ASTRA_COLOR_VAR=\033[1;33m")
 	env = append(env, "ASTRA_COLOR_BOLD=\033[1m")
 	env = append(env, "ASTRA_COLOR_ACTION=\033[1;37;44m") // Bold White on Blue Background
 	env = append(env, "ASTRA_COLOR_RESET=\033[0m")
+	env = append(env, "TERM=xterm-256color") // Ensure interactive tools work in separate windows
 
 	logging.Info("Starting module %s...", tcID)
+	c.Running = tcID
+	defer func() { c.Running = "" }()
 
 	// RESTORE TERMINAL STATE: Close readline before running the module
 	ui.GetManager().Close()
+
+	// 4.8. Tactical Window Selection (Enforced by default if DISPLAY is available and NOT headless)
+	useWindow := false
+	if os.Getenv("DISPLAY") != "" && os.Getenv("ASTRA_HEADLESS") != "true" {
+		useWindow = true
+		os.Setenv("ASTRA_IN_WINDOW", "true")
+	} else {
+		os.Setenv("ASTRA_IN_WINDOW", "false")
+	}
 
 	// 🛰️ SMART PROGRESS MONITOR
 	pm := ui.NewProgressMonitor(tcID)
@@ -513,7 +500,85 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 		}
 	}()
 
-	exitCode, err := c.ExecMgr.RunWithEnv(ctx, tcID, matches[0], []string{}, logFile, env)
+	var exitCode int
+	if useWindow {
+		termBin, termArgs := c.ExecMgr.GetTerminalEmulator(fmt.Sprintf("Astra: %s", tcID))
+		if termBin != "" {
+			// Get pixel geometry for 1/4th screen tiling
+			winX, winY, winW, winH := c.getScreenGeometry()
+
+			// 1. Create a temporary wrapper script to ensure environment is 100% correct
+			wrapperPath := filepath.Join(c.Session.BaseDir, fmt.Sprintf(".astra_%s_wrapper.sh", strings.ToLower(tcID)))
+			
+			vars := []string{
+				"ASTRA_BIN", "SESSION_DIR", "SESSION_EVIDENCE_DIR", 
+				"MONITOR_INTERFACE", "WIFI_INTERFACE", 
+				"GUEST_SSID", "GUEST_BSSID", "GUEST_CHANNEL", 
+				"SCAN_TIME", "CAPTURE_TIME", "ASTRA_INDEFINITE",
+			}
+			
+			wrapperContent := "#!/usr/bin/env bash\n"
+			wrapperContent += "export ASTRA_IN_WINDOW=true\n"
+			wrapperContent += "export TERM=xterm-256color\n"
+			
+			// TTY and Environment setup
+			wrapperContent += "stty sane\n"
+			wrapperContent += "export USER=root\n"
+			wrapperContent += "export HOME=/root\n"
+
+			// Pixel-based Tiling (xdotool)
+			if os.Getenv("DISPLAY") != "" {
+				wrapperContent += fmt.Sprintf("(sleep 0.5; xdotool getactivewindow windowsize %d %d windowmove %d %d) &\n", winW, winH, winX, winY)
+			}
+
+			if val := os.Getenv("DISPLAY"); val != "" { wrapperContent += fmt.Sprintf("export DISPLAY='%s'\n", val) }
+			if val := os.Getenv("XAUTHORITY"); val != "" { wrapperContent += fmt.Sprintf("export XAUTHORITY='%s'\n", val) }
+			if val := os.Getenv("PATH"); val != "" { wrapperContent += fmt.Sprintf("export PATH='%s'\n", val) }
+
+			for _, v := range vars {
+				if val, ok := envMap[v]; ok {
+					wrapperContent += fmt.Sprintf("export %s='%s'\n", v, val)
+				}
+			}
+			
+			absModulePath, _ := filepath.Abs(matches[0])
+			projectRoot, _ := os.Getwd()
+			wrapperContent += fmt.Sprintf("cd '%s'\n", projectRoot)
+			
+			wrapperContent += "echo -e \"\\e[1;34m[*] Astra Tactical Bridge Active\\e[0m\"\n"
+			wrapperContent += "echo -e \"[*] Starting tool in TTY-safe session...\"\n"
+			if os.Getenv("ASTRA_INDEFINITE") == "true" {
+				wrapperContent += "echo -e \"\\e[1;33m[!] INDEFINITE MODE: Press Ctrl+C in THIS window to stop mission.\\e[0m\"\n"
+			}
+			
+			// DO NOT trap SIGINT here so it propagates to the module script
+			// But we DO want to trap it for the wrapper's own exit so we can still hit the 'read'
+			wrapperContent += "trap 'echo -e \"\\n\\e[1;33m[!] Interrupt received in Tactical Window.\\e[0m\"' SIGINT\n"
+			
+			wrapperContent += fmt.Sprintf("bash '%s'\n", absModulePath)
+			wrapperContent += "RET=$?\n"
+			
+			wrapperContent += "echo -e \"\\n\\e[1;33m[*] Mission finished with exit code $RET\\e[0m\"\n"
+			wrapperContent += "echo \"[*] Press ENTER to close this window...\"\n"
+			wrapperContent += "read\n"
+			wrapperContent += "exit $RET\n"
+			
+			os.WriteFile(wrapperPath, []byte(wrapperContent), 0755)
+			defer os.Remove(wrapperPath)
+
+			// 2. Launch the terminal pointing to our wrapper
+			fullArgs := append(termArgs, wrapperPath)
+			exitCode, err = c.ExecMgr.RunWithEnv(ctx, tcID, termBin, fullArgs, logFile, env)
+		} else {
+			logging.Warn("No supported terminal emulator found. Falling back to Standard Feed.")
+			// Foreground with Stdin
+			exitCode, err = c.ExecMgr.RunWithEnv(ctx, tcID, matches[0], []string{}, logFile, env)
+		}
+	} else {
+		// Standard foreground mode: Stdin is usually wanted here
+		exitCode, err = c.ExecMgr.RunWithEnv(ctx, tcID, matches[0], []string{}, logFile, env)
+	}
+	
 	return exitCode, err
 }
 

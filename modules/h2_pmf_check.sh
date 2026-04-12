@@ -58,7 +58,7 @@ if command -v tshark &>/dev/null; then
     echo "[*] Analyzing RSN capabilities with tshark..."
     # Capture one beacon
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" &
+        timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" &
     else
         tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" > /dev/null 2>&1 &
     fi
@@ -80,7 +80,7 @@ if command -v tshark &>/dev/null; then
     
     if [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
         if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-            tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
+            timeout --foreground "$SCAN_TIME" tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
         else
             tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
         fi
@@ -146,4 +146,11 @@ fi
 
 echo "[+] PMF check complete."
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "PMF configuration audit complete."
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

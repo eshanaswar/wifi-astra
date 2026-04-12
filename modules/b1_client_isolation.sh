@@ -8,7 +8,9 @@
 # DESC="Test if connected clients on target WiFi can see each other"
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
+# 
 # DECODE="none"
+# PROMPTS="managed_connect"
 
 #===============================================================================
 #  modules/b1_client_isolation.sh
@@ -19,6 +21,7 @@ set -euo pipefail
 
 # Inputs from Environment
 INTERFACE="${WIFI_INTERFACE:-}"
+SCAN_TIME="${SCAN_TIME:-60}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 OUTPUT_CSV="${OUTPUT_CSV:-${EVIDENCE_DIR}/b1_results.csv}"
@@ -38,16 +41,18 @@ if [[ -z "$MY_IP" ]]; then
     exit 1
 fi
 
-SUBNET=$(ip -4 route show dev "$INTERFACE" | grep "kernel" | awk '{print $1}')
+SUBNET=$(ip -4 route show dev "$INTERFACE" | grep "kernel" | awk '{print $1}' || true)
 if [[ -z "$SUBNET" ]]; then
-    echo "[!] Could not determine subnet for ${INTERFACE}."
+    # Fallback: Try to get subnet from IP and mask (requires ipcalc or manual calculation)
+    # For now, let's just warn and exit gracefully to show the error
+    echo "[!] Could not determine subnet for ${INTERFACE}. Ensure you are connected to the WiFi."
     exit 1
 fi
 
 echo "[*] Testing client isolation on ${INTERFACE} (${MY_IP}) in subnet ${SUBNET}..."
 
 # 1. ARP Scan to find other clients (Produce XML for Go ingest)
-echo "[*] Running ARP scan (nmap -sn -PR)..."
+echo "[*] Running ARP scan (nmap -vv -sn -PR)..."
 (
     # Simple background telemetry for nmap
     while true; do
@@ -58,10 +63,10 @@ echo "[*] Running ARP scan (nmap -sn -PR)..."
 TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    nmap -sn -PR "$SUBNET" -oX "$OUTPUT_XML"
+    timeout --foreground "$SCAN_TIME" nmap -vv -sn -PR "$SUBNET" -oX "$OUTPUT_XML" || true
     RET=$?
 else
-    nmap -sn -PR "$SUBNET" -oX "$OUTPUT_XML" > "${EVIDENCE_DIR}/${TC_ID}_nmap.log" 2>&1 &
+    nmap -vv -sn -PR "$SUBNET" -oX "$OUTPUT_XML" > "${EVIDENCE_DIR}/${TC_ID}_nmap.log" 2>&1 &
     TOOL_PID=$!
     wait $TOOL_PID; RET=$?
 fi
@@ -93,6 +98,13 @@ else
         --desc "No other clients were discovered on the subnet ${SUBNET} via ARP scanning. Client-to-client isolation appears to be enforced." \
         --evidence "$OUTPUT_XML" \
         --rationale "Client-to-client isolation is a critical security control for public and guest WiFi networks to prevent peer-to-peer attacks. No risks were found in this interval."
+fi
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
 fi
 
 exit 0

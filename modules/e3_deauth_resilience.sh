@@ -9,6 +9,7 @@
 # REQS="monitor_iface,target_bssid,target_channel"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="target_client"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -74,7 +75,7 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_airodump.log"
 TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" &
+    timeout --foreground "$SCAN_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" &
 else
     airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" > "$LOG_FILE" 2>&1 &
 fi
@@ -128,4 +129,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

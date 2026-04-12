@@ -9,6 +9,7 @@
 # REQS="monitor_iface"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="active_reveal,pmf_guard"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -79,7 +80,7 @@ if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
     # Quick discovery to find clients
     DISC_PREFIX="${EVIDENCE_DIR}/a3_discovery"
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv &
+        timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv &
     else
         airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 &
     fi
@@ -120,7 +121,7 @@ TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
-    timeout "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv || true
+    timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv || true
     RET=$?
 else
     # Run with redirection
@@ -177,6 +178,13 @@ fi
 
 if [[ $REVEALED_COUNT -eq 0 ]]; then
     echo -e "[+] No hidden SSIDs deanonymized in this window."
+fi
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
 fi
 
 exit 0

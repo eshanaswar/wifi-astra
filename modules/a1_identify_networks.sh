@@ -9,6 +9,7 @@
 # REQS="monitor_iface"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="scan_depth"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -60,7 +61,7 @@ TEL_PID=$!
 # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # In Tactical Window: Run in foreground so ncurses renders correctly
-    airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv --band abg
+    timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv --band abg || true
     RET=$?
 else
     # In Main Feed: Redirect to log to keep terminal clean

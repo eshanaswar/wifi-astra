@@ -53,8 +53,9 @@ func (m *Manager) Close() {
 }
 
 type MenuOption struct {
-	Label  string
-	Action func() error
+	Label        string
+	DynamicLabel func() string
+	Action       func() error
 }
 
 type Menu struct {
@@ -78,6 +79,13 @@ func (m *Menu) AddOption(label string, action func() error) {
 	})
 }
 
+func (m *Menu) AddDynamicOption(dynamicLabel func() string, action func() error) {
+	m.Options = append(m.Options, MenuOption{
+		DynamicLabel: dynamicLabel,
+		Action:       action,
+	})
+}
+
 func (m *Menu) Display() error {
 	mgr := GetManager()
 	if mgr.rl == nil {
@@ -85,9 +93,14 @@ func (m *Menu) Display() error {
 	}
 
 	for {
+		mgr.ClearScreen()
 		fmt.Printf("\n--- %s ---\n", m.Title)
 		for i, opt := range m.Options {
-			fmt.Printf("%d) %s\n", i+1, opt.Label)
+			label := opt.Label
+			if opt.DynamicLabel != nil {
+				label = opt.DynamicLabel()
+			}
+			fmt.Printf("%d) %s\n", i+1, label)
 		}
 		fmt.Printf("q) Quit / Back\n")
 

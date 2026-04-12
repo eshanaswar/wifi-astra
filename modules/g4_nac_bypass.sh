@@ -9,6 +9,7 @@
 # REQS="managed_iface"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="target_client"
 # DECODE="none"
 
 #===============================================================================

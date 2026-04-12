@@ -9,6 +9,7 @@
 # REQS="monitor_iface,target_ssid,nat"
 # PCAP="yes"
 # TIMED="yes"
+# PROMPTS="roaming_catalyst"
 # DECODE="wpa3"
 
 #===============================================================================
@@ -106,7 +107,7 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
         CATALYST_PID=$!
     elif [[ "$catalyst_choice" == "2" ]] && command -v mdk4 &>/dev/null; then
         echo "[*] Starting CSA catalyst (mdk4) for $SSID..."
-        mdk4 "$INTERFACE" b -n "$SSID" -c 11 &
+        timeout --foreground "$SCAN_TIME" mdk4 "$INTERFACE" b -n "$SSID" -c 11 &
         CATALYST_PID=$!
     fi
 
@@ -162,4 +163,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

@@ -8,8 +8,9 @@
 # DESC="Analyze DHCP configuration and check for rogue DHCP servers"
 # REQS="managed_iface"
 # PCAP="yes"
-# TIMED="yes"
+# 
 # DECODE="none"
+# PROMPTS="managed_connect"
 
 set -euo pipefail
 
@@ -62,10 +63,10 @@ fi
 
 # Active discovery
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    nmap --script broadcast-dhcp-discover -e "$INTERFACE"
+    timeout --foreground "$SCAN_TIME" nmap -vv --script broadcast-dhcp-discover -e "$INTERFACE" || true
     RET=$?
 else
-    nmap --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>&1 &
+    nmap -vv --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>&1 &
     TOOL_PID=$!
     wait $TOOL_PID; RET=$?
 fi
@@ -106,5 +107,12 @@ wait "$TCPDUMP_PID" 2>/dev/null || true
 
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0
 

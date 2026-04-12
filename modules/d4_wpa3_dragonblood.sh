@@ -57,20 +57,20 @@ TEL_PID=$!
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Foreground Execution
     if command -v dragonslayer &>/dev/null; then
-        timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
+        timeout --foreground "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
     fi
     if command -v dragondrain &>/dev/null; then
-        timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
+        timeout --foreground "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
     fi
     RET=$?
 else
     # Background Execution
     (
         if command -v dragonslayer &>/dev/null; then
-            timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+            timeout --foreground "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
         fi
         if command -v dragondrain &>/dev/null; then
-            timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+            timeout --foreground "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
         fi
     ) > /dev/null 2>&1 &
     TOOL_PID=$!

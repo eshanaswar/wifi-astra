@@ -73,9 +73,9 @@ if [[ -n "$KROOK_SCRIPT" ]]; then
     TELEMETRY_PID=$!
 
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" || true
+        timeout --foreground "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" || true
     else
-        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" > "$KROOK_LOG" 2>&1 &
+        timeout --foreground "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" > "$KROOK_LOG" 2>&1 &
         TOOL_PID=$!
         wait $TOOL_PID || true
     fi
@@ -98,7 +98,13 @@ if [[ -n "$KROOK_SCRIPT" ]]; then
 else
     echo "[!] Kr00k test script not found. Performing OUI-based passive check..." > "$KROOK_LOG"
     OUI=$(echo "$BSSID" | cut -d: -f1-3)
-    echo "BSSID OUI: $OUI" >> "$KROOK_LOG"
+    VENDOR=$("$ASTRA_BIN" lookup-oui "$BSSID" 2>/dev/null || echo "Unknown")
+    echo "BSSID OUI: $OUI ($VENDOR)" >> "$KROOK_LOG"
+    
+    # Flag known vulnerable vendors
+    if echo "$VENDOR" | grep -Ei "Broadcom|Cypress" >/dev/null; then
+        echo "[!] WARNING: Target hardware ($VENDOR) is known to use chipsets vulnerable to CVE-2019-15126." >> "$KROOK_LOG"
+    fi
 fi
 
 # Audit Complete finding if no critical vulnerability was recorded above
@@ -119,4 +125,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

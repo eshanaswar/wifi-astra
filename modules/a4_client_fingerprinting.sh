@@ -60,7 +60,7 @@ TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
-    timeout "$SCAN_TIME" airodump-ng "$INTERFACE" \
+    timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" \
         --bssid "$BSSID" \
         --channel "${CHANNEL:-0}" \
         --write "$CSV_PREFIX" \
@@ -124,26 +124,29 @@ if [[ -f "$PARSED_PROBES" ]]; then
         [[ -z "$mac" ]] && continue
         FOUND_COUNT=$((FOUND_COUNT + 1)) # SAFE INCREMENT
         
+        # LOOKUP VENDOR
+        VENDOR=$("$ASTRA_BIN" lookup-oui "$mac" 2>/dev/null || echo "Unknown")
+
         if [[ "$pnl" == "<NONE>" ]]; then
-            echo -e "[+] Found station: ${C_VAR}$mac${C_RESET} (No PNL leaked)"
+            echo -e "[+] Found station: ${C_VAR}$mac${C_RESET} [$VENDOR] (No PNL leaked)"
             $ASTRA_BIN record-finding \
                 --session-dir "$SESSION_DIR" \
                 --tc "$TC_ID" \
                 --type vulnerability \
                 --name "Client Identified" \
                 --severity INFO \
-                --desc "Station $mac identified associated with $BSSID." \
+                --desc "Station $mac [$VENDOR] identified associated with $BSSID." \
                 --target "$mac" \
                 --evidence "$OUTPUT_CSV"
         else
-            echo -e "[!] ${C_BOLD}PNL LEAK DETECTED:${C_RESET} ${C_VAR}$mac${C_RESET} probes for ${C_VAR}[$pnl]${C_RESET}"
+            echo -e "[!] ${C_BOLD}PNL LEAK DETECTED:${C_RESET} ${C_VAR}$mac${C_RESET} [$VENDOR] probes for ${C_VAR}[$pnl]${C_RESET}"
             $ASTRA_BIN record-finding \
                 --session-dir "$SESSION_DIR" \
                 --tc "$TC_ID" \
                 --type vulnerability \
                 --name "PNL Leak Detected" \
                 --severity HIGH \
-                --desc "Station $mac leaked its PNL: $pnl." \
+                --desc "Station $mac [$VENDOR] leaked its PNL: $pnl." \
                 --target "$mac" \
                 --evidence "$OUTPUT_CSV"
         fi
@@ -152,6 +155,13 @@ fi
 
 if [[ $FOUND_COUNT -eq 0 ]]; then
     echo -e "${C_PROMPT}[*]${C_RESET} No active clients discovered for $BSSID."
+fi
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
 fi
 
 exit 0

@@ -77,9 +77,9 @@ TELEMETRY_PID=$!
 
 # type 0x888e is EAPOL
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" || true
+    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" || true
 else
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" > "$TCPDUMP_LOG" 2>&1 &
+    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" > "$TCPDUMP_LOG" 2>&1 &
     TOOL_PID=$!
     wait $TOOL_PID || true
 fi
@@ -131,4 +131,11 @@ if [[ "$VULN_DETECTED" -eq 0 ]]; then
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

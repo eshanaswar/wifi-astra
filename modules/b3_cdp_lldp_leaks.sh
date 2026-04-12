@@ -9,6 +9,7 @@
 # REQS="managed_iface"
 # PCAP="yes"
 # TIMED="yes"
+# PROMPTS="managed_connect"
 # DECODE="none"
 
 set -euo pipefail
@@ -51,7 +52,7 @@ TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
-    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
         "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" || true
     RET=$?
 else
@@ -105,4 +106,11 @@ fi
 
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

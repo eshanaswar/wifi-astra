@@ -9,6 +9,7 @@
 # REQS="managed_iface,target_ssid"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="target_client,pmf_guard"
 # DECODE="none"
 
 #===============================================================================
@@ -137,4 +138,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

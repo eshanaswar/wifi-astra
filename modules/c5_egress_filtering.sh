@@ -8,7 +8,9 @@
 # DESC="Test which outbound ports are allowed through the wireless gateway"
 # REQS="managed_iface"
 # PCAP="no"
+# 
 # DECODE="none"
+# PROMPTS="managed_connect"
 
 #===============================================================================
 #  modules/c5_egress_filtering.sh
@@ -16,6 +18,9 @@
 #===============================================================================
 
 set -euo pipefail
+
+# Inputs from Environment
+SCAN_TIME="${SCAN_TIME:-60}"
 
 # Inputs from Environment
 INTERFACE="${WIFI_INTERFACE:-}"
@@ -47,11 +52,11 @@ TEL_PID=$!
 # 2. Run Primary Tool (nmap)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Foreground Execution
-    nmap -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" || true
+    timeout --foreground "$SCAN_TIME" nmap -vv -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" || true
     RET=$?
 else
     # Background Execution
-    nmap -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" > /dev/null 2>&1 &
+    nmap -vv -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" > /dev/null 2>&1 &
     TOOL_PID=$!
     wait $TOOL_PID; RET=$?
 fi

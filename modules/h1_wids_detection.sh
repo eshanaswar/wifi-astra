@@ -57,7 +57,7 @@ trap cleanup EXIT
 
 # 1. Start capture
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID" &
+    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID" &
 else
     tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID" > /dev/null 2>&1 &
 fi
@@ -81,7 +81,7 @@ if command -v mdk4 &>/dev/null; then
     echo "[*] Signature 2: Sending fake AP beacon flood..." >> "$LOG_FILE"
     "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 40 --status "Sending fake AP beacon flood..."
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout 20 mdk4 "$INTERFACE" b -n "$SSID" || true
+        timeout --foreground 20 mdk4 "$INTERFACE" b -n "$SSID" || true
     else
         timeout 20 mdk4 "$INTERFACE" b -n "$SSID" > /dev/null 2>&1 &
         TOOL_PID=$!
@@ -96,7 +96,7 @@ if command -v mdk4 &>/dev/null; then
     echo "[*] Signature 3: Sending authentication flood..." >> "$LOG_FILE"
     "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 70 --status "Sending authentication flood..."
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout 20 mdk4 "$INTERFACE" a -a "$BSSID" || true
+        timeout --foreground 20 mdk4 "$INTERFACE" a -a "$BSSID" || true
     else
         timeout 20 mdk4 "$INTERFACE" a -a "$BSSID" > /dev/null 2>&1 &
         TOOL_PID=$!
@@ -125,5 +125,12 @@ echo "[+] WIDS detection testing complete."
     --rationale "WIDS/WIPS effectiveness determines if an attacker can operate undetected. Failure to detect these noisy signatures indicates a lack of real-time monitoring and incident response capability."
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "WIDS/WIPS detection audit complete."
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0
 

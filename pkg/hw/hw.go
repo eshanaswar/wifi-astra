@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -171,13 +172,23 @@ func EnableMonitorMode(iface string) (string, error) {
 	logging.Info("Enabling monitor mode on %s...", iface)
 	
 	cmd := exec.Command("airmon-ng", "start", iface)
-	if err := cmd.Run(); err != nil {
-		logging.Warn("airmon-ng failed, trying native kernel mode switch...")
-		exec.Command("ip", "link", "set", iface, "down").Run()
-		if err := exec.Command("iw", "dev", iface, "set", "type", "monitor").Run(); err != nil {
-			return "", fmt.Errorf("failed to set monitor mode: %v", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logging.Warn("airmon-ng failed: %v. Output: %s", err, string(output))
+		logging.Info("Trying native kernel mode switch for %s...", iface)
+		
+		// Fallback to native commands
+		if out, err := exec.Command("ip", "link", "set", iface, "down").CombinedOutput(); err != nil {
+			return "", fmt.Errorf("failed to bring interface %s down: %v (output: %s)", iface, err, string(out))
 		}
-		exec.Command("ip", "link", "set", iface, "up").Run()
+		if out, err := exec.Command("iw", "dev", iface, "set", "type", "monitor").CombinedOutput(); err != nil {
+			// Restore interface before returning error
+			exec.Command("ip", "link", "set", iface, "up").Run()
+			return "", fmt.Errorf("failed to set monitor mode on %s: %v (output: %s)", iface, err, string(out))
+		}
+		if out, err := exec.Command("ip", "link", "set", iface, "up").CombinedOutput(); err != nil {
+			return "", fmt.Errorf("failed to bring interface %s up: %v (output: %s)", iface, err, string(out))
+		}
 		return iface, nil
 	}
 
@@ -206,8 +217,19 @@ func DisableMonitorMode(iface string) error {
 	}
 	logging.Info("Disabling monitor mode on %s...", iface)
 	
-	exec.Command("airmon-ng", "stop", iface).Run()
-	
+	cmd := exec.Command("airmon-ng", "stop", iface)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logging.Warn("airmon-ng stop failed: %v. Output: %s", err, string(output))
+		
+		// Fallback: try native switch back to managed
+		exec.Command("ip", "link", "set", iface, "down").Run()
+		if out, err := exec.Command("iw", "dev", iface, "set", "type", "managed").CombinedOutput(); err != nil {
+			exec.Command("ip", "link", "set", iface, "up").Run()
+			return fmt.Errorf("failed to set managed mode on %s: %v (output: %s)", iface, err, string(out))
+		}
+		exec.Command("ip", "link", "set", iface, "up").Run()
+	}
 	return nil
 }
 
@@ -221,7 +243,8 @@ func ScoutTarget(bssid string, monIface string) (map[string]string, error) {
 		"AUTH": "Unknown",
 	}
 
-	tempPcap := fmt.Sprintf("/tmp/astra_scout_%s.pcap", strings.ReplaceAll(bssid, ":", ""))
+	// Use os.TempDir() or current directory to avoid hardcoded /tmp
+	tempPcap := filepath.Join(os.TempDir(), fmt.Sprintf("astra_scout_%s.pcap", strings.ReplaceAll(bssid, ":", "")))
 	defer os.Remove(tempPcap)
 
 	// 1. Capture 5s of management frames for the BSSID

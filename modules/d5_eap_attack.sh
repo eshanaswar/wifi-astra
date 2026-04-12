@@ -56,11 +56,11 @@ RET=0
 if command -v eaphammer &>/dev/null; then
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
         # Foreground Execution
-        timeout "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
+        timeout --foreground "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
         RET=$?
     else
         # Background Execution
-        timeout "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
+        timeout --foreground "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
         TOOL_PID=$!
         wait $TOOL_PID; RET=$?
     fi

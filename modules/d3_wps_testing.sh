@@ -9,6 +9,7 @@
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="no"
 # TIMED="yes"
+# PROMPTS="wps_vector"
 # DECODE="wifi_mgmt"
 
 #===============================================================================

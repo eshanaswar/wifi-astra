@@ -9,6 +9,7 @@
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="yes"
 # TIMED="yes"
+# PROMPTS="target_client"
 # DECODE="wifi_mgmt"
 
 #===============================================================================
@@ -54,11 +55,11 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Phase 1: hcxdumptool PMKID capture
     FILTER_FILE=$(mktemp)
     echo "${BSSID}" | tr -d ':' | tr '[:upper:]' '[:lower:]' > "$FILTER_FILE"
-    timeout 15 hcxdumptool -i "$INTERFACE" --filterlist_ap="$FILTER_FILE" --filtermode=2 --enable_status=1 -o "${OUTPUT_BASE}_hcxdump.pcapng" || true
+    timeout --foreground 15 hcxdumptool -i "$INTERFACE" --filterlist_ap="$FILTER_FILE" --filtermode=2 --enable_status=1 -o "${OUTPUT_BASE}_hcxdump.pcapng" || true
     rm -f "$FILTER_FILE"
 
     # Phase 2: Handshake Capture
-    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" &
+    timeout --foreground "$CAPTURE_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" &
     AIRODUMP_PID=$!
     
     HANDSHAKE_FILE="${OUTPUT_BASE}_handshake-01.cap"

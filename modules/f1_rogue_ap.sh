@@ -9,6 +9,7 @@
 # REQS="managed_iface,target_ssid,nat"
 # PCAP="yes"
 # TIMED="yes"
+# PROMPTS="rogue_ap_mode,roaming_catalyst"
 # DECODE="dhcp"
 
 #===============================================================================
@@ -177,6 +178,13 @@ if grep -qi "authenticated" "$HOSTAPD_LOG"; then
         --rationale "Automatic connection to unauthorized Access Points allows full traffic interception."
 else
     echo -e "[+] Mission complete. No rogue connections identified."
+fi
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
 fi
 
 exit 0

@@ -69,10 +69,10 @@ TEL_PID=$!
 # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # In Tactical Window: Run in foreground so it renders correctly
-    timeout "$SCAN_TIME" responder -I "$INTERFACE" -dwP || true
+    timeout --foreground "$SCAN_TIME" responder -I "$INTERFACE" -dwP || true
 else
     # In Main Feed: Redirect to log to keep terminal clean
-    timeout "$SCAN_TIME" responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1 &
+    timeout --foreground "$SCAN_TIME" responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
     wait $TOOL_PID || true
 fi
@@ -104,6 +104,13 @@ else
         --target "Local Clients" \
         --evidence "$LOG_FILE" \
         --rationale "Lack of captured hashes indicates that either clients are not using legacy name resolution protocols or they are otherwise mitigated (e.g., via GPO or LLMNR/NetBIOS disablement)."
+fi
+
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
 fi
 
 exit 0

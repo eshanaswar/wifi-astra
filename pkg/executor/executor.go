@@ -123,7 +123,7 @@ func (m *Manager) SpawnWithEnv(ctx context.Context, id, command string, args []s
 		err := p.cmd.Wait()
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		
+
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				p.ExitCode = exitErr.ExitCode()
@@ -222,7 +222,7 @@ func (m *Manager) Stop(id string) error {
 	if err == nil {
 		// Send SIGTERM to the process group
 		syscall.Kill(-pgid, syscall.SIGTERM)
-		
+
 		// Give it a moment to die gracefully (up to 2 seconds for reports)
 		for i := 0; i < 20; i++ {
 			time.Sleep(100 * time.Millisecond)
@@ -230,7 +230,7 @@ func (m *Manager) Stop(id string) error {
 				break
 			}
 		}
-		
+
 		// If it's still there, force it with SIGKILL
 		if isProcessRunning(p.PID) {
 			logging.Warn("Process %s (PID: %d) still running after SIGTERM, sending SIGKILL", id, p.PID)
@@ -244,7 +244,7 @@ func (m *Manager) Stop(id string) error {
 	m.mu.Lock()
 	delete(m.processes, id)
 	m.mu.Unlock()
-	
+
 	return nil
 }
 
@@ -269,4 +269,25 @@ func (m *Manager) Cleanup() {
 		p.cancel()
 		delete(m.processes, id)
 	}
+}
+
+// GetTerminalEmulator returns the binary and arguments for the best available terminal
+func (m *Manager) GetTerminalEmulator(title string) (string, []string) {
+	terminals := []struct {
+		bin  string
+		args []string
+	}{
+		// Standard -e is more reliable for passing a single script path
+		{"qterminal", []string{"-e"}},
+		{"xfce4-terminal", []string{"-e"}},
+		{"xterm", []string{"-e"}},
+		{"gnome-terminal", []string{"--"}},
+	}
+
+	for _, t := range terminals {
+		if path, err := exec.LookPath(t.bin); err == nil {
+			return path, t.args
+		}
+	}
+	return "", nil
 }

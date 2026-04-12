@@ -8,8 +8,9 @@
 # DESC="Detect mDNS/Bonjour service announcements from corporate devices"
 # REQS="managed_iface"
 # PCAP="yes"
-# TIMED="yes"
+# 
 # DECODE="none"
+# PROMPTS="managed_connect"
 
 set -euo pipefail
 
@@ -77,7 +78,7 @@ fi
 TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" || true
+    timeout --foreground "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" || true
     RET=$?
 else
     tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 &
@@ -125,4 +126,11 @@ fi
 
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

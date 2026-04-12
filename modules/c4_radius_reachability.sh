@@ -8,12 +8,17 @@
 # DESC="Identify reachable RADIUS servers from target WiFi"
 # REQS="managed_iface"
 # PCAP="no"
+# 
 # DECODE="none"
+# PROMPTS="managed_connect"
 
 #  modules/c4_radius_reachability.sh
 #  C4: RADIUS Server Reachability
 
 set -euo pipefail
+
+# Inputs from Environment
+SCAN_TIME="${SCAN_TIME:-60}"
 
 # Inputs
 INTERFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
@@ -48,11 +53,11 @@ TEL_PID=$!
 RADIUS_CANDIDATES=("10.0.0.10" "10.1.1.10" "172.16.0.10" "192.168.1.10" "10.0.0.1" "192.168.1.1")
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Foreground Execution
-    nmap -Pn -sU -p 1812,1813,1645,1646 "${RADIUS_CANDIDATES[@]}" -oX "$OUTPUT_XML" || true
+    timeout --foreground "$SCAN_TIME" nmap -vv -Pn -sU -p 1812,1813,1645,1646 "${RADIUS_CANDIDATES[@]}" -oX "$OUTPUT_XML" || true
     RET=$?
 else
     # Background Execution
-    nmap -Pn -sU -p 1812,1813,1645,1646 "${RADIUS_CANDIDATES[@]}" -oX "$OUTPUT_XML" >/dev/null 2>&1 &
+    nmap -vv -Pn -sU -p 1812,1813,1645,1646 "${RADIUS_CANDIDATES[@]}" -oX "$OUTPUT_XML" >/dev/null 2>&1 &
     TOOL_PID=$!
     wait $TOOL_PID; RET=$?
 fi

@@ -215,20 +215,21 @@ func launchMainMenu(s *session.Session) {
 			categories[m.Category] = ui.NewMenu("Category " + m.Category + ": " + name)
 		}
 
-		var status string
-		s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", m.ID).Scan(&status)
-		prefix := ""
-		switch status {
-		case constants.StatusCompleted:
-			prefix = fmt.Sprintf("%s✓%s ", constants.ColorGreen, constants.ColorReset)
-		case constants.StatusFailed:
-			prefix = fmt.Sprintf("%s✗%s ", constants.ColorRed, constants.ColorReset)
-		case constants.StatusRunning:
-			prefix = fmt.Sprintf("%s>%s ", constants.ColorCyan, constants.ColorReset)
-		}
-
 		mod := m
-		categories[m.Category].AddOption(prefix+m.ID+": "+m.Name, func() error {
+		categories[m.Category].AddDynamicOption(func() string {
+			var status string
+			s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", mod.ID).Scan(&status)
+			prefix := ""
+			switch status {
+			case constants.StatusCompleted:
+				prefix = fmt.Sprintf("%s✓%s ", constants.ColorGreen, constants.ColorReset)
+			case constants.StatusFailed:
+				prefix = fmt.Sprintf("%s✗%s ", constants.ColorRed, constants.ColorReset)
+			case constants.StatusRunning:
+				prefix = fmt.Sprintf("%s>%s ", constants.ColorCyan, constants.ColorReset)
+			}
+			return prefix + mod.ID + ": " + mod.Name
+		}, func() error {
 			return Ctrl.ExecuteModule(&mod)
 		})
 	}
@@ -236,8 +237,22 @@ func launchMainMenu(s *session.Session) {
 	catKeys := []string{"A", "B", "C", "D", "E", "F", "G", "H"}
 	for _, k := range catKeys {
 		if sub, ok := categories[k]; ok {
-			label := fmt.Sprintf("Category %s: %s", k, catNames[k])
-			mainMenu.AddOption(label, func() error {
+			catKey := k
+			catName := catNames[k]
+			mainMenu.AddDynamicOption(func() string {
+				var total, completed int
+				s.DB.QueryRow("SELECT COUNT(*) FROM module_state WHERE tc_id LIKE ?", catKey+"%").Scan(&total)
+				s.DB.QueryRow("SELECT COUNT(*) FROM module_state WHERE tc_id LIKE ? AND status = ?", catKey+"%", constants.StatusCompleted).Scan(&completed)
+				
+				statusStr := ""
+				if total > 0 {
+					statusStr = fmt.Sprintf(" [%d/%d]", completed, total)
+					if completed == total {
+						statusStr += fmt.Sprintf(" %s✓%s", constants.ColorGreen, constants.ColorReset)
+					}
+				}
+				return fmt.Sprintf("Category %s: %s%s", catKey, catName, statusStr)
+			}, func() error {
 				ui.GetManager().ClearScreen()
 				return sub.Display()
 			})
