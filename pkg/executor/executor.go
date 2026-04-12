@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -34,6 +35,40 @@ func NewManager() *Manager {
 	return &Manager{
 		processes: make(map[string]*Process),
 	}
+}
+
+// SanitizeEnv strips dangerous shell metacharacters from environment variable values
+// and logs a warning for any value that was modified. The KEY= prefix is preserved.
+func SanitizeEnv(env []string) []string {
+	sanitized := make([]string, len(env))
+	re := strings.NewReplacer(
+		";", "",
+		"&", "",
+		"|", "",
+		"`", "",
+		"(", "",
+		")", "",
+		"\n", "",
+		"\r", "",
+		"<", "",
+		">", "",
+	)
+	for i, entry := range env {
+		// Preserve KEY= prefix; only sanitize the value portion
+		idx := strings.IndexByte(entry, '=')
+		if idx < 0 {
+			sanitized[i] = entry
+			continue
+		}
+		key := entry[:idx]
+		val := entry[idx+1:]
+		clean := re.Replace(val)
+		if clean != val {
+			logging.Warn("SanitizeEnv: stripped dangerous characters from env var %s (original len=%d, clean len=%d)", key, len(val), len(clean))
+		}
+		sanitized[i] = key + "=" + clean
+	}
+	return sanitized
 }
 
 // Run executes a command in the foreground and waits for it to finish.

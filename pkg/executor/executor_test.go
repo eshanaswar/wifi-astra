@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -63,5 +64,41 @@ func TestCleanup(t *testing.T) {
 
 	if count != 0 {
 		t.Errorf("expected 0 processes after cleanup, got %d", count)
+	}
+}
+
+func TestSanitizeEnvLogsWarning(t *testing.T) {
+	// SanitizeEnv should strip metacharacters and not panic
+	dangerous := []string{
+		"SSID=Corp;Net",
+		"BSSID=AA:BB:CC:DD:EE:FF",        // safe — should pass through unchanged
+		"GUEST_SSID=Acme&Partners|WiFi",
+		"TARGET_CLIENT=`whoami`",
+	}
+	result := SanitizeEnv(dangerous)
+
+	if len(result) != len(dangerous) {
+		t.Fatalf("expected %d entries, got %d", len(dangerous), len(result))
+	}
+	// Safe value must be unchanged
+	if result[1] != "BSSID=AA:BB:CC:DD:EE:FF" {
+		t.Errorf("safe value was modified: %s", result[1])
+	}
+	// Dangerous values must have metacharacters removed
+	for _, v := range []string{result[0], result[2], result[3]} {
+		for _, ch := range []string{";", "&", "|", "`"} {
+			if strings.Contains(v, ch) {
+				t.Errorf("dangerous char %q not stripped from %q", ch, v)
+			}
+		}
+	}
+}
+
+func TestSanitizeEnvPreservesEqualsSign(t *testing.T) {
+	// KEY=VALUE format must be preserved — only the value part is sanitized
+	input := []string{"MY_KEY=some=value=with=equals"}
+	result := SanitizeEnv(input)
+	if result[0] != "MY_KEY=some=value=with=equals" {
+		t.Errorf("equals signs in value should not be stripped: %s", result[0])
 	}
 }
