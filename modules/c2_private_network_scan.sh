@@ -50,7 +50,7 @@ fi
 # Unique sorted list
 TARGETS=$(printf "%s\n" "${RANGES[@]}" | sort -u | grep -v "^$")
 
-echo "[*] Testing reachability for gateways: $(echo $TARGETS | xargs)"
+echo "[*] Testing reachability for gateways: $(echo "$TARGETS" | xargs)"
 
 # 1. Start Telemetry in Background
 (
@@ -66,18 +66,22 @@ TEL_PID=$!
 # 2. Run Primary Tools (fping + nmap)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Foreground Execution
+    # shellcheck disable=SC2086 # $TARGETS is a newline-separated list of IP ranges; word-splitting is intentional
     fping -a -t 500 $TARGETS 2>&1 | tee "$REACHABLE_FILE" || true
     REACHABLE=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
     if [[ -n "$REACHABLE" ]]; then
+        # shellcheck disable=SC2086 # $REACHABLE is a space-separated list of live IPs; word-splitting is intentional
         nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" 2>&1 | tee "$NMAP_LOG" || true
     fi
     RET=$?
 else
     # Background Execution
     (
+        # shellcheck disable=SC2086 # $TARGETS is a newline-separated list of IP ranges; word-splitting is intentional
         fping -a -t 500 $TARGETS > "$REACHABLE_FILE" 2>&1 || true
         REACHABLE=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
         if [[ -n "$REACHABLE" ]]; then
+            # shellcheck disable=SC2086 # $REACHABLE is a space-separated list of live IPs; word-splitting is intentional
             nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" > "$NMAP_LOG" 2>&1 || true
         fi
     ) > /dev/null 2>&1 &

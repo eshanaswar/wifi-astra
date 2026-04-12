@@ -61,6 +61,7 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
             REAVER_ARGS+=" -K 1"
         fi
         [[ -n "$WPS_DELAY" ]] && REAVER_ARGS+=" -d $WPS_DELAY"
+        # shellcheck disable=SC2086 # $REAVER_ARGS is a space-separated argument list; word-splitting is intentional
         timeout "$SCAN_TIME" reaver $REAVER_ARGS -vv 2>&1 | tee "$INFO_FILE" || true
     fi
     RET=$?
@@ -75,6 +76,7 @@ else
                 REAVER_ARGS+=" -K 1"
             fi
             [[ -n "$WPS_DELAY" ]] && REAVER_ARGS+=" -d $WPS_DELAY"
+            # shellcheck disable=SC2086 # $REAVER_ARGS is a space-separated argument list; word-splitting is intentional
             timeout "$SCAN_TIME" reaver $REAVER_ARGS -vv > "$INFO_FILE" 2>&1 || true
         fi
     ) > /dev/null 2>&1 &
