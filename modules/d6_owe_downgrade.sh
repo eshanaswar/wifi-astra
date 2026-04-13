@@ -73,6 +73,35 @@ kill $TEL_PID 2>/dev/null || true
 # Check findings
 OWE_PRESENT=$(awk -F, -v s="$SSID" 'tolower($14) ~ tolower(s) && $6 ~ /OWE/ {print "YES"}' "$CSV_FILE" 2>/dev/null || true)
 
+# OWE Transition Mode Pair Detection
+# Check if both an Open and OWE BSSID exist for the same SSID — the hallmark of Transition Mode
+OPEN_BSSID=""
+TRANSITION_FOUND="false"
+
+if [[ -f "${CSV_FILE}" ]]; then
+    OPEN_ROW=$(awk -F',' -v s="${SSID}" 'tolower($14) ~ tolower(s) && ($6 ~ /OPN/ || $6 ~ /Open/) {print $1; exit}' "${CSV_FILE}" 2>/dev/null || true)
+    OWE_ROW=$(awk -F',' -v s="${SSID}" 'tolower($14) ~ tolower(s) && $6 ~ /OWE/ {print $1; exit}' "${CSV_FILE}" 2>/dev/null || true)
+    OPEN_BSSID="${OPEN_ROW// /}"
+
+    if [[ -n "${OPEN_BSSID}" && -n "${OWE_ROW}" ]]; then
+        TRANSITION_FOUND="true"
+        echo "[D6] OWE Transition Mode pair detected! (transition_found=${TRANSITION_FOUND})"
+        echo "[D6]   Open BSSID : ${OPEN_BSSID}"
+        echo "[D6]   OWE  BSSID : ${OWE_ROW// /}"
+        echo "[D6] Testing forced association to open BSSID..."
+        timeout 10 iwconfig "${INTERFACE}" essid "${SSID}" ap "${OPEN_BSSID}" 2>/dev/null || true
+        sleep 3
+        ASSOC_LINE=$(iwconfig "${INTERFACE}" 2>/dev/null | grep -i "access point" || true)
+        if echo "${ASSOC_LINE}" | grep -qi "${OPEN_BSSID}"; then
+            echo "[D6] FINDING: Associated to open BSSID — OWE protection NOT enforced"
+            echo "transition_bypass=true" >> "${EVIDENCE_DIR}/D6_result.txt"
+        else
+            echo "[D6] Association to open BSSID failed — OWE may be enforced"
+            echo "transition_bypass=false" >> "${EVIDENCE_DIR}/D6_result.txt"
+        fi
+    fi
+fi
+
 if [[ "$OWE_PRESENT" == "YES" ]]; then
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
