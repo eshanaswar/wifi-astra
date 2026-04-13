@@ -70,6 +70,21 @@ else
     wait $TOOL_PID; RET=$?
 fi
 
+# 6GHz sweep (Wi-Fi 6E) — runs only when adapter supports it and hcxdumptool is available
+SIXGHZ_PCAP="${EVIDENCE_DIR}/A1_6ghz_sweep.pcapng"
+if command -v hcxdumptool >/dev/null 2>&1; then
+    if iw phy 2>/dev/null | grep -qE "6[0-9]{3} MHz"; then
+        echo "[A1] Adapter supports 6GHz — running hcxdumptool 6GHz sweep (${SCAN_TIME}s)..."
+        timeout "${SCAN_TIME}" hcxdumptool -i "${INTERFACE}" \
+            --enable_status=1 \
+            -o "${SIXGHZ_PCAP}" \
+            --filtermode=0 2>/dev/null || true
+        echo "[A1] 6GHz sweep complete: ${SIXGHZ_PCAP}"
+    else
+        echo "[A1] Adapter does not support 6GHz — skipping 6GHz sweep"
+    fi
+fi
+
 # 3. CLEANUP & REPORTING
 kill $TEL_PID 2>/dev/null || true
 
