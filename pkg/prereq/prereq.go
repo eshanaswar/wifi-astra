@@ -100,6 +100,7 @@ var ModuleToolMap = map[string][]string{
 	"A2":  {"airmon-ng", "airodump-ng"},
 	"A3":  {"aireplay-ng", "airodump-ng"},
 	"A4":  {"airmon-ng", "airodump-ng"},
+	"A5":  {"tshark", "iw"},
 	"B1":  {"nmap", "fping", "arping"},
 	"B2":  {"nmap"},
 	"B3":  {"tcpdump", "tshark"},
