@@ -11,7 +11,9 @@ func TestParseCrackOutputFound(t *testing.T) {
 	dir := t.TempDir()
 	outfile := filepath.Join(dir, "result.txt")
 	// hashcat --outfile-format 2 writes one line per cracked hash: just the plaintext
-	os.WriteFile(outfile, []byte("CorrectHorseBatteryStaple\n"), 0600)
+	if err := os.WriteFile(outfile, []byte("CorrectHorseBatteryStaple\n"), 0600); err != nil {
+		t.Fatalf("setup: write outfile: %v", err)
+	}
 
 	psk := parseCrackOutput(outfile)
 	if psk != "CorrectHorseBatteryStaple" {
@@ -22,7 +24,9 @@ func TestParseCrackOutputFound(t *testing.T) {
 func TestParseCrackOutputEmpty(t *testing.T) {
 	dir := t.TempDir()
 	outfile := filepath.Join(dir, "result.txt")
-	os.WriteFile(outfile, []byte(""), 0600)
+	if err := os.WriteFile(outfile, []byte(""), 0600); err != nil {
+		t.Fatalf("setup: write outfile: %v", err)
+	}
 
 	psk := parseCrackOutput(outfile)
 	if psk != "" {
@@ -65,5 +69,26 @@ func TestParseEaphammerCredsNone(t *testing.T) {
 	creds := ParseEaphammerCreds(logContent)
 	if len(creds) != 0 {
 		t.Errorf("expected 0 credentials, got %d", len(creds))
+	}
+}
+
+func TestParseEaphammerCredsOrphanedPassword(t *testing.T) {
+	// Password: line before any Username: — must not produce a credential
+	logContent := "    Password: orphan\n    Username: jdoe\n    Password: secret\n"
+	creds := ParseEaphammerCreds(logContent)
+	if len(creds) != 1 {
+		t.Fatalf("expected 1 credential (orphaned password dropped), got %d", len(creds))
+	}
+	if creds[0].Username != "jdoe" || creds[0].Password != "secret" {
+		t.Errorf("credential mismatch: %+v", creds[0])
+	}
+}
+
+func TestParseEaphammerCredsDanglingUsername(t *testing.T) {
+	// Username: with no following Password: — must not produce a credential
+	logContent := "    Username: ghost\n[*] Session ended.\n"
+	creds := ParseEaphammerCreds(logContent)
+	if len(creds) != 0 {
+		t.Errorf("expected 0 credentials for dangling username, got %d", len(creds))
 	}
 }

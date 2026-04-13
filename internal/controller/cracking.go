@@ -3,6 +3,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,18 +75,24 @@ func RunHashcat(ctx context.Context, captureFile, wordlist, mode, logFile string
 	}
 
 	if err != nil {
-		if exitCode == 1 {
-			// Exit 1 = exhausted — wordlist tried, nothing found. Not a real error.
-			logging.Info("Hashcat: wordlist exhausted, no PSK found (duration %ds)", duration)
-			return result, nil
-		}
+		// err is non-nil only when hashcat failed to launch (exec error, not an exit code).
 		return result, err
 	}
 
-	// exitCode 0 = at least one hash cracked
-	if exitCode == 0 {
+	// The executor converts *exec.ExitError → (exitCode, nil), so branch on exitCode directly.
+	// hashcat exit codes: 0 = cracked, 1 = exhausted (no crack), 255 = runtime error.
+	switch exitCode {
+	case 0:
 		result.PSK = parseCrackOutput(outfile)
 		result.Found = result.PSK != ""
+	case 1:
+		// --force: hashcat --force disables GPU safety guards; used here for portability on pentest
+		// hardware where GPU drivers may not be fully configured. CPU fallback is acceptable.
+		logging.Info("Hashcat: wordlist exhausted, no PSK found (duration %ds)", duration)
+	case 255:
+		return result, fmt.Errorf("hashcat reported an error (exit 255); check log at %s", logFile)
+	default:
+		logging.Warn("Hashcat: unexpected exit code %d (duration %ds)", exitCode, duration)
 	}
 
 	return result, nil
