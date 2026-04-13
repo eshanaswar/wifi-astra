@@ -725,9 +725,14 @@ func (c *AssessmentController) HandlePostRun(m *module.Module) {
 		logging.Error("Ingestion error for %s: %v", m.ID, err)
 	}
 
-	// 3. Post-run UI logic
-	if m.ID == "A1" {
+	// 3. Post-run UI logic — module-specific handlers
+	switch m.ID {
+	case "A1":
 		c.HandleA1PostRun()
+	case "D1":
+		c.HandleD1PostRun()
+	case "D5":
+		c.HandleD5PostRun()
 	}
 }
 
