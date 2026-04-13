@@ -815,11 +815,76 @@ func (c *AssessmentController) HandleA1PostRun() {
 			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestSSID, target.SSID)
 			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestBSSID, target.BSSID)
 			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestChannel, strconv.Itoa(target.Channel))
-			
+
 			// Redundant Safety: Ensure A1 is marked as completed if target is set
 			c.Session.DB.Exec("UPDATE module_state SET status = ? WHERE tc_id = 'A1'", constants.StatusCompleted)
-			
+
 			logging.Success("Target set to %s (%s)", target.SSID, target.BSSID)
 		}
+	}
+}
+
+// HandleD1PostRun fires after D1 (WPA Handshake & PMKID Capture) completes.
+// If capture files are present, it offers the operator an inline hashcat crack.
+// The operator can skip by pressing Enter without a wordlist path.
+func (c *AssessmentController) HandleD1PostRun() {
+	evidenceDir := c.Session.EvidenceDir
+
+	// Prefer PMKID path (mode 22000) — clientless, faster
+	pmkidFile := filepath.Join(evidenceDir, "D1_capture_pmkid.hc22000")
+	capFile := filepath.Join(evidenceDir, "D1_capture_handshake.cap")
+
+	var captureFile, mode string
+	if _, err := os.Stat(pmkidFile); err == nil {
+		captureFile = pmkidFile
+		mode = "22000"
+		fmt.Printf("\n%s[+] PMKID captured (%s).%s\n", constants.ThemeSuccess, pmkidFile, constants.ColorReset)
+	} else if _, err := os.Stat(capFile); err == nil {
+		captureFile = capFile
+		mode = "2500"
+		fmt.Printf("\n%s[+] Handshake .cap captured (%s).%s\n", constants.ThemeSuccess, capFile, constants.ColorReset)
+	} else {
+		logging.Debug("D1 post-run: no crackable capture file found, skipping inline crack offer")
+		return
+	}
+
+	fmt.Printf("%s[?] Run inline hashcat crack now?%s\n", constants.ThemeHeader, constants.ColorReset)
+	wordlist := ui.PromptString("    Wordlist path (or Enter to skip)", "")
+	if wordlist == "" {
+		fmt.Println("    Skipping inline crack — capture file saved for offline use.")
+		return
+	}
+
+	if _, err := os.Stat(wordlist); err != nil {
+		fmt.Printf("%s[!] Wordlist not found: %s%s\n", constants.ThemeHigh, wordlist, constants.ColorReset)
+		return
+	}
+
+	fmt.Printf("[*] Starting hashcat -m %s ... (stream output below)\n\n", mode)
+	logFile := hashcatLogPath(evidenceDir, "D1")
+	result, err := RunHashcat(context.Background(), captureFile, wordlist, mode, logFile, c.ExecMgr)
+	if err != nil {
+		logging.Warn("D1 inline crack failed: %v", err)
+		fmt.Printf("%s[!] Hashcat error: %v%s\n", constants.ThemeHigh, err, constants.ColorReset)
+		return
+	}
+
+	if result.Found {
+		fmt.Printf("\n%s[!!!] PSK CRACKED: %s%s\n", constants.ThemeSuccess, result.PSK, constants.ColorReset)
+		bssid := ""
+		c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
+		ssid := ""
+		c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+		c.Session.DB.Exec(
+			`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			"D1", ssid, result.PSK, "WPA2-PSK", bssid, captureFile,
+			"PSK recovered via offline dictionary attack — network traffic can be decrypted.",
+		)
+		logging.Info("D1 inline crack: PSK recorded as credential finding")
+	} else {
+		fmt.Printf("\n%s[*] Wordlist exhausted — PSK not found (duration: %ds).%s\n",
+			constants.ColorGray, result.DurationSec, constants.ColorReset)
+		logging.Info("D1 inline crack: no PSK found, wordlist=%s, duration=%ds", wordlist, result.DurationSec)
 	}
 }
