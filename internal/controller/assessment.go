@@ -125,6 +125,22 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	}
 	rows.Close()
 
+	// Scope enforcement: fail gracefully if required target info is not set
+	if strings.Contains(m.Reqs, "target_bssid") && config[constants.ConfigGuestBSSID] == "" {
+		fmt.Printf("\n%s[!] Scope not set: module %s requires a target BSSID.%s\n",
+			constants.ThemeHigh, m.ID, constants.ColorReset)
+		fmt.Println("    Run A1 (Identify Networks) first to discover targets and set scope.")
+		ui.PromptString("Press Enter to return to menu", "")
+		return nil
+	}
+	if strings.Contains(m.Reqs, "target_ssid") && config[constants.ConfigGuestSSID] == "" {
+		fmt.Printf("\n%s[!] Scope not set: module %s requires a target SSID.%s\n",
+			constants.ThemeHigh, m.ID, constants.ColorReset)
+		fmt.Println("    Run A1 (Identify Networks) first to discover targets and set scope.")
+		ui.PromptString("Press Enter to return to menu", "")
+		return nil
+	}
+
 	// 2. Target Briefing
 	fmt.Println("\n📡 [Target Briefing]")
 	iface := config[constants.ConfigWifiInterface]
