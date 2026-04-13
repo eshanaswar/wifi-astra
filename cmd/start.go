@@ -192,6 +192,10 @@ func launchMainMenu(s *session.Session) {
 	}
 
 	modules, _ := module.DiscoverModules(ModDir)
+
+	// Preflight: check which modules have all required tools available
+	moduleAvail := prereq.PreflightModules(prereq.ModuleToolMap)
+
 	mainMenu := ui.NewMenu("Assessment Menu")
 
 	catNames := map[string]string{
@@ -228,7 +232,11 @@ func launchMainMenu(s *session.Session) {
 			case constants.StatusRunning:
 				prefix = fmt.Sprintf("%s>%s ", constants.ColorCyan, constants.ColorReset)
 			}
-			return prefix + mod.ID + ": " + mod.Name
+			suffix := ""
+			if avail, known := moduleAvail[mod.ID]; known && !avail {
+				suffix = fmt.Sprintf(" %s[tools missing]%s", constants.ColorGray, constants.ColorReset)
+			}
+			return prefix + mod.ID + ": " + mod.Name + suffix
 		}, func() error {
 			return Ctrl.ExecuteModule(&mod)
 		})

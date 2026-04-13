@@ -93,6 +93,75 @@ func resolveToolPath(tool string) (string, error) {
 	return "", fmt.Errorf("tool %s not found", tool)
 }
 
+// ModuleToolMap maps each module ID to the list of external tools it requires.
+// Keep this in sync with each module's TOOLS= header in modules/*.sh.
+var ModuleToolMap = map[string][]string{
+	"A1":  {"airmon-ng", "airodump-ng"},
+	"A2":  {"airodump-ng"},
+	"A3":  {"mdk4", "airodump-ng"},
+	"A4":  {"airodump-ng", "tshark"},
+	"B1":  {"arp-scan", "nmap"},
+	"B2":  {"nmap"},
+	"B3":  {"tcpdump"},
+	"B4":  {"avahi-browse"},
+	"B5":  {"snmpwalk"},
+	"B6":  {"tcpdump"},
+	"B7":  {"tcpdump"},
+	"B8":  {"tcpdump"},
+	"B9":  {"nmap"},
+	"B10": {},
+	"C1":  {"nslookup"},
+	"C2":  {"fping", "nmap"},
+	"C3":  {"arping"},
+	"C4":  {"curl"},
+	"C5":  {"curl"},
+	"D1":  {"airodump-ng", "aireplay-ng", "aircrack-ng"},
+	"D2":  {"aircrack-ng"},
+	"D3":  {"wash", "reaver"},
+	"D4":  {"dragonslayer"},
+	"D5":  {"eaphammer"},
+	"D6":  {"hostapd"},
+	"D7":  {"aireplay-ng"},
+	"E1":  {},
+	"E2":  {},
+	"E3":  {"aireplay-ng"},
+	"E4":  {"mdk4"},
+	"E5":  {},
+	"F1":  {"hostapd", "dnsmasq", "iptables"},
+	"F2":  {"hostapd", "dnsmasq"},
+	"F3":  {"hostapd", "dnsmasq"},
+	"F4":  {"curl"},
+	"F5":  {"iodine"},
+	"G1":  {"arpspoof"},
+	"G2":  {"sslstrip"},
+	"G3":  {"dnsspoof"},
+	"G4":  {"nmap"},
+	"G5":  {"aireplay-ng"},
+	"G6":  {"responder"},
+	"H1":  {"airodump-ng"},
+	"H2":  {"tshark"},
+}
+
+// PreflightModules checks which modules in toolMap have all their required
+// tools available on PATH. Returns a map of module ID → available (bool).
+func PreflightModules(toolMap map[string][]string) map[string]bool {
+	result := make(map[string]bool, len(toolMap))
+	for id, tools := range toolMap {
+		available := true
+		for _, tool := range tools {
+			if tool == "" {
+				continue
+			}
+			if _, err := resolveToolPath(tool); err != nil {
+				available = false
+				break
+			}
+		}
+		result[id] = available
+	}
+	return result
+}
+
 // HasRequiredCapabilities checks if the process has CAP_NET_RAW and CAP_NET_ADMIN.
 func HasRequiredCapabilities() bool {
 	// 1. Check for Raw Socket capability (CAP_NET_RAW)
