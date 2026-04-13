@@ -157,3 +157,33 @@ func TestAppendReplay(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteIndex(t *testing.T) {
+	dir := t.TempDir()
+
+	// Populate evidence dir with some files
+	for _, name := range []string{"d1_capture.pcap", "d1_run.json", "a1_results.csv"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	indexPath := filepath.Join(dir, "EVIDENCE_INDEX.txt")
+	if err := evidence.WriteIndex(dir, indexPath); err != nil {
+		t.Fatalf("WriteIndex failed: %v", err)
+	}
+
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("index not written: %v", err)
+	}
+	content := string(data)
+	for _, name := range []string{"d1_capture.pcap", "d1_run.json", "a1_results.csv"} {
+		if !strings.Contains(content, name) {
+			t.Errorf("index missing %s", name)
+		}
+	}
+	if !strings.Contains(content, "Evidence Index") {
+		t.Errorf("index missing header")
+	}
+}
