@@ -727,6 +727,57 @@ func (c *AssessmentController) HandlePostRun(m *module.Module) {
 	}
 }
 
+// CleanupChecklist walks the operator through post-engagement housekeeping.
+// Each item is confirmed interactively; items the operator skips are printed
+// as reminders rather than forced.
+func (c *AssessmentController) CleanupChecklist() {
+	fmt.Printf("\n%s╔══ Post-Engagement Cleanup ══╗%s\n", constants.ThemeHeader, constants.ColorReset)
+
+	items := []struct {
+		label string
+		auto  func()
+	}{
+		{
+			"Stop all background support processes",
+			func() {
+				for id, proc := range c.SupportProcs {
+					logging.Info("Stopping support process %s (PID %d)...", id, proc.PID)
+					c.ExecMgr.Stop(id)
+				}
+				c.SupportProcs = make(map[string]*executor.Process)
+			},
+		},
+		{
+			"Disable monitor mode on attack adapter (if still active)",
+			func() {
+				monIface, _ := hw.Roles.Get(hw.RoleMonitor)
+				if monIface != "" {
+					hw.DisableMonitorMode(monIface)
+				}
+			},
+		},
+		{
+			"Verify evidence directory is accessible",
+			func() {
+				fmt.Printf("   Evidence directory: %s\n", c.Session.EvidenceDir)
+			},
+		},
+	}
+
+	for i, item := range items {
+		fmt.Printf("\n%d. %s\n", i+1, item.label)
+		if ui.PromptConfirm("   Run this step?", true) {
+			item.auto()
+			fmt.Printf("   %s[done]%s\n", constants.ThemeSuccess, constants.ColorReset)
+		} else {
+			fmt.Printf("   %s[skipped — remember to do this manually]%s\n", constants.ColorGray, constants.ColorReset)
+		}
+	}
+
+	fmt.Printf("\n%s[*] Cleanup complete. Session evidence saved at: %s%s\n",
+		constants.ThemeSuccess, c.Session.EvidenceDir, constants.ColorReset)
+}
+
 func (c *AssessmentController) HandleA1PostRun() {
 	csvFile := filepath.Join(c.Session.EvidenceDir, "a1_results.csv")
 	if _, err := os.Stat(csvFile); err == nil {

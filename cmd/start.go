@@ -292,6 +292,11 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
+	mainMenu.AddOption("End Engagement (Cleanup Checklist)", func() error {
+		Ctrl.CleanupChecklist()
+		return nil
+	})
+
 	mainMenu.Display()
 }
 
