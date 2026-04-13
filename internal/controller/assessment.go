@@ -845,7 +845,9 @@ func (c *AssessmentController) HandleD1PostRun() {
 		mode = "22000"
 		fmt.Printf("\n%s[+] PMKID captured (%s).%s\n", constants.ThemeSuccess, pmkidFile, constants.ColorReset)
 	} else if _, err := os.Stat(capFile); err == nil {
-		// Convert .cap → hashcat 22000 format (hcxpcapngtool handles both pcapng and cap)
+		// Convert airodump-ng .cap → hashcat 22000 format.
+		// Note: the shell module already ran hcxpcapngtool on the hcxdumptool .pcapng capture to
+		// produce D1_capture_pmkid.hc22000; this branch handles the airodump .cap (EAPOL path) separately.
 		convertedFile := capFile + ".hc22000"
 		convertArgs := []string{capFile, "-o", convertedFile}
 		if exitCode, convErr := c.ExecMgr.Run(context.Background(), "hcxpcapngtool-d1", "hcxpcapngtool", convertArgs, "/dev/null"); convErr != nil || exitCode != 0 {

@@ -60,6 +60,7 @@ func RunHashcat(ctx context.Context, captureFile, wordlist, mode, logFile string
 		"--status",
 		"--status-timer=10",
 		"--force",
+		"--potfile-disable",
 		captureFile,
 		wordlist,
 	}
