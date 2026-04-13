@@ -70,7 +70,7 @@ DNSMASQ_LOG="${EVIDENCE_DIR}/${TC_ID}_dnsmasq.log"
 cat <<EOF > "$HOSTAPD_CONF"
 interface=$INTERFACE
 driver=nl80211
-ssid=$SSID
+ssid="$SSID"
 $BSSID_LINE
 hw_mode=g
 channel=${GUEST_CHANNEL:-6}

@@ -66,7 +66,7 @@ HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
 cat <<EOF > "$HOSTAPD_CONF"
 interface=$INTERFACE
 driver=nl80211
-ssid=$SSID
+ssid="$SSID"
 hw_mode=g
 channel=$CHANNEL
 auth_algs=1
