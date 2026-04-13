@@ -114,3 +114,46 @@ func TestAppendManifestSkipsMissing(t *testing.T) {
 		t.Error("manifest should not be created when source file is missing")
 	}
 }
+
+func TestAppendReplay(t *testing.T) {
+	dir := t.TempDir()
+	replayPath := filepath.Join(dir, "SESSION_REPLAY.log")
+
+	events := []struct{ tcID, event, detail string }{
+		{"D1", "START", "WPA Handshake Capture began"},
+		{"D1", "COMPLETE", "exit_code=0 duration=120s"},
+	}
+	for _, e := range events {
+		if err := evidence.AppendReplay(replayPath, e.tcID, e.event, e.detail); err != nil {
+			t.Fatalf("AppendReplay(%s) failed: %v", e.event, err)
+		}
+	}
+
+	data, err := os.ReadFile(replayPath)
+	if err != nil {
+		t.Fatalf("replay log not written: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "[D1] START") {
+		t.Errorf("missing START event: %s", content)
+	}
+	if !strings.Contains(content, "[D1] COMPLETE") {
+		t.Errorf("missing COMPLETE event: %s", content)
+	}
+	// Verify RFC3339 timestamp format at the start of each line
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(lines))
+	}
+	for _, line := range lines {
+		// First token must be parseable as RFC3339
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			t.Error("empty line in replay log")
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, parts[0]); err != nil {
+			t.Errorf("first token is not RFC3339 timestamp: %q", parts[0])
+		}
+	}
+}
