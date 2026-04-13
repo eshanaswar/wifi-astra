@@ -121,6 +121,7 @@ var ModuleToolMap = map[string][]string{
 	"D3":  {"wash", "reaver", "bully"},
 	"D4":  {"dragonslayer", "dragondrain"},
 	"D5":  {"eaphammer"},
+	"D8":  {"hostapd-wpe", "openssl"},
 	"D6":  {"hostapd", "airodump-ng"},
 	"D7":  {"hostapd", "mdk4", "aireplay-ng"},
 	"E1":  {"tshark", "krack-test"},
