@@ -109,7 +109,7 @@ var ModuleToolMap = map[string][]string{
 	"B7":  {"tcpdump", "tshark"},
 	"B8":  {"tcpdump", "tshark"},
 	"B9":  {"nmap", "nuclei"},
-	"B10": {"python3", "scapy", "tshark"},
+	"B10": {"python3", "tshark"}, // scapy is a Python library, not a PATH binary
 	"C1":  {"dig", "host"},
 	"C2":  {"fping", "nmap"},
 	"C3":  {"yersinia", "tcpdump"},
@@ -136,7 +136,7 @@ var ModuleToolMap = map[string][]string{
 	"G2":  {"mitmproxy", "iptables"},
 	"G3":  {"bettercap", "dnsmasq"},
 	"G4":  {"macchanger", "dhclient", "hostname"},
-	"G5":  {"hostapd", "python3", "scapy"},
+	"G5":  {"hostapd", "python3"}, // scapy is a Python library, not a PATH binary
 	"G6":  {"responder"},
 	"H1":  {"aireplay-ng", "tcpdump", "mdk4"},
 	"H2":  {"airodump-ng"},

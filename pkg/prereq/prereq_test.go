@@ -32,3 +32,11 @@ func TestPreflightModulesMissingTool(t *testing.T) {
 		t.Error("Y2 should be available — 'true' is always present")
 	}
 }
+
+func TestPreflightModulesModuleToolMapLength(t *testing.T) {
+	result := prereq.PreflightModules(prereq.ModuleToolMap)
+	if len(result) != len(prereq.ModuleToolMap) {
+		t.Errorf("expected %d entries, got %d — possible duplicate key in ModuleToolMap",
+			len(prereq.ModuleToolMap), len(result))
+	}
+}
