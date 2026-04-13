@@ -840,9 +840,18 @@ func (c *AssessmentController) HandleD1PostRun() {
 		mode = "22000"
 		fmt.Printf("\n%s[+] PMKID captured (%s).%s\n", constants.ThemeSuccess, pmkidFile, constants.ColorReset)
 	} else if _, err := os.Stat(capFile); err == nil {
-		captureFile = capFile
-		mode = "2500"
-		fmt.Printf("\n%s[+] Handshake .cap captured (%s).%s\n", constants.ThemeSuccess, capFile, constants.ColorReset)
+		// Convert .cap → hashcat 22000 format (hcxpcapngtool handles both pcapng and cap)
+		convertedFile := capFile + ".hc22000"
+		convertArgs := []string{capFile, "-o", convertedFile}
+		if exitCode, convErr := c.ExecMgr.Run(context.Background(), "hcxpcapngtool-d1", "hcxpcapngtool", convertArgs, "/dev/null"); convErr != nil || exitCode != 0 {
+			fmt.Printf("%s[!] Could not convert .cap to hashcat format (hcxpcapngtool exit %d). Convert manually and rerun.%s\n",
+				constants.ThemeHigh, exitCode, constants.ColorReset)
+			return
+		}
+		captureFile = convertedFile
+		mode = "22000"
+		fmt.Printf("\n%s[+] EAPOL handshake captured (%s → converted to hc22000).%s\n",
+			constants.ThemeSuccess, capFile, constants.ColorReset)
 	} else {
 		logging.Debug("D1 post-run: no crackable capture file found, skipping inline crack offer")
 		return
@@ -875,6 +884,9 @@ func (c *AssessmentController) HandleD1PostRun() {
 		c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
 		ssid := ""
 		c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+		if bssid == "" && ssid == "" {
+			logging.Warn("D1 post-run: BSSID and SSID not set in config — credential record will have empty target fields")
+		}
 		c.Session.DB.Exec(
 			`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
