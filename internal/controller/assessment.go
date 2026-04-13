@@ -195,7 +195,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		fmt.Println("SUCCESS (" + monIface + ")")
 		
 		// Lock the newly created monitor interface as well
-		hw.LockInterface(monIface, m.ID)
+		if err := hw.LockInterface(monIface, m.ID); err != nil {
+			logging.Warn("failed to lock monitor interface %s: %v", monIface, err)
+		}
 		defer hw.UnlockInterface(monIface)
 		defer hw.DisableMonitorMode(monIface)
 		os.Setenv(constants.ConfigMonitorIface, monIface)
@@ -341,12 +343,14 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	evidence.AppendReplay(replayPath, m.ID, replayEvent,
 		fmt.Sprintf("exit_code=%d duration=%ds", exitCode, duration))
 
-	// Evidence: update manifest for all evidence files produced by this module
+	// Evidence: update manifest for all evidence files produced by this module.
+	// Skip _run.json — it was already added to the manifest above via WriteRunLog.
 	if files, err := os.ReadDir(c.Session.EvidenceDir); err == nil {
 		manifestPath := filepath.Join(c.Session.EvidenceDir, "MANIFEST.sha256")
 		prefix := strings.ToLower(m.ID) + "_"
 		for _, f := range files {
-			if !f.IsDir() && strings.HasPrefix(f.Name(), prefix) {
+			if !f.IsDir() && strings.HasPrefix(f.Name(), prefix) &&
+				!strings.HasSuffix(f.Name(), "_run.json") {
 				evidence.AppendManifest(manifestPath,
 					filepath.Join(c.Session.EvidenceDir, f.Name()))
 			}
