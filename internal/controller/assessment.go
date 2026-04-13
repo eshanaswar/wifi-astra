@@ -735,31 +735,42 @@ func (c *AssessmentController) CleanupChecklist() {
 
 	items := []struct {
 		label string
-		auto  func()
+		auto  func() error
 	}{
 		{
 			"Stop all background support processes",
-			func() {
+			func() error {
 				for id, proc := range c.SupportProcs {
 					logging.Info("Stopping support process %s (PID %d)...", id, proc.PID)
-					c.ExecMgr.Stop(id)
+					if err := c.ExecMgr.Stop(id); err != nil {
+						logging.Warn("Failed to stop support process %s: %v", id, err)
+					}
 				}
 				c.SupportProcs = make(map[string]*executor.Process)
+				return nil
 			},
 		},
 		{
 			"Disable monitor mode on attack adapter (if still active)",
-			func() {
-				monIface, _ := hw.Roles.Get(hw.RoleMonitor)
-				if monIface != "" {
-					hw.DisableMonitorMode(monIface)
+			func() error {
+				monIface, err := hw.Roles.Get(hw.RoleMonitor)
+				if err != nil {
+					logging.Debug("Monitor role not assigned, skipping disable: %v", err)
+					return nil
 				}
+				if monIface != "" {
+					if err := hw.DisableMonitorMode(monIface); err != nil {
+						return fmt.Errorf("disable monitor mode on %s: %w", monIface, err)
+					}
+				}
+				return nil
 			},
 		},
 		{
 			"Verify evidence directory is accessible",
-			func() {
+			func() error {
 				fmt.Printf("   Evidence directory: %s\n", c.Session.EvidenceDir)
+				return nil
 			},
 		},
 	}
@@ -767,8 +778,12 @@ func (c *AssessmentController) CleanupChecklist() {
 	for i, item := range items {
 		fmt.Printf("\n%d. %s\n", i+1, item.label)
 		if ui.PromptConfirm("   Run this step?", true) {
-			item.auto()
-			fmt.Printf("   %s[done]%s\n", constants.ThemeSuccess, constants.ColorReset)
+			if err := item.auto(); err != nil {
+				logging.Warn("Cleanup step %d failed: %v", i+1, err)
+				fmt.Printf("   %s[!] Step failed: %v%s\n", constants.ThemeHigh, err, constants.ColorReset)
+			} else {
+				fmt.Printf("   %s[done]%s\n", constants.ThemeSuccess, constants.ColorReset)
+			}
 		} else {
 			fmt.Printf("   %s[skipped — remember to do this manually]%s\n", constants.ColorGray, constants.ColorReset)
 		}
