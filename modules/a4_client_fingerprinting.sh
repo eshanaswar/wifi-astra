@@ -153,6 +153,49 @@ if [[ -f "$PARSED_PROBES" ]]; then
     done < "$PARSED_PROBES"
 fi
 
+# MAC Randomization Detection
+# Locally-administered MACs have bit 1 of byte 0 set — second nibble of first octet is 2, 6, A, or E
+RAND_FILE="${EVIDENCE_DIR}/A4_randomized_macs.txt"
+RAND_COUNT=0
+: > "${RAND_FILE}"
+
+if [[ -f "${OUTPUT_CSV}" ]]; then
+    # airodump-ng client section: station MAC is in the first field after "Station MAC" header
+    # Skip header lines and BSSID section; only process lines with valid MAC format
+    while IFS=',' read -r mac _rest; do
+        mac="${mac// /}"
+        # Validate MAC format
+        if [[ ! "${mac}" =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]]; then
+            continue
+        fi
+        # Check second nibble of first octet (locally-administered bit)
+        second_nibble="${mac:1:1}"
+        case "${second_nibble^^}" in
+            2|6|A|E)
+                echo "${mac}" >> "${RAND_FILE}"
+                RAND_COUNT=$((RAND_COUNT + 1))
+                ;;
+        esac
+    done < <(awk '/Station MAC/,0' "${OUTPUT_CSV}" 2>/dev/null | tail -n +2 || true)
+fi
+
+if [[ "${RAND_COUNT}" -gt 0 ]]; then
+    echo -e "${C_ACTION}[!] MAC Randomization detected: ${RAND_COUNT} client(s) using locally-administered MACs${C_RESET}"
+    echo -e "    Use SSID-based targeting for these clients (MAC-based attacks unreliable)"
+    echo -e "    Randomized MACs: ${RAND_FILE}"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "MAC Randomization Detected" \
+        --severity INFO \
+        --desc "${RAND_COUNT} client(s) using MAC randomization. MAC-based targeting unreliable; use SSID-based attacks." \
+        --target "${BSSID}" \
+        --evidence "${RAND_FILE}"
+else
+    echo -e "${C_PROMPT}[*]${C_RESET} No MAC randomization detected."
+fi
+
 if [[ $FOUND_COUNT -eq 0 ]]; then
     echo -e "${C_PROMPT}[*]${C_RESET} No active clients discovered for $BSSID."
 fi
