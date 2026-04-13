@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,5 +68,49 @@ func TestWriteRunLogEmptyTCID(t *testing.T) {
 	_, err := evidence.WriteRunLog(dir, evidence.ModuleRunLog{TCID: ""})
 	if err == nil {
 		t.Error("expected error for empty TCID, got nil")
+	}
+}
+
+func TestAppendManifest(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "MANIFEST.sha256")
+
+	// Create a test file to hash
+	testFile := filepath.Join(dir, "d1_capture.pcap")
+	if err := os.WriteFile(testFile, []byte("fake pcap data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := evidence.AppendManifest(manifestPath, testFile); err != nil {
+		t.Fatalf("AppendManifest failed: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("manifest not written: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "d1_capture.pcap") {
+		t.Errorf("manifest missing filename: %s", content)
+	}
+	// SHA256 hex is 64 chars; check format: "<hash>  <name>"
+	parts := strings.Fields(content)
+	if len(parts) < 2 || len(parts[0]) != 64 {
+		t.Errorf("unexpected manifest format: %s", content)
+	}
+}
+
+func TestAppendManifestSkipsMissing(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "MANIFEST.sha256")
+
+	// File that doesn't exist — should be silently skipped
+	err := evidence.AppendManifest(manifestPath, filepath.Join(dir, "nonexistent.pcap"))
+	if err != nil {
+		t.Errorf("expected nil error for missing file, got: %v", err)
+	}
+	// Manifest should not have been created at all
+	if _, statErr := os.Stat(manifestPath); statErr == nil {
+		t.Error("manifest should not be created when source file is missing")
 	}
 }
