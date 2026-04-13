@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"wifi-astra/internal/evidence"
 	"wifi-astra/internal/ingest"
 	"wifi-astra/internal/logging"
 	"wifi-astra/internal/module"
@@ -254,6 +255,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	fmt.Printf("%s\n\n", strings.Repeat("┈", 80))
 
 	startTime := time.Now()
+	replayPath := filepath.Join(c.Session.EvidenceDir, "SESSION_REPLAY.log")
+	evidence.AppendReplay(replayPath, m.ID, "START",
+		fmt.Sprintf("module=%s session=%s", m.Name, c.Session.ID))
 	c.Session.DB.Exec("INSERT OR REPLACE INTO module_state (tc_id, status, started_at) VALUES (?, ?, ?)",
 		m.ID, constants.StatusRunning, startTime.Format("2006-01-02 15:04:05"))
 
@@ -290,6 +294,52 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	if dbErr != nil {
 		logging.Error("State update failed for %s: %v", m.ID, dbErr)
 	}
+
+	// Evidence: write structured run log
+	runLog := evidence.ModuleRunLog{
+		TCID:        m.ID,
+		Name:        m.Name,
+		SessionID:   c.Session.ID,
+		StartedAt:   startTime,
+		EndedAt:     endTime,
+		DurationSec: duration,
+		ExitCode:    exitCode,
+		Status:      status,
+		Command:     fullCommand,
+	}
+	if err != nil {
+		runLog.Error = err.Error()
+	}
+	if logPath, werr := evidence.WriteRunLog(c.Session.EvidenceDir, runLog); werr != nil {
+		logging.Warn("evidence run log write failed: %v", werr)
+	} else {
+		evidence.AppendManifest(
+			filepath.Join(c.Session.EvidenceDir, "MANIFEST.sha256"), logPath)
+	}
+
+	// Evidence: replay log entry
+	replayEvent := "COMPLETE"
+	if status == constants.StatusFailed {
+		replayEvent = "FAIL"
+	}
+	evidence.AppendReplay(replayPath, m.ID, replayEvent,
+		fmt.Sprintf("exit_code=%d duration=%ds", exitCode, duration))
+
+	// Evidence: update manifest for all evidence files produced by this module
+	if files, err := os.ReadDir(c.Session.EvidenceDir); err == nil {
+		manifestPath := filepath.Join(c.Session.EvidenceDir, "MANIFEST.sha256")
+		prefix := strings.ToLower(m.ID) + "_"
+		for _, f := range files {
+			if !f.IsDir() && strings.HasPrefix(f.Name(), prefix) {
+				evidence.AppendManifest(manifestPath,
+					filepath.Join(c.Session.EvidenceDir, f.Name()))
+			}
+		}
+	}
+
+	// Evidence: regenerate index
+	evidence.WriteIndex(c.Session.EvidenceDir,
+		filepath.Join(c.Session.EvidenceDir, "EVIDENCE_INDEX.txt"))
 
 	fmt.Printf("\n%s\n", strings.Repeat("┈", 80))
 	if status == constants.StatusCompleted {
