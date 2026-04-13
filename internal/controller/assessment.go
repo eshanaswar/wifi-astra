@@ -900,3 +900,41 @@ func (c *AssessmentController) HandleD1PostRun() {
 		logging.Info("D1 inline crack: no PSK found, wordlist=%s, duration=%ds", wordlist, result.DurationSec)
 	}
 }
+
+// HandleD5PostRun fires after D5 (WPA-Enterprise / EAP Attack) completes.
+// It extracts cleartext credentials from the eaphammer log and records each
+// as a credential finding. No cracking is needed — EAP-GTC downgrade yields
+// the plaintext password directly.
+func (c *AssessmentController) HandleD5PostRun() {
+	logFile := filepath.Join(c.Session.EvidenceDir, "D5_eaphammer_results.txt")
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		logging.Debug("D5 post-run: eaphammer log not found at %s", logFile)
+		return
+	}
+
+	creds := ParseEaphammerCreds(string(data))
+	if len(creds) == 0 {
+		logging.Debug("D5 post-run: no credentials extracted from eaphammer log")
+		return
+	}
+
+	ssid := ""
+	c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+
+	fmt.Printf("\n%s[+] D5: %d EAP credential(s) extracted and recorded.%s\n",
+		constants.ThemeSuccess, len(creds), constants.ColorReset)
+
+	for _, cred := range creds {
+		c.Session.DB.Exec(
+			`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			"D5", cred.Username, cred.Password, "EAP-GTC", ssid, logFile,
+			"Plaintext credentials captured via EAP-GTC downgrade — no offline cracking required.",
+		)
+		fmt.Printf("    %s  %-20s → %s%s\n",
+			constants.ColorGray, cred.Username, cred.Password, constants.ColorReset)
+	}
+	logging.Info("D5 post-run: recorded %d credential(s) from EAP-GTC downgrade", len(creds))
+}
