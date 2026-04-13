@@ -12,6 +12,7 @@ const (
 	ConfigGuestChannel    = "GUEST_CHANNEL"
 	ConfigSessionID       = "SESSION_ID"
 	ConfigSessionName     = "SESSION_NAME"
+	ConfigManagementIface = "MANAGEMENT_INTERFACE"
 )
 
 // Module Reqs

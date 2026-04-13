@@ -100,3 +100,7 @@ func (r *RoleRegistry) IsManagement(iface string) bool {
 	mgmt, ok := r.roles[RoleManagement]
 	return ok && mgmt == iface
 }
+
+// Roles is the session-wide singleton RoleRegistry.
+// Initialised at program start; cmd/start.go calls Assign+Lock during setup.
+var Roles = NewRoleRegistry()

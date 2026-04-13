@@ -185,7 +185,7 @@ func launchMainMenu(s *session.Session) {
 	ui.GetManager().ClearScreen()
 	Ctrl = controller.NewAssessmentController(s, ExecMgr, ModDir)
 
-	iface := ensureInterfaceSelection(s)
+	iface := ensureAdapterSetup(s)
 	if iface == "" {
 		logging.Error("No wireless interface selected.")
 		return
@@ -287,12 +287,23 @@ func launchMainMenu(s *session.Session) {
 	mainMenu.Display()
 }
 
-func ensureInterfaceSelection(s *session.Session) string {
-	var currentIface string
-	s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigWifiInterface).Scan(&currentIface)
-	if currentIface != "" {
-		logging.Info("Using persisted interface: %s", currentIface)
-		return currentIface
+// ensureAdapterSetup presents the dual-adapter wizard on the first run of a
+// session, then returns the monitor interface name. On session resume it
+// reloads persisted values from the DB and re-locks the RoleRegistry.
+func ensureAdapterSetup(s *session.Session) string {
+	var monIface, mgmtIface string
+	s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigWifiInterface).Scan(&monIface)
+	s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigManagementIface).Scan(&mgmtIface)
+
+	if monIface != "" {
+		// Resumed session — restore registry from DB
+		hw.Roles.Assign(hw.RoleMonitor, monIface)
+		if mgmtIface != "" {
+			hw.Roles.Assign(hw.RoleManagement, mgmtIface)
+		}
+		hw.Roles.Lock()
+		logging.Info("Adapter setup restored: monitor=%s management=%s", monIface, mgmtIface)
+		return monIface
 	}
 
 	ifaces, _ := hw.ListInterfaces()
@@ -301,29 +312,69 @@ func ensureInterfaceSelection(s *session.Session) string {
 		return ""
 	}
 
-	fmt.Println("\nAvailable Wireless Interfaces:")
+	fmt.Println("\n--- Adapter Setup ---")
 	for i, iface := range ifaces {
-		fmt.Printf("%d) %s: %s (%s) [Mode: %s]\n", i+1, iface.Name, iface.Chipset, iface.Driver, iface.Mode)
+		fmt.Printf("%d) %-12s %s (%s) [Mode: %s]\n", i+1, iface.Name, iface.Chipset, iface.Driver, iface.Mode)
 	}
 
-	var choice string
+	// Pick attack/monitor adapter
+	var monChoice string
 	if len(ifaces) == 1 {
 		fmt.Printf("\nOnly one interface found: %s\n", ifaces[0].Name)
-		if !ui.PromptConfirm("Use this interface?", true) {
+		if !ui.PromptConfirm("Use this as the attack (monitor) adapter?", true) {
 			return ""
 		}
-		choice = "1"
+		monChoice = "1"
 	} else {
-		choice = ui.PromptString("Select interface [1-"+strconv.Itoa(len(ifaces))+"]", "")
+		monChoice = ui.PromptString("Select attack/monitor adapter [1-"+strconv.Itoa(len(ifaces))+"]", "")
 	}
-
-	idx, _ := strconv.Atoi(choice)
-	if idx < 1 || idx > len(ifaces) {
+	if monChoice == "" {
 		return ""
 	}
+	monIdx, _ := strconv.Atoi(monChoice)
+	if monIdx < 1 || monIdx > len(ifaces) {
+		return ""
+	}
+	monIface = ifaces[monIdx-1].Name
 
-	selected := ifaces[idx-1].Name
-	s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigWifiInterface, selected)
-	logging.Success("Selected interface %s saved to session.", selected)
-	return selected
+	// Pick management adapter (optional, only when >1 interface)
+	if len(ifaces) > 1 {
+		fmt.Printf("\n[*] Attack adapter: %s\n", monIface)
+		fmt.Println("[?] Optionally select a management adapter for internet/C2 connectivity:")
+		for i, iface := range ifaces {
+			if iface.Name == monIface {
+				continue
+			}
+			fmt.Printf("   %d) %s\n", i+1, iface.Name)
+		}
+		mgmtChoice := ui.PromptString("Management adapter number (or Enter to skip)", "")
+		if mgmtChoice != "" {
+			mgmtIdx, _ := strconv.Atoi(mgmtChoice)
+			if mgmtIdx >= 1 && mgmtIdx <= len(ifaces) && ifaces[mgmtIdx-1].Name != monIface {
+				mgmtIface = ifaces[mgmtIdx-1].Name
+			}
+		}
+	}
+
+	// Assign roles and lock
+	if err := hw.Roles.Assign(hw.RoleMonitor, monIface); err != nil {
+		logging.Error("Failed to assign monitor role: %v", err)
+		return ""
+	}
+	if mgmtIface != "" {
+		if err := hw.Roles.Assign(hw.RoleManagement, mgmtIface); err != nil {
+			logging.Warn("Failed to assign management role: %v", err)
+			mgmtIface = ""
+		}
+	}
+	hw.Roles.Lock()
+
+	// Persist to DB
+	s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigWifiInterface, monIface)
+	if mgmtIface != "" {
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigManagementIface, mgmtIface)
+	}
+
+	logging.Success("Adapter setup complete: monitor=%s management=%s", monIface, mgmtIface)
+	return monIface
 }
