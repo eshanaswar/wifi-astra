@@ -44,4 +44,28 @@ func TestWriteRunLog(t *testing.T) {
 	if filepath.Base(path) != "d1_run.json" {
 		t.Errorf("expected filename d1_run.json, got %s", filepath.Base(path))
 	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected file perm 0600, got %04o", perm)
+	}
+}
+
+func TestWriteRunLogInvalidTCID(t *testing.T) {
+	dir := t.TempDir()
+	_, err := evidence.WriteRunLog(dir, evidence.ModuleRunLog{TCID: "../etc/passwd"})
+	if err == nil {
+		t.Error("expected error for path-traversal TCID, got nil")
+	}
+}
+
+func TestWriteRunLogEmptyTCID(t *testing.T) {
+	dir := t.TempDir()
+	_, err := evidence.WriteRunLog(dir, evidence.ModuleRunLog{TCID: ""})
+	if err == nil {
+		t.Error("expected error for empty TCID, got nil")
+	}
 }
