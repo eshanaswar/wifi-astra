@@ -141,6 +141,11 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		return nil
 	}
 
+	// Pre-run hooks: modules requiring operator input before env is built.
+	if m.ID == "G4" {
+		c.prepareG4Env()
+	}
+
 	// 2. Target Briefing
 	fmt.Println("\n📡 [Target Briefing]")
 	iface := config[constants.ConfigWifiInterface]
@@ -996,4 +1001,83 @@ func (c *AssessmentController) HandleD3PostRun() {
 		"WPS PIN recovered; manual reaver/bully run required to extract PSK.",
 	)
 	logging.Info("D3 post-run: WPS PIN recorded, PSK not recovered")
+}
+
+// parseA4ClientMACs reads an airodump-ng CSV produced by A4 and returns the
+// list of client (Station) MAC addresses found in the Station MAC section.
+// Returns nil when the file does not exist or has no client section.
+func parseA4ClientMACs(csvPath string) []string {
+	data, err := os.ReadFile(csvPath)
+	if err != nil {
+		return nil
+	}
+
+	var macs []string
+	inStationSection := false
+
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "Station MAC") {
+			inStationSection = true
+			continue
+		}
+		if inStationSection {
+			parts := strings.SplitN(trimmed, ",", 2)
+			if len(parts) >= 1 {
+				mac := strings.TrimSpace(parts[0])
+				if mac != "" {
+					macs = append(macs, mac)
+				}
+			}
+		}
+	}
+	return macs
+}
+
+// prepareG4Env is called before G4 runs. It reads the A4 client list from
+// evidence, prompts the operator to select a target, and saves TARGET_CLIENT
+// to the session DB config so the env injection loop picks it up automatically.
+func (c *AssessmentController) prepareG4Env() {
+	// Skip if already configured (resumed session or prior run).
+	var existing string
+	if err := c.Session.DB.QueryRow("SELECT value FROM config WHERE key = 'TARGET_CLIENT'").Scan(&existing); err == nil && strings.TrimSpace(existing) != "" {
+		fmt.Printf("%s[G4] TARGET_CLIENT already set: %s%s\n", constants.ThemeHeader, existing, constants.ColorReset)
+		return
+	}
+
+	csvPath := filepath.Join(c.Session.EvidenceDir, "a4_results.csv")
+	macs := parseA4ClientMACs(csvPath)
+	if len(macs) == 0 {
+		fmt.Printf("%s[G4] No client MACs found in A4 evidence — run A4 first or set TARGET_CLIENT manually.%s\n",
+			constants.ThemeHigh, constants.ColorReset)
+		return
+	}
+
+	fmt.Printf("\n%s[G4] Select target client for NAC bypass:%s\n", constants.ThemeHeader, constants.ColorReset)
+	for i, mac := range macs {
+		fmt.Printf("   %d) %s\n", i+1, mac)
+	}
+
+	choice := ui.PromptString("Selection [1-"+strconv.Itoa(len(macs))+"] (Enter to skip)", "")
+	if choice == "" {
+		fmt.Println("[G4] No client selected — G4 will exit gracefully.")
+		return
+	}
+
+	idx, err := strconv.Atoi(choice)
+	if err != nil || idx < 1 || idx > len(macs) {
+		fmt.Printf("%s[G4] Invalid selection — G4 will exit gracefully.%s\n", constants.ThemeHigh, constants.ColorReset)
+		return
+	}
+
+	selected := macs[idx-1]
+	if _, dbErr := c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('TARGET_CLIENT', ?)", selected); dbErr != nil {
+		logging.Warn("G4 prepareG4Env: failed to save TARGET_CLIENT: %v", dbErr)
+		return
+	}
+	logging.Info("G4 prepareG4Env: TARGET_CLIENT set to %s", selected)
+	fmt.Printf("%s[G4] TARGET_CLIENT set to %s%s\n", constants.ThemeSuccess, selected, constants.ColorReset)
 }
