@@ -54,11 +54,9 @@ if command -v avahi-browse &>/dev/null; then
     TELEMETRY_PID=$!
 
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout "$((SCAN_TIME/2))" avahi-browse -art || true
-        RET=$?
+        timeout "$((SCAN_TIME/2))" avahi-browse -art | tee "$AVAHI_OUT" || true
     else
         timeout "$((SCAN_TIME/2))" avahi-browse -art > "$AVAHI_OUT" 2>/dev/null || true
-        RET=$?
     fi
     kill "$TELEMETRY_PID" 2>/dev/null || true
 fi
@@ -79,13 +77,11 @@ TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     timeout --foreground "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" || true
-    RET=$?
 else
     tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
     (sleep "$((SCAN_TIME/2))"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
-    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true

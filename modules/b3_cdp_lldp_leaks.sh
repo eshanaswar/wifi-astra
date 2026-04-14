@@ -54,7 +54,6 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
     timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
         "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" || true
-    RET=$?
 else
     # Run with redirection
     tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
@@ -62,7 +61,6 @@ else
     TOOL_PID=$!
     (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
-    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true

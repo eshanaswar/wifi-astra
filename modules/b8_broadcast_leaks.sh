@@ -54,7 +54,6 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
     timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
         "broadcast or multicast" || true
-    RET=$?
 else
     # Run with redirection
     tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
@@ -62,28 +61,40 @@ else
     TOOL_PID=$!
     (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
-    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing traffic patterns..."
+
+# Only flag security-relevant protocols — not ordinary network traffic like ARP, DHCP, mDNS
+# LLMNR (5355), NetBIOS-NS (137), NetBIOS-DGM (138), SSDP (1900) are indicators of
+# corporate traffic bleeding into guest segments.
+declare -A SENSITIVE_PROTOS
+SENSITIVE_PROTOS["LLMNR"]="HIGH"
+SENSITIVE_PROTOS["NBNS"]="HIGH"
+SENSITIVE_PROTOS["NBDGM"]="MEDIUM"
+SENSITIVE_PROTOS["SSDP"]="MEDIUM"
+
 FOUND=0
 if command -v tshark &>/dev/null && [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
     PROTOCOLS=$(tshark -r "$PCAP_FILE" -T fields -e _ws.col.Protocol 2>/dev/null | sort | uniq -c | sort -nr || true)
-    
+
     if [[ -n "$PROTOCOLS" ]]; then
-        FOUND=1
         while read -r count proto; do
             [[ -z "$proto" ]] && continue
+            SEVERITY="${SENSITIVE_PROTOS[$proto]:-}"
+            [[ -z "$SEVERITY" ]] && continue  # Skip non-sensitive protocols
+            FOUND=1
+            echo "[!] Sensitive broadcast protocol detected: ${proto} (${count} packets)"
             "$ASTRA_BIN" record-finding \
                 --session-dir "$SESSION_DIR" \
                 --tc "$TC_ID" \
                 --type "vulnerability" \
                 --name "Sensitive Broadcast Traffic: $proto" \
-                --desc "Detected $count packets of $proto broadcast traffic. This can leak service details." \
-                --severity "LOW" \
+                --desc "Detected ${count} packets of ${proto} broadcast/multicast on the wireless segment. This protocol typically originates from Windows hosts and can reveal hostnames, services, and enable spoofing attacks." \
+                --severity "$SEVERITY" \
                 --evidence "$PCAP_FILE" \
-                --rationale "Excessive broadcast traffic facilitates reconnaissance and spoofing attacks."
+                --rationale "${proto} traffic on a guest/wireless segment indicates potential corporate traffic bleed. LLMNR/NBNS are exploited by Responder for NTLM credential capture."
         done <<< "$PROTOCOLS"
     fi
 fi

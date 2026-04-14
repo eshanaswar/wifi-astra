@@ -54,14 +54,12 @@ TELEMETRY_PID=$!
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
     timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" || true
-    RET=$?
 else
     # Run with redirection
     tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
     (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
-    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
@@ -72,24 +70,28 @@ else
     ip -6 addr show dev "$INTERFACE" > "$STATUS_FILE" 2>/dev/null || true
 fi
 
-# Verify
+# Verify — only flag global unicast IPv6 addresses (not link-local fe80:: or loopback ::1)
 FOUND=0
-if grep -q "inet6" "$STATUS_FILE"; then
-    FOUND=1
-    IPV6_ADDRS=$(grep "inet6" "$STATUS_FILE" | awk '{print $2}' | xargs || true)
-    "$ASTRA_BIN" record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type "vulnerability" \
-        --name "IPv6 Enabled on Network" \
-        --desc "The network has IPv6 enabled with addresses: $IPV6_ADDRS." \
-        --severity "MEDIUM" \
-        --evidence "$STATUS_FILE" \
-        --rationale "IPv6 leaks can bypass IPv4-only security controls."
+if [[ -f "$STATUS_FILE" ]]; then
+    # Exclude fe80:: (link-local) and ::1 (loopback) — these are on every interface by default
+    GLOBAL_IPV6=$(grep "inet6" "$STATUS_FILE" | awk '{print $2}' | grep -v "^fe80:" | grep -v "^::1" || true)
+    if [[ -n "$GLOBAL_IPV6" ]]; then
+        FOUND=1
+        IPV6_ADDRS=$(echo "$GLOBAL_IPV6" | xargs)
+        "$ASTRA_BIN" record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type "vulnerability" \
+            --name "Routable IPv6 Address on Wireless Segment" \
+            --desc "Interface ${INTERFACE} has global IPv6 address(es): ${IPV6_ADDRS}. These may bypass IPv4-only firewall rules." \
+            --severity "MEDIUM" \
+            --evidence "$STATUS_FILE" \
+            --rationale "Routable IPv6 addresses on wireless segments can bypass IPv4-only security controls and filtering rules."
+    fi
 fi
 
 if command -v tshark &>/dev/null && [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
-    RA_COUNT=$(tshark -r "$PCAP_FILE" 2>/dev/null | wc -l)
+    RA_COUNT=$(tshark -r "$PCAP_FILE" -T fields -e frame.number 2>/dev/null | wc -l)
     if [[ $RA_COUNT -gt 0 ]]; then
         FOUND=1
         "$ASTRA_BIN" record-finding \

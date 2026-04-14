@@ -54,21 +54,23 @@ echo "[*] [$TC_ID] Identifying SNMP exposure on ${GATEWAY}..."
 ) &
 TELEMETRY_PID=$!
 
+COMMUNITY_LIST=""
+if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
+    COMMUNITY_LIST="/usr/share/seclists/Discovery/SNMP/snmp-subs.txt"
+fi
+
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
-        onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY"
+    if [[ -n "$COMMUNITY_LIST" ]]; then
+        timeout --foreground "$SCAN_TIME" onesixtyone -c "$COMMUNITY_LIST" "$GATEWAY" | tee "$BRUTE_FILE" || true
     else
-        onesixtyone "$GATEWAY"
+        timeout --foreground "$SCAN_TIME" onesixtyone "$GATEWAY" | tee "$BRUTE_FILE" || true
     fi
-    RET=$?
 else
-    if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
-        onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-subs.txt "$GATEWAY" > "$BRUTE_FILE" 2>&1 &
+    if [[ -n "$COMMUNITY_LIST" ]]; then
+        timeout "$SCAN_TIME" onesixtyone -c "$COMMUNITY_LIST" "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
     else
-        onesixtyone "$GATEWAY" > "$BRUTE_FILE" 2>&1 &
+        timeout "$SCAN_TIME" onesixtyone "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
     fi
-    TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
@@ -110,5 +112,12 @@ fi
 
 # 🏁 FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0
 

@@ -60,11 +60,12 @@ fi
 
 echo "[*] Initializing AirSnitch (NDSS 2026) Audit on ${INTERFACE}..."
 
-# Identify a target client from B1 results
+# Identify a target client from B1 results — exclude our own interface IP only
+MY_IP=$(ip -4 addr show "$INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1 || true)
 B1_XML="${EVIDENCE_DIR}/b1_results.xml"
 TARGET_VICTIM=""
 if [[ -f "$B1_XML" ]]; then
-    TARGET_VICTIM=$(grep "addrtype=\"ipv4\"" "$B1_XML" | grep -v "$(hostname -I | awk '{print $1}')" | head -1 | sed 's/.*addr="//;s/".*//') || true
+    TARGET_VICTIM=$(grep "addrtype=\"ipv4\"" "$B1_XML" | grep -v "\"${MY_IP}\"" | head -1 | sed 's/.*addr="//;s/".*//') || true
 fi
 
 if [[ -z "$TARGET_VICTIM" ]]; then
@@ -142,6 +143,8 @@ else
         --rationale "Network infrastructure that correctly enforces both L2 and L3 isolation is resistant to the Gateway Bouncing vector of AirSnitch."
 fi
 
+
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
 # Hold window if in tactical mode so user can see final output/errors
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then

@@ -63,17 +63,14 @@ fi
 
 # Active discovery
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout --foreground "$SCAN_TIME" nmap -vv --script broadcast-dhcp-discover -e "$INTERFACE" || true
-    RET=$?
+    timeout --foreground "$SCAN_TIME" nmap --script broadcast-dhcp-discover -e "$INTERFACE" | tee "$NMAP_OUT" || true
 else
-    nmap -vv --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>&1 &
-    TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
+    timeout "$SCAN_TIME" nmap --script broadcast-dhcp-discover -e "$INTERFACE" > "$NMAP_OUT" 2>&1 || true
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing DHCP architecture..."
-DHCP_SERVERS=$(grep "Server Identifier:" "$NMAP_OUT" | awk '{print $NF}' | sort -u || true)
+DHCP_SERVERS=$(grep "Server Identifier:" "$NMAP_OUT" 2>/dev/null | awk '{print $NF}' | sort -u || true)
 
 if [[ -n "$DHCP_SERVERS" ]]; then
     while read -r server; do
