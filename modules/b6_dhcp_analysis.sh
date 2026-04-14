@@ -8,7 +8,7 @@
 # DESC="Analyze DHCP configuration and check for rogue DHCP servers"
 # REQS="managed_iface"
 # PCAP="yes"
-# 
+# TIMED="yes"
 # DECODE="none"
 # PROMPTS="managed_connect"
 

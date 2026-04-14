@@ -8,7 +8,6 @@
 # DESC="Check if AP management interfaces (Web, SSH, SNMP) are accessible"
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
-#
 # DECODE="none"
 # PROMPTS="managed_connect"
 
@@ -59,14 +58,23 @@ echo "[*] Running Nmap scan for common management ports..."
 ) &
 TELEMETRY_PID=$!
 
+# TCP scan — management web/SSH/Telnet
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout --foreground "$SCAN_TIME" nmap -Pn -p 22,23,80,443,161,8080,8443 "$GATEWAY" -sV \
-        -oG "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" -oX "${EVIDENCE_PREFIX}_nmap_mgmt.xml" || true
+    timeout --foreground "$SCAN_TIME" nmap -Pn -p 22,23,80,443,8080,8443 "$GATEWAY" -sV \
+        -oG "${EVIDENCE_PREFIX}_nmap_tcp.gnmap" -oX "${EVIDENCE_PREFIX}_nmap_mgmt.xml" || true
 else
-    timeout "$SCAN_TIME" nmap -Pn -p 22,23,80,443,161,8080,8443 "$GATEWAY" -sV \
-        -oG "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" -oX "${EVIDENCE_PREFIX}_nmap_mgmt.xml" \
+    timeout "$SCAN_TIME" nmap -Pn -p 22,23,80,443,8080,8443 "$GATEWAY" -sV \
+        -oG "${EVIDENCE_PREFIX}_nmap_tcp.gnmap" -oX "${EVIDENCE_PREFIX}_nmap_mgmt.xml" \
         > "${EVIDENCE_DIR}/${TC_ID}_nmap.log" 2>&1 || true
 fi
+
+# UDP scan for SNMP (separate — TCP scan silently misses UDP 161)
+echo "[*] Scanning UDP port 161 (SNMP)..."
+timeout 30 nmap -Pn -sU -p 161 "$GATEWAY" -sV \
+    -oG "${EVIDENCE_PREFIX}_nmap_udp.gnmap" >> "${EVIDENCE_DIR}/${TC_ID}_nmap.log" 2>&1 || true
+# Merge gnmap files for unified parsing
+cat "${EVIDENCE_PREFIX}_nmap_tcp.gnmap" "${EVIDENCE_PREFIX}_nmap_udp.gnmap" 2>/dev/null \
+    > "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" || true
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing findings..."
@@ -85,19 +93,26 @@ if [[ -f "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" ]]; then
                 service=$(echo "$p_entry" | cut -d'/' -f5 | xargs)
                 version=$(echo "$p_entry" | cut -d'/' -f7 | xargs)
 
-                echo -e "[!] ${C_BOLD}EXPOSED:${C_RESET} Management port ${C_VAR}${port}${C_RESET} (${service} ${version})"
+                # Per-port severity: Telnet/HTTP cleartext admin = HIGH; SSH/HTTPS = MEDIUM; SNMP = HIGH
+                case "$port" in
+                    23|161)  PORT_SEV="HIGH" ;;
+                    80|8080) PORT_SEV="MEDIUM" ;;
+                    *)       PORT_SEV="MEDIUM" ;;
+                esac
+
+                echo -e "[!] ${C_BOLD}EXPOSED:${C_RESET} Management port ${C_VAR}${port}${C_RESET} (${service} ${version}) [${PORT_SEV}]"
                 FOUND=1
 
                 $ASTRA_BIN record-finding \
                     --session-dir "$SESSION_DIR" \
                     --tc "$TC_ID" \
                     --type vulnerability \
-                    --name "Exposed Management Port: $port" \
-                    --severity MEDIUM \
-                    --desc "Gateway ($GATEWAY) has an exposed management port $port ($service $version) reachable from the client segment." \
+                    --name "Exposed Management Port: $port ($service)" \
+                    --severity "$PORT_SEV" \
+                    --desc "Gateway ($GATEWAY) exposes management port $port ($service $version) to the wireless client segment." \
                     --target "$GATEWAY" \
                     --evidence "${EVIDENCE_PREFIX}_nmap_mgmt.xml" \
-                    --rationale "Exposed management interfaces should not be accessible from client segments."
+                    --rationale "Exposed management interfaces allow attackers to attempt authentication brute-force or exploit cleartext protocols (Telnet/HTTP) from the client segment."
             fi
         done
     done < <(grep "Ports:" "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap")

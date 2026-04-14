@@ -8,7 +8,7 @@
 # DESC="Test if connected clients on target WiFi can see each other"
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
-#
+# TIMED="yes"
 # DECODE="none"
 # PROMPTS="managed_connect"
 
@@ -33,7 +33,7 @@ if [[ -z "$INTERFACE" ]]; then
     exit 1
 fi
 
-# Get current IP and Subnet
+# Get current IP, Subnet, and Gateway
 MY_IP=$(ip -4 addr show "$INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut -d'/' -f1 | head -1)
 if [[ -z "$MY_IP" ]]; then
     echo "[!] No IP address on ${INTERFACE}. Connect to WiFi first."
@@ -45,6 +45,9 @@ if [[ -z "$SUBNET" ]]; then
     echo "[!] Could not determine subnet for ${INTERFACE}. Ensure you are connected to the WiFi."
     exit 1
 fi
+
+# Exclude the default gateway — it is always reachable via ARP regardless of client isolation
+GATEWAY_IP=$(ip -4 route show dev "$INTERFACE" | awk '/default/{print $3}' | head -1 || true)
 
 echo "[*] Testing client isolation on ${INTERFACE} (${MY_IP}) in subnet ${SUBNET}..."
 
@@ -73,8 +76,13 @@ kill "$TELEMETRY_PID" 2>/dev/null || true
 CLIENT_COUNT=0
 if [[ -f "$OUTPUT_XML" ]]; then
     CLIENT_COUNT=$(grep -c "addrtype=\"ipv4\"" "$OUTPUT_XML" 2>/dev/null || echo 0)
-    # Subtract our own IP
+    # Subtract our own IP (always reachable, not a peer)
     if grep -q "\"${MY_IP}\"" "$OUTPUT_XML" 2>/dev/null; then
+        CLIENT_COUNT=$(( CLIENT_COUNT - 1 ))
+    fi
+    # Subtract the gateway IP — the AP always forwards traffic to the gateway regardless
+    # of client isolation policy. Finding the gateway via ARP is not a finding.
+    if [[ -n "$GATEWAY_IP" ]] && grep -q "\"${GATEWAY_IP}\"" "$OUTPUT_XML" 2>/dev/null; then
         CLIENT_COUNT=$(( CLIENT_COUNT - 1 ))
     fi
     [[ $CLIENT_COUNT -lt 0 ]] && CLIENT_COUNT=0
