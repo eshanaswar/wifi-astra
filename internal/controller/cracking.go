@@ -14,6 +14,13 @@ import (
 	"wifi-astra/pkg/executor"
 )
 
+var (
+	wpsReavPINRe  = regexp.MustCompile(`(?i)\[\+\]\s+WPS PIN:\s+'?([0-9]+)'?`)
+	wpsReavPSKRe  = regexp.MustCompile(`(?i)\[\+\]\s+WPA PSK:\s+(?:'([^'\n]*)'|([^\n]+))`)
+	wpsBullyPINRe = regexp.MustCompile(`(?i)\[\+\]\s+WPS pin is:\s+'?([0-9]+)'?`)
+	wpsBullyPSKRe = regexp.MustCompile(`(?i)\[\+\]\s+Passphrase is:\s+(?:'([^'\n]*)'|([^\n]+))`)
+)
+
 // CrackResult holds the outcome of an inline cracking attempt.
 type CrackResult struct {
 	Found        bool
@@ -126,25 +133,34 @@ func ParseEaphammerCreds(logText string) []EapCred {
 // ParseWPSCreds extracts WPS PIN and WPA PSK from reaver or bully output logs.
 // Supports reaver format ([+] WPS PIN / [+] WPA PSK) and
 // bully format ([+] WPS pin is / [+] Passphrase is).
-// Returns first found psk and pin, stripping surrounding single quotes.
-func ParseWPSCreds(logText string) (psk, pin string) {
-	reavPIN := regexp.MustCompile(`(?i)\[\+\]\s+WPS PIN:\s+'?([0-9]+)'?`)
-	reavPSK := regexp.MustCompile(`(?i)\[\+\]\s+WPA PSK:\s+'?([^'\n]+)'?`)
-	bullyPIN := regexp.MustCompile(`(?i)\[\+\]\s+WPS pin is:\s+'?([0-9]+)'?`)
-	bullyPSK := regexp.MustCompile(`(?i)\[\+\]\s+Passphrase is:\s+'?([^'\n]+)'?`)
+// Handles both quoted ('password') and unquoted forms. Returns empty strings if not found.
+func ParseWPSCreds(logText string) (string, string) {
+	var psk, pin string
 
-	if m := reavPIN.FindStringSubmatch(logText); len(m) > 1 {
-		pin = strings.TrimSpace(strings.Trim(m[1], "'"))
-	} else if m := bullyPIN.FindStringSubmatch(logText); len(m) > 1 {
-		pin = strings.TrimSpace(strings.Trim(m[1], "'"))
+	// PIN extraction (reaver takes priority)
+	if m := wpsReavPINRe.FindStringSubmatch(logText); len(m) > 1 {
+		pin = strings.TrimSpace(m[1])
+	} else if m := wpsBullyPINRe.FindStringSubmatch(logText); len(m) > 1 {
+		pin = strings.TrimSpace(m[1])
 	}
 
-	if m := reavPSK.FindStringSubmatch(logText); len(m) > 1 {
-		psk = strings.TrimSpace(strings.Trim(m[1], "'"))
-	} else if m := bullyPSK.FindStringSubmatch(logText); len(m) > 1 {
-		psk = strings.TrimSpace(strings.Trim(m[1], "'"))
+	// PSK extraction — alternation groups handle quoted vs unquoted
+	extractPSK := func(m []string) string {
+		if len(m) > 2 && m[1] != "" {
+			return strings.TrimSpace(m[1]) // quoted form: group 1
+		}
+		if len(m) > 2 && m[2] != "" {
+			return strings.TrimSpace(m[2]) // unquoted form: group 2
+		}
+		return ""
 	}
-	return
+	if m := wpsReavPSKRe.FindStringSubmatch(logText); len(m) > 0 {
+		psk = extractPSK(m)
+	} else if m := wpsBullyPSKRe.FindStringSubmatch(logText); len(m) > 0 {
+		psk = extractPSK(m)
+	}
+
+	return psk, pin
 }
 
 // hashcatLogPath returns the evidence path for a hashcat run log.
