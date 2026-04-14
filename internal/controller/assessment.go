@@ -731,6 +731,8 @@ func (c *AssessmentController) HandlePostRun(m *module.Module) {
 		c.HandleA1PostRun()
 	case "D1":
 		c.HandleD1PostRun()
+	case "D3":
+		c.HandleD3PostRun()
 	case "D5":
 		c.HandleD5PostRun()
 	}
@@ -944,4 +946,54 @@ func (c *AssessmentController) HandleD5PostRun() {
 			constants.ColorGray, cred.Username, cred.Password, constants.ColorReset)
 	}
 	logging.Info("D5 post-run: recorded %d credential(s) from EAP-GTC downgrade", len(creds))
+}
+
+// HandleD3PostRun fires after D3 (WPS Vulnerability Testing) completes.
+// It reads the reaver/bully output log, extracts any recovered PSK or PIN,
+// and records the finding in the session credential table.
+func (c *AssessmentController) HandleD3PostRun() {
+	logFile := filepath.Join(c.Session.EvidenceDir, "D3_reaver_info.txt")
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		logging.Debug("D3 post-run: reaver log not found at %s", logFile)
+		return
+	}
+
+	psk, pin := ParseWPSCreds(string(data))
+
+	if psk == "" && pin == "" {
+		logging.Debug("D3 post-run: no WPS credentials found in output")
+		return
+	}
+
+	bssid := ""
+	ssid := ""
+	c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
+	c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+
+	if psk != "" {
+		fmt.Printf("\n%s[!!!] WPS PSK RECOVERED: %s%s\n", constants.ThemeSuccess, psk, constants.ColorReset)
+		if pin != "" {
+			fmt.Printf("      WPS PIN: %s\n", pin)
+		}
+		c.Session.DB.Exec(
+			`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			"D3", ssid, psk, "WPA2-PSK", bssid, logFile,
+			"PSK recovered via WPS PIN attack — no handshake capture required.",
+		)
+		logging.Info("D3 post-run: PSK recorded as credential finding")
+		return
+	}
+
+	// PIN recovered but no PSK — record for manual follow-up
+	fmt.Printf("\n%s[+] WPS PIN recovered (no PSK extracted): %s%s\n", constants.ThemeHeader, pin, constants.ColorReset)
+	fmt.Println("    Use this PIN with reaver/bully manually to recover the PSK.")
+	c.Session.DB.Exec(
+		`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"D3", "(WPS PIN)", pin, "WPS-PIN", bssid, logFile,
+		"WPS PIN recovered; manual reaver/bully run required to extract PSK.",
+	)
+	logging.Info("D3 post-run: WPS PIN recorded, PSK not recovered")
 }

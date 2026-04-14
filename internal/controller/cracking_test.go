@@ -156,6 +156,17 @@ func TestParseWPSCreds_PSKWithQuote(t *testing.T) {
 	_ = pin
 }
 
+func TestHandleD3PostRun_ParseIntegration(t *testing.T) {
+	log := "[+] Nothing done yet, but:\n[+] WPS PIN: '33669913'\n[+] WPA PSK: 'SuperSecret!'"
+	psk, pin := ParseWPSCreds(log)
+	if psk != "SuperSecret!" {
+		t.Errorf("D3 flow PSK mismatch: got '%s'", psk)
+	}
+	if pin != "33669913" {
+		t.Errorf("D3 flow PIN mismatch: got '%s'", pin)
+	}
+}
+
 func TestParseWPSCreds_PSKOnly(t *testing.T) {
 	input := "[+] WPA PSK: 'securepass'"
 	psk, pin := ParseWPSCreds(input)
