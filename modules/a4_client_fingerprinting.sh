@@ -62,24 +62,20 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
     timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" \
         --bssid "$BSSID" \
-        --channel "${CHANNEL:-0}" \
+        --channel "${CHANNEL:-6}" \
         --write "$CSV_PREFIX" \
-        --output-format csv \
-        --band abg || true
-    RET=$?
+        --output-format csv || true
 else
     # Run with redirection
-    airodump-ng "$INTERFACE" \
+    timeout "$SCAN_TIME" airodump-ng "$INTERFACE" \
         --bssid "$BSSID" \
-        --channel "${CHANNEL:-0}" \
+        --channel "${CHANNEL:-6}" \
         --write "$CSV_PREFIX" \
-        --output-format csv \
-        --band abg > "${EVIDENCE_DIR}/${TC_ID}_airodump.log" 2>&1 &
+        --output-format csv > "${EVIDENCE_DIR}/${TC_ID}_airodump.log" 2>&1 &
     TOOL_PID=$!
     # Wait for SCAN_TIME
     (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
-    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true

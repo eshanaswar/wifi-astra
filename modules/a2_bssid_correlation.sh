@@ -34,9 +34,9 @@ fi
 
 echo "[*] Analyzing BSSID correlation from A1 scan data..."
 
-# Check if A1_CSV is empty (only header or nothing)
-if [[ ! -s "$A1_CSV" || $(wc -l < "$A1_CSV") -le 1 ]]; then
-    echo "[!] A1 results file is empty or missing data."
+# Check for at least one valid AP data line (MAC address format) in the file
+if ! awk -F',' '$1 ~ /^[[:space:]]*[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}[[:space:]]*$/ {found=1; exit} END {exit !found}' "$A1_CSV" 2>/dev/null; then
+    echo "[!] A1 results file has no AP data (may be headers only)."
     $ASTRA_BIN record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \

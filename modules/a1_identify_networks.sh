@@ -36,8 +36,6 @@ fi
 # 0. Intelligence Insight
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 echo -e "${C_PROMPT}[*]${C_RESET} Starting airodump-ng scan on ${C_VAR}${INTERFACE}${C_RESET} for ${C_VAR}${SCAN_TIME}s${C_RESET}..."
@@ -65,7 +63,8 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     RET=$?
 else
     # In Main Feed: Redirect to log to keep terminal clean
-    airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv --band abg > "$LOG_FILE" 2>&1 &
+    # timeout is required — airodump-ng runs indefinitely without it
+    timeout "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv --band abg > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
     wait $TOOL_PID; RET=$?
 fi

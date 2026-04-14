@@ -29,7 +29,6 @@ set -euo pipefail
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
@@ -62,7 +61,7 @@ HIDDEN_BSSIDS=$(awk -F',' '
         bssid = $1; ssid = $14;
         gsub(/^[ \t\r\n"<>]+|[ \t\r\n"<>]+$/, "", ssid);
         gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
-        if (ssid == "" || ssid ~ /^length: 0/ || ssid == "HIDDEN") {
+        if (ssid == "" || ssid ~ /length:/ || ssid ~ /^</ || ssid == "HIDDEN") {
             if (bssid ~ /^[0-9A-Fa-f:]{17}$/) print bssid;
         }
     }
@@ -77,27 +76,27 @@ fi
 if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
     echo -e "${C_PROMPT}[*]${C_RESET} Executing active de-cloaking for hidden targets..."
     
-    # Quick discovery to find clients
+    # Discovery scan: 20s to find associated clients on all channels
     DISC_PREFIX="${EVIDENCE_DIR}/a3_discovery"
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv &
-    else
-        airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 &
-    fi
-    DISC_PID=$!
-    sleep 10
-    kill "$DISC_PID" || true
-    wait "$DISC_PID" 2>/dev/null || true
+    echo -e "${C_PROMPT}[*]${C_RESET} Scanning for associated clients (20s)..."
+    timeout 20 airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 || true
 
     for bssid in $HIDDEN_BSSIDS; do
-        client=$(awk -F',' -v b="$bssid" '$6 ~ b {print $1}' "${DISC_PREFIX}-01.csv" | head -1 | tr -d ' ' || true)
+        # Look up the channel for this BSSID from A1 data so deauth reaches it
+        bssid_channel=$(awk -F',' -v b="$bssid" '
+            $1 ~ b { ch=$4; gsub(/[[:space:]]/, "", ch); print ch; exit }
+        ' "$A1_CSV" || true)
+
+        client=$(awk -F',' -v b="$bssid" '$6 ~ b {print $1}' "${DISC_PREFIX}-01.csv" 2>/dev/null | head -1 | tr -d ' ' || true)
         if [[ -n "$client" && "$client" =~ ^[0-9A-Fa-f:]{17}$ ]]; then
-            echo -e "[*] Deauthing client ${C_VAR}$client${C_RESET} on ${C_VAR}$bssid${C_RESET}..."
-            if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-                aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" || true
-            else
-                aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" > /dev/null 2>&1 || true
+            echo -e "[*] Deauthing ${C_VAR}$client${C_RESET} on ${C_VAR}$bssid${C_RESET} (ch ${bssid_channel:-?})..."
+            if [[ -n "$bssid_channel" ]]; then
+                iw dev "$INTERFACE" set channel "$bssid_channel" 2>/dev/null || true
+                sleep 0.5
             fi
+            aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" > /dev/null 2>&1 || true
+        else
+            echo -e "[*] No client found for ${C_VAR}$bssid${C_RESET} — skipping deauth."
         fi
     done
 fi
@@ -122,7 +121,6 @@ TELEMETRY_PID=$!
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Run in foreground
     timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv || true
-    RET=$?
 else
     # Run with redirection
     airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv > /dev/null 2>&1 &
@@ -130,7 +128,6 @@ else
     # Wait for SCAN_TIME
     (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
-    RET=$?
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
