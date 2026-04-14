@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -120,6 +121,30 @@ func ParseEaphammerCreds(logText string) []EapCred {
 		}
 	}
 	return creds
+}
+
+// ParseWPSCreds extracts WPS PIN and WPA PSK from reaver or bully output logs.
+// Supports reaver format ([+] WPS PIN / [+] WPA PSK) and
+// bully format ([+] WPS pin is / [+] Passphrase is).
+// Returns first found psk and pin, stripping surrounding single quotes.
+func ParseWPSCreds(logText string) (psk, pin string) {
+	reavPIN := regexp.MustCompile(`(?i)\[\+\]\s+WPS PIN:\s+'?([0-9]+)'?`)
+	reavPSK := regexp.MustCompile(`(?i)\[\+\]\s+WPA PSK:\s+'?([^'\n]+)'?`)
+	bullyPIN := regexp.MustCompile(`(?i)\[\+\]\s+WPS pin is:\s+'?([0-9]+)'?`)
+	bullyPSK := regexp.MustCompile(`(?i)\[\+\]\s+Passphrase is:\s+'?([^'\n]+)'?`)
+
+	if m := reavPIN.FindStringSubmatch(logText); len(m) > 1 {
+		pin = strings.TrimSpace(strings.Trim(m[1], "'"))
+	} else if m := bullyPIN.FindStringSubmatch(logText); len(m) > 1 {
+		pin = strings.TrimSpace(strings.Trim(m[1], "'"))
+	}
+
+	if m := reavPSK.FindStringSubmatch(logText); len(m) > 1 {
+		psk = strings.TrimSpace(strings.Trim(m[1], "'"))
+	} else if m := bullyPSK.FindStringSubmatch(logText); len(m) > 1 {
+		psk = strings.TrimSpace(strings.Trim(m[1], "'"))
+	}
+	return
 }
 
 // hashcatLogPath returns the evidence path for a hashcat run log.

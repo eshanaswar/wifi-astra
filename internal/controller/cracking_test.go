@@ -92,3 +92,43 @@ func TestParseEaphammerCredsDanglingUsername(t *testing.T) {
 		t.Errorf("expected 0 credentials for dangling username, got %d", len(creds))
 	}
 }
+
+func TestParseWPSCreds_ReaverFormat(t *testing.T) {
+	input := "[+] WPS PIN: '12345670'\n[+] WPA PSK: 'password123'"
+	psk, pin := ParseWPSCreds(input)
+	if psk != "password123" {
+		t.Errorf("expected PSK 'password123', got '%s'", psk)
+	}
+	if pin != "12345670" {
+		t.Errorf("expected PIN '12345670', got '%s'", pin)
+	}
+}
+
+func TestParseWPSCreds_BullyFormat(t *testing.T) {
+	input := "[+] Passphrase is: 'password123'\n[+] WPS pin is: 12345670"
+	psk, pin := ParseWPSCreds(input)
+	if psk != "password123" {
+		t.Errorf("expected PSK 'password123', got '%s'", psk)
+	}
+	if pin != "12345670" {
+		t.Errorf("expected PIN '12345670', got '%s'", pin)
+	}
+}
+
+func TestParseWPSCreds_Empty(t *testing.T) {
+	psk, pin := ParseWPSCreds("")
+	if psk != "" || pin != "" {
+		t.Errorf("expected empty results, got psk='%s' pin='%s'", psk, pin)
+	}
+}
+
+func TestParseWPSCreds_PINOnly(t *testing.T) {
+	input := "[+] WPS PIN: '87654321'"
+	psk, pin := ParseWPSCreds(input)
+	if psk != "" {
+		t.Errorf("expected empty PSK, got '%s'", psk)
+	}
+	if pin != "87654321" {
+		t.Errorf("expected PIN '87654321', got '%s'", pin)
+	}
+}
