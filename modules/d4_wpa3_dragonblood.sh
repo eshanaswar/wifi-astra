@@ -42,6 +42,33 @@ fi
 echo "[*] Starting WPA3 Dragonblood tests against ${SSID} (BSSID: ${BSSID:-Any})..."
 echo "--- WPA3 Dragonblood Test Results for ${SSID} ---" > "$DRAGON_OUT"
 
+# 0. SAE-PK Detection (WPA3 R3 — immune to Dragonblood)
+# AKM suite 00:0f:ac:8 = SAE-PK; also match literal "SAE-PK" in iw output.
+SAEPK_DETECTED=0
+if [[ -n "$BSSID" ]]; then
+    IW_SCAN=$(iw dev "$INTERFACE" scan 2>/dev/null || true)
+    # Extract the BSS block for our target BSSID and check for SAE-PK
+    BSS_BLOCK=$(echo "$IW_SCAN" | awk "/^BSS ${BSSID}/,/^BSS /" 2>/dev/null || true)
+    if echo "$BSS_BLOCK" | grep -qiE "SAE-PK|00:0f:ac:8"; then
+        SAEPK_DETECTED=1
+    fi
+fi
+
+if [[ "$SAEPK_DETECTED" -eq 1 ]]; then
+    echo "[NOT_VULNERABLE] SAE-PK (WPA3 R3) detected — CVE-2019-9494 and CVE-2019-9496 do not apply." | tee -a "$DRAGON_OUT"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[$TC_ID] WPA3 SAE-PK Detected — Not Vulnerable" \
+        --desc "SAE-PK (WPA3 R3) is immune to Dragonblood side-channel attacks (CVE-2019-9494, CVE-2019-9496). Testing skipped." \
+        --severity INFO \
+        --evidence "$DRAGON_OUT" \
+        --rationale "SAE-PK binds the SAE exchange to a public key encoded in the password, preventing side-channel recovery."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+    exit 0
+fi
+
 # 1. Start Telemetry in Background
 (
     ELAPSED=0
@@ -92,20 +119,20 @@ if [[ "$VULN_FOUND" -eq 1 ]]; then
         --tc "$TC_ID" \
         --type vulnerability \
         --name "WPA3 SAE Vulnerability Detected" \
-        --desc "The target network ${SSID} is vulnerable to Dragonblood class attacks (SAE Side-Channel or Resource Exhaustion)." \
+        --desc "The target network ${SSID} is vulnerable to Dragonblood class attacks (CVE-2019-9494 SAE Side-Channel or CVE-2019-9496 Resource Exhaustion)." \
         --severity HIGH \
         --evidence "$DRAGON_OUT" \
-        --rationale "Dragonblood vulnerabilities allow attackers to bypass WPA3 security improvements."
+        --rationale "Dragonblood vulnerabilities (CVE-2019-9494, CVE-2019-9496) allow offline PSK recovery via SAE timing side-channels."
 else
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
         --name "[$TC_ID] Audit Complete" \
-        --desc "Completed WPA3-SAE Dragonblood tests against ${SSID}. No vulnerabilities identified." \
+        --desc "Completed WPA3-SAE Dragonblood tests (CVE-2019-9494, CVE-2019-9496) against ${SSID}. No vulnerabilities identified." \
         --severity INFO \
         --evidence "$DRAGON_OUT" \
-        --rationale "WPA3 is significantly more secure than WPA2."
+        --rationale "WPA3 is significantly more secure than WPA2. Patched implementations are not susceptible to Dragonblood."
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
