@@ -209,6 +209,14 @@ func launchMainMenu(s *session.Session) {
 		"H": "Policy & WIDS Validation",
 	}
 
+	// Pre-compute total module count per category from the discovered module list.
+	// The DB only tracks modules that have been run, so using it as the denominator
+	// causes [2/2] when only 2 of 5 modules in a category have ever been executed.
+	catTotal := make(map[string]int)
+	for _, m := range modules {
+		catTotal[m.Category]++
+	}
+
 	categories := make(map[string]*ui.Menu)
 	for _, m := range modules {
 		if _, ok := categories[m.Category]; !ok {
@@ -248,16 +256,13 @@ func launchMainMenu(s *session.Session) {
 			catKey := k
 			catName := catNames[k]
 			mainMenu.AddDynamicOption(func() string {
-				var total, completed int
-				s.DB.QueryRow("SELECT COUNT(*) FROM module_state WHERE tc_id LIKE ?", catKey+"%").Scan(&total)
+				total := catTotal[catKey]
+				var completed int
 				s.DB.QueryRow("SELECT COUNT(*) FROM module_state WHERE tc_id LIKE ? AND status = ?", catKey+"%", constants.StatusCompleted).Scan(&completed)
-				
-				statusStr := ""
-				if total > 0 {
-					statusStr = fmt.Sprintf(" [%d/%d]", completed, total)
-					if completed == total {
-						statusStr += fmt.Sprintf(" %s✓%s", constants.ColorGreen, constants.ColorReset)
-					}
+
+				statusStr := fmt.Sprintf(" [%d/%d]", completed, total)
+				if completed == total && total > 0 {
+					statusStr += fmt.Sprintf(" %s✓%s", constants.ColorGreen, constants.ColorReset)
 				}
 				return fmt.Sprintf("Category %s: %s%s", catKey, catName, statusStr)
 			}, func() error {
@@ -270,8 +275,24 @@ func launchMainMenu(s *session.Session) {
 	mainMenu.AddOption("List All Available Modules", func() error {
 		fmt.Println("\n--- All Assessment Modules ---")
 		for _, m := range modules {
-			fmt.Printf("[%s] %-4s %-30s - %s\n", m.Category, m.ID, m.Name, m.Desc)
+			status := ""
+			var dbStatus string
+			s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", m.ID).Scan(&dbStatus)
+			switch dbStatus {
+			case constants.StatusCompleted:
+				status = fmt.Sprintf(" %s✓%s", constants.ColorGreen, constants.ColorReset)
+			case constants.StatusFailed:
+				status = fmt.Sprintf(" %s✗%s", constants.ColorRed, constants.ColorReset)
+			}
+			avail, known := moduleAvail[m.ID]
+			toolsNote := ""
+			if known && !avail {
+				toolsNote = fmt.Sprintf(" %s[tools missing]%s", constants.ColorGray, constants.ColorReset)
+			}
+			fmt.Printf("[%s] %-4s %-30s%s%s - %s\n", m.Category, m.ID, m.Name, status, toolsNote, m.Desc)
 		}
+		fmt.Println()
+		ui.PromptString("Press Enter to return to menu", "")
 		return nil
 	})
 
