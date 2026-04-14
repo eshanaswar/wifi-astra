@@ -28,11 +28,18 @@ set -euo pipefail
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
-INTERFACE="${WIFI_INTERFACE:-}"
+# F1 needs a managed-mode interface for hostapd. Derive the physical interface
+# from MONITOR_INTERFACE (which may be wlan0mon) by stripping the 'mon' suffix.
+_RAW_IFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
+if [[ "$_RAW_IFACE" == *mon ]]; then
+    _PHYS_IFACE="${_RAW_IFACE%mon}"
+else
+    _PHYS_IFACE="$_RAW_IFACE"
+fi
+
 SSID="${GUEST_SSID:-}"
 TARGET_BSSID="${GUEST_BSSID:-}"
 SESSION_DIR="${SESSION_DIR:-.}"
@@ -48,10 +55,20 @@ AP_MODE="${AP_MODE:-ssid}" # ssid or clone
 CATALYST="${CATALYST:-0}" # 0=None, 1=Deauth, 2=CSA
 LAUNCH_RESPONDER="${LAUNCH_RESPONDER:-no}"
 
-if [[ -z "$INTERFACE" || -z "$SSID" ]]; then
-    echo "[!] WIFI_INTERFACE or GUEST_SSID not set."
+if [[ -z "$_PHYS_IFACE" || -z "$SSID" ]]; then
+    echo "[!] No wireless interface or GUEST_SSID not set."
     exit 1
 fi
+
+# Restore interface to managed mode — hostapd cannot use a monitor-mode interface
+echo "[*] Restoring ${_PHYS_IFACE} to managed mode for AP operation..."
+airmon-ng stop "${_RAW_IFACE}" > /dev/null 2>&1 || true
+ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+iw dev "$_PHYS_IFACE" set type managed 2>/dev/null || true
+ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+sleep 1
+
+INTERFACE="$_PHYS_IFACE"
 
 echo -e "${C_PROMPT}[*]${C_RESET} Starting Rogue AP mission for SSID: ${C_VAR}${SSID}${C_RESET}..."
 
