@@ -37,8 +37,29 @@ func NewManager() *Manager {
 	}
 }
 
+// displayVarPrefixes lists env var name prefixes that contain ANSI/terminal display
+// codes. These are internally generated or system-provided and safe to pass through
+// unsanitized — stripping semicolons from ANSI codes like \x1b[33;1m breaks them.
+var displayVarPrefixes = []string{
+	"ASTRA_COLOR_",
+	"LS_COLORS",
+	"LESS_TERMCAP_",
+	"COLORTERM",
+	"TERM",
+}
+
+func isDisplayVar(key string) bool {
+	for _, pfx := range displayVarPrefixes {
+		if key == pfx || strings.HasPrefix(key, pfx) {
+			return true
+		}
+	}
+	return false
+}
+
 // SanitizeEnv strips dangerous shell metacharacters from environment variable values
 // and logs a warning for any value that was modified. The KEY= prefix is preserved.
+// Display/color variables (ANSI codes) are passed through unchanged.
 func SanitizeEnv(env []string) []string {
 	sanitized := make([]string, len(env))
 	re := strings.NewReplacer(
@@ -62,6 +83,11 @@ func SanitizeEnv(env []string) []string {
 		}
 		key := entry[:idx]
 		val := entry[idx+1:]
+		// Skip sanitization for display/color vars — ANSI codes contain semicolons
+		if isDisplayVar(key) {
+			sanitized[i] = entry
+			continue
+		}
 		clean := re.Replace(val)
 		if clean != val {
 			logging.Warn("SanitizeEnv: stripped dangerous characters from env var %s (original len=%d, clean len=%d)", key, len(val), len(clean))
