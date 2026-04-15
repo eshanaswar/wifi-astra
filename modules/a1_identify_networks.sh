@@ -60,13 +60,12 @@ TEL_PID=$!
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # In Tactical Window: Run in foreground so ncurses renders correctly
     timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv --band abg || true
-    RET=$?
 else
     # In Main Feed: Redirect to log to keep terminal clean
     # timeout is required — airodump-ng runs indefinitely without it
     timeout "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv --band abg > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
+    wait "$TOOL_PID" || true
 fi
 
 # 6GHz sweep (Wi-Fi 6E) — runs only when adapter supports it and hcxdumptool is available
@@ -117,4 +116,4 @@ else
         --evidence "$LOG_FILE"
 fi
 
-exit $RET
+exit 0

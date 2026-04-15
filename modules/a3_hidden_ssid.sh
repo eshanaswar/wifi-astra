@@ -73,30 +73,75 @@ if [[ -z "$HIDDEN_BSSIDS" ]]; then
 fi
 
 # 2. Active Reveal
+# CRITICAL: capture must START before deauth — the probe response with the SSID
+# arrives within milliseconds of the deauth frame. Capture started after deauth
+# will miss the reveal window entirely.
+REVEALED_COUNT=0
+declare -A ALREADY_REVEALED
 if [[ "$ACTIVE_REVEAL" == "yes" ]]; then
     echo -e "${C_PROMPT}[*]${C_RESET} Executing active de-cloaking for hidden targets..."
-    
+
     # Discovery scan: 20s to find associated clients on all channels
     DISC_PREFIX="${EVIDENCE_DIR}/a3_discovery"
     echo -e "${C_PROMPT}[*]${C_RESET} Scanning for associated clients (20s)..."
     timeout 20 airodump-ng "$INTERFACE" --write "$DISC_PREFIX" --output-format csv > /dev/null 2>&1 || true
 
     for bssid in $HIDDEN_BSSIDS; do
-        # Look up the channel for this BSSID from A1 data so deauth reaches it
         bssid_channel=$(awk -F',' -v b="$bssid" '
             $1 ~ b { ch=$4; gsub(/[[:space:]]/, "", ch); print ch; exit }
         ' "$A1_CSV" || true)
+        if [[ -z "$bssid_channel" ]]; then
+            echo -e "[!] No channel info for ${C_VAR}$bssid${C_RESET} in A1 data — skipping."
+            continue
+        fi
 
         client=$(awk -F',' -v b="$bssid" '$6 ~ b {print $1}' "${DISC_PREFIX}-01.csv" 2>/dev/null | head -1 | tr -d ' ' || true)
-        if [[ -n "$client" && "$client" =~ ^[0-9A-Fa-f:]{17}$ ]]; then
-            echo -e "[*] Deauthing ${C_VAR}$client${C_RESET} on ${C_VAR}$bssid${C_RESET} (ch ${bssid_channel:-?})..."
-            if [[ -n "$bssid_channel" ]]; then
-                iw dev "$INTERFACE" set channel "$bssid_channel" 2>/dev/null || true
-                sleep 0.5
+        if [[ ! "$client" =~ ^[0-9A-Fa-f:]{17}$ ]]; then
+            echo -e "[*] No associated client found for ${C_VAR}$bssid${C_RESET} — skipping deauth."
+            continue
+        fi
+
+        echo -e "[*] Target: ${C_VAR}$bssid${C_RESET} ch ${bssid_channel}, client ${C_VAR}$client${C_RESET}"
+        iw dev "$INTERFACE" set channel "$bssid_channel" 2>/dev/null || true
+
+        # Start focused capture BEFORE deauth — probe response window is milliseconds wide
+        FOCUSED_PREFIX="${EVIDENCE_DIR}/a3_focused_${bssid//:/_}"
+        timeout 12 airodump-ng "$INTERFACE" \
+            --bssid "$bssid" --channel "$bssid_channel" \
+            --write "$FOCUSED_PREFIX" --output-format csv > /dev/null 2>&1 &
+        FOCUSED_PID=$!
+        sleep 1  # Allow airodump-ng to initialize and start capturing
+
+        # Deauth forces client to re-associate, sending probe request that reveals SSID
+        aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" > /dev/null 2>&1 || true
+
+        wait "$FOCUSED_PID" 2>/dev/null || true
+
+        if [[ -f "${FOCUSED_PREFIX}-01.csv" ]]; then
+            mv "${FOCUSED_PREFIX}-01.csv" "${FOCUSED_PREFIX}.csv"
+            REVEALED_SSID=$(awk -F',' -v b="$bssid" '
+                NR > 1 {
+                    bssid_f = $1; ssid = $14;
+                    gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid_f);
+                    gsub(/^[ \t\r\n"<>]+|[ \t\r\n"<>]+$/, "", ssid);
+                    if (bssid_f == b && ssid != "" && ssid !~ /^length:/ && ssid != "HIDDEN") {
+                        print ssid; exit
+                    }
+                }
+            ' "${FOCUSED_PREFIX}.csv" || true)
+            if [[ -n "$REVEALED_SSID" ]]; then
+                echo -e "[!] ${C_BOLD}DEANONYMIZED:${C_RESET} ${C_VAR}${bssid}${C_RESET} -> ${C_VAR}${REVEALED_SSID}${C_RESET}"
+                "$ASTRA_BIN" record-finding \
+                    --session-dir "$SESSION_DIR" \
+                    --tc "$TC_ID" \
+                    --type vulnerability \
+                    --name "Hidden SSID Revealed" \
+                    --severity MEDIUM \
+                    --desc "Successfully revealed hidden network name: ${REVEALED_SSID} (BSSID: ${bssid})" \
+                    --evidence "${FOCUSED_PREFIX}.csv"
+                REVEALED_COUNT=$((REVEALED_COUNT + 1))
+                ALREADY_REVEALED["$bssid"]=1
             fi
-            aireplay-ng --deauth 5 -a "$bssid" -c "$client" "$INTERFACE" > /dev/null 2>&1 || true
-        else
-            echo -e "[*] No client found for ${C_VAR}$bssid${C_RESET} — skipping deauth."
         fi
     done
 fi
@@ -123,10 +168,8 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     timeout --foreground "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv || true
 else
     # Run with redirection
-    airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv > /dev/null 2>&1 &
+    timeout "$SCAN_TIME" airodump-ng "$INTERFACE" --write "$CSV_PREFIX" --output-format csv > /dev/null 2>&1 &
     TOOL_PID=$!
-    # Wait for SCAN_TIME
-    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
 fi
 
@@ -137,44 +180,57 @@ if [[ -f "${CSV_PREFIX}-01.csv" ]]; then
     mv "${CSV_PREFIX}-01.csv" "$OUTPUT_CSV"
 fi
 
-# 4. Analysis
+# 4. Passive Analysis — catches reveals that active deauth missed (no client found)
+# or natural re-associations during the monitoring window.
 REVEALED_FILE="${EVIDENCE_DIR}/a3_revealed.txt"
-awk -F',' -v hidden_list="$HIDDEN_BSSIDS" '
-    BEGIN {
-        split(hidden_list, hl, "\n");
-        for (i in hl) { if (hl[i] != "") hidden_map[hl[i]] = 1; }
-    }
-    NR > 1 {
-        bssid = $1; ssid = $14;
-        gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
-        gsub(/^[ \t\r\n"<>]+|[ \t\r\n"<>]+$/, "", ssid);
-        if (bssid in hidden_map && ssid != "" && ssid !~ /^length:/ && ssid != "HIDDEN") {
-            print bssid " -> " ssid;
-            delete hidden_map[bssid];
+if [[ -f "$OUTPUT_CSV" ]]; then
+    awk -F',' -v hidden_list="$HIDDEN_BSSIDS" '
+        BEGIN {
+            split(hidden_list, hl, "\n");
+            for (i in hl) { if (hl[i] != "") hidden_map[hl[i]] = 1; }
         }
-    }
-' "$OUTPUT_CSV" > "$REVEALED_FILE"
+        NR > 1 {
+            bssid = $1; ssid = $14;
+            gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
+            gsub(/^[ \t\r\n"<>]+|[ \t\r\n"<>]+$/, "", ssid);
+            if (bssid in hidden_map && ssid != "" && ssid !~ /^length:/ && ssid != "HIDDEN") {
+                print bssid " -> " ssid;
+                delete hidden_map[bssid];
+            }
+        }
+    ' "$OUTPUT_CSV" > "$REVEALED_FILE"
 
-REVEALED_COUNT=0
-if [[ -s "$REVEALED_FILE" ]]; then
-    while read -r line; do
-        [[ -z "$line" ]] && continue
-        bssid="${line% -> *}"; ssid="${line#* -> }"
-        echo -e "[!] ${C_BOLD}DEANONYMIZED:${C_RESET} ${C_VAR}${bssid}${C_RESET} -> ${C_VAR}${ssid}${C_RESET}"
-        $ASTRA_BIN record-finding \
-            --session-dir "$SESSION_DIR" \
-            --tc "$TC_ID" \
-            --type vulnerability \
-            --name "Hidden SSID Revealed" \
-            --severity MEDIUM \
-            --desc "Successfully revealed hidden network name: ${ssid} (BSSID: ${bssid})" \
-            --evidence "$OUTPUT_CSV"
-        REVEALED_COUNT=$((REVEALED_COUNT + 1))
-    done < "$REVEALED_FILE"
+    if [[ -s "$REVEALED_FILE" ]]; then
+        while read -r line; do
+            [[ -z "$line" ]] && continue
+            bssid="${line% -> *}"; ssid="${line#* -> }"
+            # Skip BSSIDs already recorded by the active reveal phase
+            [[ "${ALREADY_REVEALED[$bssid]+_}" ]] && continue
+            echo -e "[!] ${C_BOLD}DEANONYMIZED:${C_RESET} ${C_VAR}${bssid}${C_RESET} -> ${C_VAR}${ssid}${C_RESET}"
+            "$ASTRA_BIN" record-finding \
+                --session-dir "$SESSION_DIR" \
+                --tc "$TC_ID" \
+                --type vulnerability \
+                --name "Hidden SSID Revealed" \
+                --severity MEDIUM \
+                --desc "Successfully revealed hidden network name: ${ssid} (BSSID: ${bssid})" \
+                --evidence "$OUTPUT_CSV"
+            REVEALED_COUNT=$((REVEALED_COUNT + 1))
+        done < "$REVEALED_FILE"
+    fi
 fi
 
 if [[ $REVEALED_COUNT -eq 0 ]]; then
     echo -e "[+] No hidden SSIDs deanonymized in this window."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[A3] Audit Complete" \
+        --severity INFO \
+        --desc "Hidden SSID discovery completed. No SSIDs were revealed during the scan window." \
+        --evidence "$A1_CSV" \
+        --rationale "Hidden SSIDs provide minimal security — a client probe response or natural re-association reveals them. Lack of reveal in this window may indicate no active clients or PMF-protected networks."
 fi
 
 

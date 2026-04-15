@@ -49,37 +49,90 @@ if ! awk -F',' '$1 ~ /^[[:space:]]*[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}[[:space:]]
     exit 0
 fi
 
-# Group by OUI prefix (first 3 octets)
+# Extract valid AP records from A1 CSV (BSSID is field 1, ESSID is field 14)
+AP_DATA=$(awk -F',' '
+    NR > 1 && $1 ~ /^[[:space:]]*[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}[[:space:]]*$/ {
+        bssid = $1; ssid = $14;
+        gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
+        gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", ssid);
+        print bssid "|" ssid
+    }
+' "$A1_CSV" | sort -u)
+
 {
     echo "============================================================"
     echo "  A2: BSSID Correlation Analysis"
     echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "============================================================"
     echo ""
-    echo "Grouped by OUI Prefix (Physical AP clusters):"
-    
-    # Extract BSSIDs, get OUIs, count occurrences
-    # Field 1 is BSSID
-    awk -F',' 'NR > 1 && $1 != "" && $1 != "BSSID" { print $1 }' "$A1_CSV" | cut -d':' -f1-3 | sort | uniq -c | sort -rn | while read -r count oui; do
+
+    # --- Group 1: OUI prefix (first 3 octets = hardware vendor) ---
+    echo "[ OUI Groups — same hardware vendor ]"
+    echo "$AP_DATA" | awk -F'|' '{print $1}' | cut -d':' -f1-3 | sort | uniq -c | sort -rn | while read -r count oui; do
         [[ -z "$oui" ]] && continue
-        
-        # LOOKUP VENDOR NAME
         VENDOR=$("$ASTRA_BIN" lookup-oui "$oui" 2>/dev/null || echo "Unknown")
-        echo "[*] OUI Group: $oui [$VENDOR] ($count BSSIDs)"
-        
-        # List all SSIDs in this group using awk
-        # BSSID is field 1, ESSID is field 14
-        awk -F',' -v target="$oui" '
-            $1 ~ "^"target {
-                bssid = $1;
-                ssid = $14;
-                gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", bssid);
-                gsub(/^[ \t\r\n"]+|[ \t\r\n"]+$/, "", ssid);
-                print "    - " bssid " : " ssid
-            }
-        ' "$A1_CSV"
+        echo "[*] OUI: $oui [$VENDOR] — $count BSSIDs"
+        echo "$AP_DATA" | awk -F'|' -v pfx="$oui" '
+            substr($1,1,length(pfx)) == pfx {
+                printf "    - %s : %s\n", $1, ($2 == "" ? "<hidden>" : $2)
+            }'
         echo ""
     done
+
+    # --- Group 2: Sequential BSSID detection (same physical AP, multiple virtual SSIDs) ---
+    # In enterprise APs, multiple BSSIDs are allocated sequentially on the same hardware:
+    # aa:bb:cc:dd:ee:00 (corporate WPA2-Enterprise)
+    # aa:bb:cc:dd:ee:01 (guest WPA2-PSK)
+    # aa:bb:cc:dd:ee:02 (IoT isolated)
+    # Differing only in the last byte by ≤8 strongly indicates the same physical radio.
+    echo "[ Sequential BSSID Groups — likely same physical AP ]"
+    SAME_HW_FOUND=0
+    # Group by first 5 octets
+    FIVE_OCTET_GROUPS=$(echo "$AP_DATA" | awk -F'|' '{print $1}' | \
+        awk -F: '{printf "%s:%s:%s:%s:%s\n",$1,$2,$3,$4,$5}' | sort | uniq -d)
+    if [[ -n "$FIVE_OCTET_GROUPS" ]]; then
+        while IFS= read -r prefix; do
+            [[ -z "$prefix" ]] && continue
+            MEMBERS=$(echo "$AP_DATA" | awk -F'|' -v pfx="$prefix" '
+                substr($1,1,length(pfx)) == pfx {
+                    printf "    - %s : %s\n", $1, ($2 == "" ? "<hidden>" : $2)
+                }')
+            COUNT=$(echo "$MEMBERS" | wc -l)
+            echo "[!] Sequential group ($COUNT BSSIDs share prefix ${prefix}:xx) — likely 1 physical AP:"
+            echo "$MEMBERS"
+            echo ""
+            SAME_HW_FOUND=1
+        done <<< "$FIVE_OCTET_GROUPS"
+    fi
+    if [[ "$SAME_HW_FOUND" -eq 0 ]]; then
+        echo "    (none detected — each BSSID prefix is unique)"
+        echo ""
+    fi
+
+    # --- Group 3: Same SSID on multiple OUIs — potential rogue/evil twin indicator ---
+    echo "[ Same SSID on Multiple OUIs — potential evil twin / rogue AP ]"
+    DUPE_SSID_FOUND=0
+    echo "$AP_DATA" | awk -F'|' '$2 != "" && $2 != "<hidden>"' | \
+        awk -F'|' '{seen[$2] = seen[$2] " " $1; count[$2]++} END {for (s in count) if (count[s]>1) print count[s] "|" s "|" seen[s]}' | \
+        sort -t'|' -k1 -rn | while IFS='|' read -r cnt ssid bssid_list; do
+            oui_list=$(echo "$bssid_list" | tr ' ' '\n' | grep -v '^$' | cut -d: -f1-3 | sort -u | tr '\n' ' ')
+            oui_count=$(echo "$oui_list" | wc -w)
+            if [[ "$oui_count" -gt 1 ]]; then
+                echo "[!] SSID '$ssid' seen on $cnt BSSIDs across $oui_count different OUIs:"
+                echo "$bssid_list" | tr ' ' '\n' | grep -v '^$' | while read -r b; do
+                    V=$("$ASTRA_BIN" lookup-oui "$b" 2>/dev/null || echo "Unknown")
+                    echo "    - $b [$V]"
+                done
+                echo "    ^ Investigate for rogue AP or misconfigured infra"
+                echo ""
+                DUPE_SSID_FOUND=1
+            fi
+        done
+    if [[ "$DUPE_SSID_FOUND" -eq 0 ]]; then
+        echo "    (none detected)"
+        echo ""
+    fi
+
 } > "$OUTPUT_FILE"
 
 echo "[+] Analysis complete. Results saved to $OUTPUT_FILE"

@@ -73,8 +73,6 @@ else
         --write "$CSV_PREFIX" \
         --output-format csv > "${EVIDENCE_DIR}/${TC_ID}_airodump.log" 2>&1 &
     TOOL_PID=$!
-    # Wait for SCAN_TIME
-    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
 fi
 
@@ -125,7 +123,7 @@ if [[ -f "$PARSED_PROBES" ]]; then
 
         if [[ "$pnl" == "<NONE>" ]]; then
             echo -e "[+] Found station: ${C_VAR}$mac${C_RESET} [$VENDOR] (No PNL leaked)"
-            $ASTRA_BIN record-finding \
+            "$ASTRA_BIN" record-finding \
                 --session-dir "$SESSION_DIR" \
                 --tc "$TC_ID" \
                 --type vulnerability \
@@ -136,7 +134,7 @@ if [[ -f "$PARSED_PROBES" ]]; then
                 --evidence "$OUTPUT_CSV"
         else
             echo -e "[!] ${C_BOLD}PNL LEAK DETECTED:${C_RESET} ${C_VAR}$mac${C_RESET} [$VENDOR] probes for ${C_VAR}[$pnl]${C_RESET}"
-            $ASTRA_BIN record-finding \
+            "$ASTRA_BIN" record-finding \
                 --session-dir "$SESSION_DIR" \
                 --tc "$TC_ID" \
                 --type vulnerability \
@@ -194,6 +192,16 @@ fi
 
 if [[ $FOUND_COUNT -eq 0 ]]; then
     echo -e "${C_PROMPT}[*]${C_RESET} No active clients discovered for $BSSID."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[A4] Audit Complete" \
+        --severity INFO \
+        --desc "Client fingerprinting completed on $BSSID. No associated stations were observed during the scan window." \
+        --target "$BSSID" \
+        --evidence "$OUTPUT_CSV" \
+        --rationale "No clients during the scan window. Retry during peak usage hours or extend SCAN_TIME."
 fi
 
 
