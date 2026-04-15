@@ -28,7 +28,6 @@ set -euo pipefail
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
@@ -125,12 +124,12 @@ if command -v hostapd-mana &>/dev/null; then
         # BACKGROUND
         hostapd-mana "$MANA_CONF" > "$MANA_LOG" 2>&1 &
         MANA_PID=$!
-        sleep "$SCAN_TIME"
+        wait "$MANA_PID" 2>/dev/null || true
     fi
-    
+
     cleanup
     trap - EXIT
-    
+
     # 4. Reporting
     if grep -qi "authenticated" "$MANA_LOG"; then
         V_MAC=$(grep -i "authenticated" "$MANA_LOG" | awk '{print $3}' | head -1)
@@ -147,12 +146,32 @@ if command -v hostapd-mana &>/dev/null; then
             --rationale "Clients broadcasting directed probes for past networks (PNL) are highly vulnerable."
     else
         echo -e "[+] Karma attack complete. No clients captured."
+        "$ASTRA_BIN" record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type vulnerability \
+            --name "[F2] Audit Complete" \
+            --severity INFO \
+            --desc "Karma/PineAP attack ran for ${SCAN_TIME}s — no clients connected to phantom SSIDs." \
+            --target "Global" \
+            --evidence "$MANA_LOG" \
+            --rationale "No PNL-susceptible clients detected during the test window. Clients may be using randomized MACs or have no saved open-network profiles."
     fi
 else
     echo "[!] hostapd-mana not found. Skipping Karma test."
-    exit 1
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[F2] Audit Incomplete — hostapd-mana Missing" \
+        --severity INFO \
+        --desc "Karma/PineAP attack could not be executed because hostapd-mana is not installed." \
+        --target "Global" \
+        --evidence "${MANA_LOG:-/dev/null}" \
+        --rationale "Install hostapd-mana (Kali: apt install hostapd-mana) to enable PNL/Karma susceptibility testing."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
 # Hold window if in tactical mode so user can see final output/errors
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then

@@ -8,7 +8,7 @@
 # DESC="Scan RFC1918 ranges for reachable corporate hosts from target WiFi"
 # REQS="managed_iface,gateway_ip"
 # PCAP="no"
-# 
+# TIMED="yes"
 # DECODE="none"
 # PROMPTS="managed_connect"
 
@@ -57,11 +57,12 @@ TARGETS=$(printf "%s\n" "${RANGES[@]}" | sort -u | grep -v "^$")
 
 echo "[*] Testing reachability for gateways: $(echo "$TARGETS" | xargs)"
 
-# 1. Start Telemetry in Background
+# 1. Start Telemetry in Background (bounded)
+MAX_TEL=$((SCAN_TIME + 60))
 (
     ELAPSED=0
-    while true; do
-        PCT=$(( 10 + (ELAPSED % 85) ))
+    while [[ $ELAPSED -lt $MAX_TEL ]]; do
+        PCT=$(( 10 + (ELAPSED * 75 / MAX_TEL) ))
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing RFC1918 egress audit..."
         sleep 5; ELAPSED=$((ELAPSED + 5))
     done
@@ -69,60 +70,78 @@ echo "[*] Testing reachability for gateways: $(echo "$TARGETS" | xargs)"
 TEL_PID=$!
 
 # 2. Run Primary Tools (fping + nmap)
+# fping -a outputs only alive hosts to stdout; errors/unreachable go to stderr (discarded).
+# Mixing 2>&1 would pollute REACHABLE_FILE with error messages that match IP regex.
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    # Foreground Execution
-    # shellcheck disable=SC2086 # $TARGETS is a newline-separated list of IP ranges; word-splitting is intentional
-    fping -a -t 500 $TARGETS 2>&1 | tee "$REACHABLE_FILE" || true
-    REACHABLE=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
+    # shellcheck disable=SC2086 # $TARGETS is a newline-separated list; word-splitting is intentional
+    fping -a -t 500 $TARGETS 2>/dev/null | tee "$REACHABLE_FILE" || true
+    # shellcheck disable=SC2086
+    REACHABLE=$(grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" "$REACHABLE_FILE" | xargs || true)
     if [[ -n "$REACHABLE" ]]; then
-        # shellcheck disable=SC2086 # $REACHABLE is a space-separated list of live IPs; word-splitting is intentional
-        nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" 2>&1 | tee "$NMAP_LOG" || true
+        # shellcheck disable=SC2086
+        timeout --foreground "$SCAN_TIME" nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" 2>&1 | tee "$NMAP_LOG" || true
     fi
-    RET=$?
 else
-    # Background Execution
     (
-        # shellcheck disable=SC2086 # $TARGETS is a newline-separated list of IP ranges; word-splitting is intentional
-        fping -a -t 500 $TARGETS > "$REACHABLE_FILE" 2>&1 || true
-        REACHABLE=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
+        # shellcheck disable=SC2086
+        fping -a -t 500 $TARGETS 2>/dev/null > "$REACHABLE_FILE" || true
+        # shellcheck disable=SC2086
+        REACHABLE=$(grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" "$REACHABLE_FILE" | xargs || true)
         if [[ -n "$REACHABLE" ]]; then
-            # shellcheck disable=SC2086 # $REACHABLE is a space-separated list of live IPs; word-splitting is intentional
-            nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" > "$NMAP_LOG" 2>&1 || true
+            # shellcheck disable=SC2086
+            timeout "$SCAN_TIME" nmap -Pn -p 22,80,443,445,3389 $REACHABLE -oX "$OUTPUT_XML" > "$NMAP_LOG" 2>&1 || true
         fi
-    ) > /dev/null 2>&1 &
+    ) &
     TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
+    wait $TOOL_PID || true
 fi
 
 # 3. Cleanup and Final Signal
 kill $TEL_PID 2>/dev/null || true
 
-# Verify
-REACHABLE_COUNT=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | wc -l || echo 0)
-if [[ "$REACHABLE_COUNT" -gt 0 ]]; then
-    REACHABLE_HOSTS=$(cat "$REACHABLE_FILE" | grep -E "[0-9.]+" | xargs || true)
+# Verify — exclude local gateway (always reachable by design, not a segmentation violation)
+# Segmentation findings are non-gateway RFC1918 hosts that answer from this segment
+VIOLATIONS=$(grep -E "^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$" "$REACHABLE_FILE" \
+    | grep -v "^${LOCAL_GW}$" || true)
+VIOLATION_COUNT=$(echo "$VIOLATIONS" | grep -c "." 2>/dev/null || echo 0)
+[[ -z "$VIOLATIONS" ]] && VIOLATION_COUNT=0
+
+FOUND=0
+if [[ "$VIOLATION_COUNT" -gt 0 ]]; then
+    FOUND=1
+    VIOLATION_HOSTS=$(echo "$VIOLATIONS" | xargs)
+    echo "[!] RFC1918 segmentation violation — ${VIOLATION_COUNT} host(s) reachable: ${VIOLATION_HOSTS}"
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type "vulnerability" \
         --name "Internal Network Reachability Detected" \
-        --desc "Guest network allows access to RFC1918 addresses: ${REACHABLE_HOSTS}" \
+        --desc "Guest WiFi can reach non-local RFC1918 hosts: ${VIOLATION_HOSTS}. ${VIOLATION_COUNT} host(s) responded across segment boundary." \
         --severity "HIGH" \
         --evidence "$OUTPUT_XML" \
         --rationale "Failure to segment guest WiFi from internal networks allows pivoting and direct attacks on internal assets."
-else
+fi
+
+if [[ $FOUND -eq 0 ]]; then
+    echo "[+] No cross-segment RFC1918 reachability detected."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type "vulnerability" \
         --name "[$TC_ID] Audit Complete" \
-        --desc "No common RFC1918 gateways were reachable." \
+        --desc "No RFC1918 hosts beyond the local gateway were reachable from the guest segment." \
         --severity "INFO" \
         --evidence "$REACHABLE_FILE" \
         --rationale "Effective segmentation is a critical security control."
 fi
 
-# 🏁 FINAL SIGNAL
+# FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
-exit $RET
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
+exit 0

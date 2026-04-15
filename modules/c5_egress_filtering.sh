@@ -8,7 +8,7 @@
 # DESC="Test which outbound ports are allowed through the wireless gateway"
 # REQS="managed_iface"
 # PCAP="no"
-# 
+# TIMED="yes"
 # DECODE="none"
 # PROMPTS="managed_connect"
 
@@ -38,11 +38,11 @@ fi
 
 echo "[*] Testing outbound egress filtering from ${INTERFACE} to ${EGRESS_TARGET}..."
 
-# 1. Start Telemetry in Background
+# 1. Start Telemetry in Background (bounded)
 (
     ELAPSED=0
-    while true; do
-        PCT=$(( 10 + (ELAPSED % 85) ))
+    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Testing outbound port filtering (nmap)..."
         sleep 5; ELAPSED=$((ELAPSED + 5))
     done
@@ -50,48 +50,91 @@ echo "[*] Testing outbound egress filtering from ${INTERFACE} to ${EGRESS_TARGET
 TEL_PID=$!
 
 # 2. Run Primary Tool (nmap)
+# TCP egress interpretation against an external host (e.g., 1.1.1.1):
+#   open     = SYN-ACK received — firewall allowed AND service listening
+#   closed   = RST received — firewall allowed, but no service on that port at target
+#   filtered = no response — firewall is BLOCKING outbound (no RST reached target)
+# Both "open" and "closed" confirm outbound traffic was NOT blocked by the firewall.
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    # Foreground Execution
-    timeout --foreground "$SCAN_TIME" nmap -vv -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" || true
-    RET=$?
+    timeout --foreground "$SCAN_TIME" nmap -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" || true
 else
-    # Background Execution
-    nmap -vv -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" > /dev/null 2>&1 &
-    TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
+    timeout "$SCAN_TIME" nmap -Pn -p 21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080 "$EGRESS_TARGET" -oX "$OUTPUT_XML" > /dev/null 2>&1 || true
 fi
 
-# 3. Cleanup and Final Signal
+# 3. Cleanup
 kill $TEL_PID 2>/dev/null || true
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing findings..."
 
-# Robust parsing of Nmap XML for open ports
-OPEN_PORTS=$(awk -F'"' '/<port / {p=$4} /<state / {s=$4; if(s=="open") print p}' "$OUTPUT_XML" | xargs | sed 's/ /, /g')
+# Parse allowed ports: both "open" (service responded) and "closed" (RST received) prove egress is not blocked.
+# "filtered" means the firewall dropped the packet — those are correctly blocked.
+ALLOWED_PORTS=$(awk -F'"' '/<port / {p=$4} /<state / {s=$4; if(s=="open" || s=="closed") print p}' "$OUTPUT_XML" \
+    2>/dev/null | sort -n | xargs || true)
 
-if [[ -n "$OPEN_PORTS" ]]; then
-    echo "[+] ALLOWED OUTBOUND PORTS: $OPEN_PORTS"
+# Dangerous ports that should always be blocked on guest/WiFi segments
+DANGEROUS_PORTS=("23" "25" "110" "139" "445" "1433" "3306" "3389")
+
+FOUND=0
+if [[ -n "$ALLOWED_PORTS" ]]; then
+    FOUND=1
+    ALLOWED_CSV=$(echo "$ALLOWED_PORTS" | sed 's/ /, /g')
+    echo "[!] ALLOWED OUTBOUND PORTS: $ALLOWED_CSV"
+
+    # Check for high-risk dangerous ports in the allowed set
+    DANGEROUS_FOUND=()
+    for dp in "${DANGEROUS_PORTS[@]}"; do
+        for ap in $ALLOWED_PORTS; do
+            if [[ "$ap" == "$dp" ]]; then
+                DANGEROUS_FOUND+=("$dp")
+                break
+            fi
+        done
+    done
+
+    if [[ ${#DANGEROUS_FOUND[@]} -gt 0 ]]; then
+        DANGEROUS_CSV=$(printf "%s," "${DANGEROUS_FOUND[@]}" | sed 's/,$//')
+        echo "[!] HIGH-RISK ports allowed outbound: ${DANGEROUS_CSV}"
+        "$ASTRA_BIN" record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type vulnerability \
+            --name "Dangerous Outbound Ports Unfiltered" \
+            --desc "High-risk ports are allowed outbound to ${EGRESS_TARGET}: ${DANGEROUS_CSV}. These ports facilitate C2, lateral movement, and data exfiltration (Telnet, SMTP, SMB, RDP, database protocols)." \
+            --severity HIGH \
+            --evidence "$OUTPUT_XML" \
+            --rationale "Ports 23/25/445/3389/1433/3306 are primary attack channels. Allowing them outbound from a wireless segment enables C2 beaconing, credential theft via SMB, and database exfiltration."
+    fi
+
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
-        --name "Weak Egress Filtering Policy" \
-        --desc "The following outbound ports are allowed through the gateway to $EGRESS_TARGET: $OPEN_PORTS. Permissive egress policies allow compromised internal clients to communicate with C2 servers and facilitate data exfiltration." \
+        --name "Permissive Egress Filtering Policy" \
+        --desc "The following outbound ports are not filtered (traffic reached ${EGRESS_TARGET}): ${ALLOWED_CSV}. Both open and closed states confirm traffic passed through the gateway firewall." \
         --severity MEDIUM \
         --evidence "$OUTPUT_XML" \
-        --rationale "Strict egress filtering (denying all by default and only allowing specific required ports) is a key defense-in-depth measure to prevent C2 communication and unauthorized data transfers."
-else
-    echo "[!] NO OUTBOUND PORTS DETECTED. Egress may be heavily restricted."
+        --rationale "Strict egress filtering (deny-all, allow-list) is a key defense-in-depth control. Permissive egress allows C2 beaconing and data exfiltration from compromised wireless clients."
+fi
+
+if [[ $FOUND -eq 0 ]]; then
+    echo "[+] All tested ports filtered. Egress policy appears restrictive."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
         --name "[$TC_ID] Audit Complete" \
-        --desc "No common outbound ports (21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080) were reachable on the external target $EGRESS_TARGET from the wireless network." \
+        --desc "All tested outbound ports (21,22,23,25,53,80,110,139,443,445,1433,3306,3389,8080) were filtered from the wireless segment to ${EGRESS_TARGET}." \
         --severity INFO \
         --evidence "$OUTPUT_XML" \
-        --rationale "Strict egress filtering is present, reducing the risk of data exfiltration and C2 beaconing from compromised wireless clients."
+        --rationale "Strict egress filtering is present, reducing C2 beaconing and data exfiltration risk."
 fi
 
-# 🏁 FINAL SIGNAL
+# FINAL SIGNAL
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
-exit $RET
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
+exit 0

@@ -56,12 +56,8 @@ trap cleanup EXIT
 # 1. Capture and Parse
 if command -v tshark &>/dev/null; then
     echo "[*] Analyzing RSN capabilities with tshark..."
-    # Capture one beacon
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" &
-    else
-        tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" > /dev/null 2>&1 &
-    fi
+    # Capture beacon frames (runs in background in both modes; killed after fixed wait)
+    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and type mgt subtype beacon" > /dev/null 2>&1 &
     TCPDUMP_PID=$!
     
     # Wait with real-time progress updates
@@ -79,13 +75,13 @@ if command -v tshark &>/dev/null; then
     wait "$TCPDUMP_PID" 2>/dev/null || true
     
     if [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
-        if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-            timeout --foreground "$SCAN_TIME" tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
-        else
-            tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection|MFP" > "$MFP_FILE" || true
-        fi
-        
-        if grep -qi "Required" "$MFP_FILE"; then
+        # Extract RSN capability lines from the beacon — tshark verbose output contains:
+        #   "Management Frame Protection Required: True/False"
+        #   "Management Frame Protection Capable: True/False"
+        # We must match "True" explicitly; "Required: False" must NOT fire the Required branch.
+        tshark -r "$PCAP_FILE" -V 2>/dev/null | grep -Ei "Management Frame Protection" > "$MFP_FILE" || true
+
+        if grep -qi "Management Frame Protection Required.*True" "$MFP_FILE"; then
             echo "[+] PMF IS REQUIRED BY THE AP."
             "$ASTRA_BIN" record-finding \
                 --session-dir "$SESSION_DIR" \
@@ -93,10 +89,10 @@ if command -v tshark &>/dev/null; then
                 --type vulnerability \
                 --name "PMF Required (802.11w)" \
                 --severity "INFO" \
-                --desc "Target AP (${BSSID}) strictly enforces Protected Management Frames." \
+                --desc "Target AP (${BSSID}) strictly enforces Protected Management Frames (RSN Capable + Required both True)." \
                 --evidence "$MFP_FILE" \
-                --rationale "Mandatory PMF provides the highest level of protection against deauthentication and disassociation attacks."
-        elif grep -qi "Capable" "$MFP_FILE"; then
+                --rationale "Mandatory PMF provides the highest level of protection against deauthentication and disassociation attacks. Clients must also support 802.11w to benefit."
+        elif grep -qi "Management Frame Protection Capable.*True" "$MFP_FILE"; then
             echo "[+] PMF IS SUPPORTED (OPTIONAL) BY THE AP."
             "$ASTRA_BIN" record-finding \
                 --session-dir "$SESSION_DIR" \
@@ -104,9 +100,9 @@ if command -v tshark &>/dev/null; then
                 --type vulnerability \
                 --name "PMF Optional (802.11w)" \
                 --severity "LOW" \
-                --desc "Target AP (${BSSID}) supports PMF but does not require it." \
+                --desc "Target AP (${BSSID}) advertises PMF Capable but does not require it. Clients that do not negotiate 802.11w remain unprotected." \
                 --evidence "$MFP_FILE" \
-                --rationale "Optional PMF allows backward compatibility but leaves the network vulnerable if clients do not also support or negotiate 802.11w."
+                --rationale "Optional PMF (Capable but not Required) allows legacy client compatibility but means not all clients are protected. WIDS can still be bypassed by forcing legacy associations."
         else
             echo "[!] PMF IS NOT SUPPORTED BY THE AP."
             "$ASTRA_BIN" record-finding \
@@ -115,9 +111,9 @@ if command -v tshark &>/dev/null; then
                 --type vulnerability \
                 --name "Missing PMF (802.11w)" \
                 --severity "MEDIUM" \
-                --desc "Target AP (${BSSID}) does not support Protected Management Frames." \
+                --desc "Target AP (${BSSID}) RSN capabilities show no Management Frame Protection support. All clients on this BSSID are vulnerable to deauthentication attacks." \
                 --evidence "$MFP_FILE" \
-                --rationale "Lack of 802.11w support makes the entire BSSID and all its clients vulnerable to trivial deauthentication attacks, leading to session disruption and increased success for handshake capture."
+                --rationale "Without 802.11w, any attacker in radio range can forge deauth/disassoc frames to disconnect clients, enabling persistent DoS or forcing 4-way handshake captures for offline cracking."
         fi
     else
         echo "[!] No beacon captured for ${BSSID}."

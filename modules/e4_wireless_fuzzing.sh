@@ -24,14 +24,6 @@
 
 set -euo pipefail
 
-# Intelligence Insight (Colors)
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
-
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 BSSID="${GUEST_BSSID:-}"
@@ -68,19 +60,24 @@ if command -v mdk4 &>/dev/null; then
     ) &
     TELEMETRY_PID=$!
 
-    # Note: Fuzzing can be highly disruptive, run for a short duration
+    # mdk4 fuzzing modes:
+    #   Phase 1: 'f' (Frame Fuzzer) — sends random malformed 802.11 frames to test
+    #            AP driver robustness. This is actual fuzzing — the correct mode for
+    #            discovering implementation-level vulnerabilities.
+    #   Phase 2: 'a' (Auth Flood) — floods the AP with auth requests, testing
+    #            association table limits and DoS resilience.
+    # NOTE: mdk4 'm' (TKIP MIC exploit) was previously used here but is NOT fuzzing —
+    #       it is a TKIP-specific timing attack unrelated to frame robustness testing.
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout --foreground $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" || true
-        echo "--- Beacon Fuzzing ---"
-        timeout --foreground $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" || true
+        echo "--- Phase 1: Frame Fuzzer (mdk4 f) ---"
+        timeout --foreground $((SCAN_TIME / 2)) mdk4 "$INTERFACE" f -t "$BSSID" 2>&1 | tee "$FUZZ_OUT" || true
+        echo "--- Phase 2: Auth Flood (mdk4 a) ---" | tee -a "$FUZZ_OUT"
+        timeout --foreground $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" 2>&1 | tee -a "$FUZZ_OUT" || true
     else
-        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" > "$FUZZ_OUT" 2>&1 &
-        TOOL_PID=$!
-        wait $TOOL_PID || true
-        echo "--- Beacon Fuzzing ---" >> "$FUZZ_OUT"
-        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" m -t "$BSSID" >> "$FUZZ_OUT" 2>&1 &
-        TOOL_PID=$!
-        wait $TOOL_PID || true
+        echo "--- Phase 1: Frame Fuzzer (mdk4 f) ---" >> "$FUZZ_OUT"
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" f -t "$BSSID" >> "$FUZZ_OUT" 2>&1 || true
+        echo "--- Phase 2: Auth Flood (mdk4 a) ---" >> "$FUZZ_OUT"
+        timeout $((SCAN_TIME / 2)) mdk4 "$INTERFACE" a -a "$BSSID" >> "$FUZZ_OUT" 2>&1 || true
     fi
     
     kill "$TELEMETRY_PID" 2>/dev/null || true

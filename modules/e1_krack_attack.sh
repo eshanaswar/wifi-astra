@@ -18,14 +18,6 @@
 
 set -euo pipefail
 
-# Intelligence Insight (Colors)
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
-
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
@@ -75,13 +67,11 @@ echo "[*] Capturing EAPOL handshakes for nonce reuse analysis (${SCAN_TIME}s)...
 ) &
 TELEMETRY_PID=$!
 
-# type 0x888e is EAPOL
+# EAPOL uses ethertype 0x888e (LLC/SNAP in 802.11 monitor mode frames)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" || true
+    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether proto 0x888e and ether host $BSSID" 2>&1 | tee "$TCPDUMP_LOG" || true
 else
-    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID and (type 0x888e)" > "$TCPDUMP_LOG" 2>&1 &
-    TOOL_PID=$!
-    wait $TOOL_PID || true
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether proto 0x888e and ether host $BSSID" > "$TCPDUMP_LOG" 2>&1 || true
 fi
 
 # 2. Optional: Run specialized KRACK test scripts if available
@@ -90,15 +80,14 @@ VULN_DETECTED=0
 
 if [[ -n "$KRACK_SCRIPT" ]]; then
     echo "[*] Running KRACK test script: ${KRACK_SCRIPT}..."
+    # Must write to RES_FILE in both modes for detection to work
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" || true
+        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" 2>&1 | tee "$RES_FILE" || true
     else
-        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" > "$RES_FILE" 2>&1 &
-        TOOL_PID=$!
-        wait $TOOL_PID || true
+        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" > "$RES_FILE" 2>&1 || true
     fi
-    
-    if awk 'tolower($0) ~ /vulnerable|reinstall|reuse/ {exit 0} END {exit 1}' "$RES_FILE"; then
+
+    if grep -qiE "vulnerable|reinstall|reuse" "$RES_FILE" 2>/dev/null; then
         VULN_DETECTED=1
         echo "[!] VULNERABILITY DETECTED: KRACK (Key Reinstallation)"
         "$ASTRA_BIN" record-finding \

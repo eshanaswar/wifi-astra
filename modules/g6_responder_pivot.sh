@@ -26,7 +26,6 @@ set -euo pipefail
 # SNR Safeguard (Inherited from core)
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
@@ -68,13 +67,12 @@ TEL_PID=$!
 
 # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    # In Tactical Window: Run in foreground so it renders correctly
-    timeout --foreground "$SCAN_TIME" responder -I "$INTERFACE" -dwP || true
+    # tee to LOG_FILE so hash detection works in both modes
+    timeout --foreground "$SCAN_TIME" responder -I "$INTERFACE" -dwP 2>&1 | tee "$LOG_FILE" || true
 else
-    # In Main Feed: Redirect to log to keep terminal clean
-    timeout --foreground "$SCAN_TIME" responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1 &
+    timeout "$SCAN_TIME" responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
-    wait $TOOL_PID || true
+    wait "$TOOL_PID" || true
 fi
 
 kill "$TEL_PID" 2>/dev/null || true

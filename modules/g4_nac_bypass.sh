@@ -28,7 +28,6 @@ set -euo pipefail
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
 C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
@@ -62,9 +61,19 @@ OLD_HOSTNAME=$(hostname)
 SPOOFED_HOSTNAME="Workstation-$(echo "$TARGET_CLIENT" | cut -d: -f5,6 | tr -d ':')"
 echo -e "[*] Temporarily spoofing hostname to ${C_VAR}$SPOOFED_HOSTNAME${C_RESET}..."
 hostname "$SPOOFED_HOSTNAME"
-trap "hostname $OLD_HOSTNAME" EXIT
+trap 'hostname "$OLD_HOSTNAME"' EXIT
 
 ip link set "$INTERFACE" up
+
+# Re-associate with the AP after MAC change — without this the AP will not
+# recognise the new MAC and the DHCP lease / NAC check will fail entirely.
+TARGET_SSID="${GUEST_SSID:-}"
+TARGET_AP="${GUEST_BSSID:-}"
+if [[ -n "$TARGET_SSID" ]]; then
+    echo "[*] Re-associating with AP '$TARGET_SSID' using spoofed MAC..."
+    timeout 15 iwconfig "$INTERFACE" essid "$TARGET_SSID" ${TARGET_AP:+ap "$TARGET_AP"} 2>/dev/null || true
+    sleep 3
+fi
 
 # Create custom dhclient.conf to mimic high-fidelity fingerprints
 DHCP_CONF="${EVIDENCE_DIR}/g4_dhclient.conf"
@@ -116,4 +125,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "NAC Bypass mission complete."
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
 exit 0

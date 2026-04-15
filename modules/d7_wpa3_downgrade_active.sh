@@ -24,13 +24,6 @@
 
 set -euo pipefail
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
-
 # Inputs from Environment
 
 CATALYST="${CATALYST:-1}"
@@ -43,7 +36,6 @@ SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="D7"
-OUTPUT_BASE="${EVIDENCE_DIR}/${TC_ID}_downgrade"
 
 if [[ -z "$INTERFACE" || -z "$SSID" ]]; then
     echo "[!] MONITOR_INTERFACE or GUEST_SSID not set."
@@ -66,7 +58,7 @@ HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
 cat <<EOF > "$HOSTAPD_CONF"
 interface=$INTERFACE
 driver=nl80211
-ssid="$SSID"
+ssid=$SSID
 hw_mode=g
 channel=$CHANNEL
 auth_algs=1

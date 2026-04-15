@@ -38,11 +38,13 @@ fi
 
 echo "[*] Starting WPA material capture for ${BSSID} (Channel: ${CHANNEL:-auto})..."
 
-# 1. Start Telemetry in Background
+# 1. Start Telemetry in Background (bounded)
+MAX_TEL=$(( CAPTURE_TIME + 30 ))
 (
     ELAPSED=0
-    while true; do
-        PCT=$(( 10 + (ELAPSED % 85) ))
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $MAX_TEL ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / MAX_TEL) ))
+        [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing handshake & PMKID capture..."
         sleep 5; ELAPSED=$((ELAPSED + 5))
     done
@@ -50,7 +52,6 @@ echo "[*] Starting WPA material capture for ${BSSID} (Channel: ${CHANNEL:-auto})
 TEL_PID=$!
 
 # 2. Run Primary Tools
-RET=0
 PMKID_SUCCESS=0
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
@@ -123,7 +124,6 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     done
     kill "$AIRODUMP_PID" 2>/dev/null || true
     [[ $PMKID_SUCCESS -eq 1 ]] && SUCCESS=1
-    RET=0
 else
     # Background Execution
     (
@@ -156,7 +156,7 @@ else
         kill "$AIRODUMP_PID" 2>/dev/null || true
     ) > /dev/null 2>&1 &
     TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
+    wait $TOOL_PID || true
 fi
 
 # 3. Cleanup and Final Signal
@@ -206,4 +206,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit $RET
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
+exit 0

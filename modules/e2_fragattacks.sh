@@ -25,14 +25,6 @@
 
 set -euo pipefail
 
-# Intelligence Insight (Colors)
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
-
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
@@ -73,17 +65,16 @@ if [[ -n "$FRAG_SCRIPT" ]]; then
     ) &
     TELEMETRY_PID=$!
 
+    # Must write to FRAG_LOG in both modes — detection grep runs on this file
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout --foreground "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" || true
+        timeout --foreground "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" 2>&1 | tee "$FRAG_LOG" || true
     else
-        timeout --foreground "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" > "$FRAG_LOG" 2>&1 &
-        TOOL_PID=$!
-        wait $TOOL_PID || true
+        timeout "$SCAN_TIME" python3 "$FRAG_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "$SSID" > "$FRAG_LOG" 2>&1 || true
     fi
-    
+
     kill "$TELEMETRY_PID" 2>/dev/null || true
 
-    if grep -qi "vulnerable" "$FRAG_LOG"; then
+    if grep -qi "vulnerable" "$FRAG_LOG" 2>/dev/null; then
         cp "$FRAG_LOG" "$RES_FILE"
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \

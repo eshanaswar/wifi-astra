@@ -25,11 +25,6 @@
 
 set -euo pipefail
 
-C_PROMPT="${ASTRA_COLOR_PROMPT:-}"
-C_VAR="${ASTRA_COLOR_VAR:-}"
-C_BOLD="${ASTRA_COLOR_BOLD:-}"
-C_ACTION="${ASTRA_COLOR_ACTION:-}"
-C_RESET="${ASTRA_COLOR_RESET:-}"
 
 
 # Inputs from Environment
@@ -88,16 +83,15 @@ if command -v mitmproxy &>/dev/null; then
     TEL_PID=$!
 
     # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
+    # In window mode: mitmproxy renders its interactive TUI (correct for user review).
+    # In background mode: use mitmdump (non-interactive CLI equivalent) — mitmproxy
+    # requires a TTY and will fail silently without one.
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
         timeout --foreground "$SCAN_TIME" mitmproxy --mode transparent --save-stream "$FLOW_FILE" || true
     else
-        mitmproxy --mode transparent --save-stream "$FLOW_FILE" > "$MITM_LOG" 2>&1 &
+        timeout "$SCAN_TIME" mitmdump --mode transparent -w "$FLOW_FILE" > "$MITM_LOG" 2>&1 &
         TOOL_PID=$!
-        # Use timeout if possible, or wait with manual kill
-        ( sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true ) &
-        WAIT_PID=$!
-        wait $TOOL_PID || true
-        kill "$WAIT_PID" 2>/dev/null || true
+        wait "$TOOL_PID" || true
     fi
 
     kill "$TEL_PID" 2>/dev/null || true

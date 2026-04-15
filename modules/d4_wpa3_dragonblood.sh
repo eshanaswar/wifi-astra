@@ -69,11 +69,12 @@ if [[ "$SAEPK_DETECTED" -eq 1 ]]; then
     exit 0
 fi
 
-# 1. Start Telemetry in Background
+# 1. Start Telemetry in Background (bounded)
 (
     ELAPSED=0
-    while true; do
-        PCT=$(( 10 + (ELAPSED % 85) ))
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing Dragonblood audit..."
         sleep 5; ELAPSED=$((ELAPSED + 5))
     done
@@ -89,19 +90,18 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     if command -v dragondrain &>/dev/null; then
         timeout --foreground "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} 2>&1 | tee -a "$DRAGON_OUT" || true
     fi
-    RET=$?
 else
-    # Background Execution
+    # Background Execution: plain timeout (no --foreground for background processes)
     (
         if command -v dragonslayer &>/dev/null; then
-            timeout --foreground "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+            timeout "$SCAN_TIME" dragonslayer -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
         fi
         if command -v dragondrain &>/dev/null; then
-            timeout --foreground "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
+            timeout "$SCAN_TIME" dragondrain -i "$INTERFACE" -s "$SSID" ${BSSID:+-b "$BSSID"} >> "$DRAGON_OUT" 2>&1 || true
         fi
     ) > /dev/null 2>&1 &
     TOOL_PID=$!
-    wait $TOOL_PID; RET=$?
+    wait $TOOL_PID || true
 fi
 
 # 3. Cleanup and Final Signal
@@ -136,4 +136,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit $RET
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
+exit 0

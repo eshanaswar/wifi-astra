@@ -40,11 +40,12 @@ fi
 
 echo "[*] Starting WPA-Enterprise / EAP tests against ${SSID}..."
 
-# 1. Start Telemetry in Background
+# 1. Start Telemetry in Background (bounded)
 (
     ELAPSED=0
-    while true; do
-        PCT=$(( 10 + (ELAPSED % 85) ))
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing EAP attack..."
         sleep 5; ELAPSED=$((ELAPSED + 5))
     done
@@ -59,10 +60,10 @@ if command -v eaphammer &>/dev/null; then
         timeout --foreground "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
         RET=$?
     else
-        # Background Execution
-        timeout --foreground "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
+        # Background Execution: plain timeout (no --foreground for background processes)
+        timeout "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
         TOOL_PID=$!
-        wait $TOOL_PID; RET=$?
+        wait $TOOL_PID || true
     fi
 else
     echo "[!] eaphammer tool not found."
@@ -108,4 +109,11 @@ else
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
-exit $RET
+
+# Hold window if in tactical mode so user can see final output/errors
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    sleep 5
+fi
+
+exit 0
