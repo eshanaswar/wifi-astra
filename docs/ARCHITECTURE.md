@@ -1,85 +1,239 @@
-# WiFi-Astra System Architecture
+# WiFi-Astra Architecture
 
-WiFi-Astra follows a modern, decoupled architecture that separates high-level orchestration and state management from low-level hardware interaction and attack tools.
+This document describes the internal design of the WiFi-Astra framework — how the Go core, Bash modules, and evidence system work together.
 
 ---
 
 ## 1. High-Level Design
 
-The system is built on a **Controller-Registry-Wrapper** pattern:
+WiFi-Astra uses a **Controller-Module** architecture:
 
-1.  **The Orchestrator (Go Core):** Managed state, TUI, and session persistence using SQLite.
-2.  **The Registry (Ingestion):** A decoupled dispatcher that identifies and parses tool outputs (Nmap XML, Airodump CSV, Bettercap JSON) into structured database records.
-3.  **The Golden Wrappers (Bash Modules):** Isolated shell scripts that execute specialized auditing tools. They communicate back to the core via a standardized environment variable and callback contract.
+```
+┌─────────────────────────────────────────────┐
+│              Go Core (wifi-astra)           │
+│                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  │
+│  │  Session │  │ Hardware │  │  Scope   │  │
+│  │  Manager │  │  Layer   │  │ Enforcer │  │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
+│       └──────────────┴─────────────┘        │
+│                     │                       │
+│          ┌──────────▼──────────┐            │
+│          │ AssessmentController│            │
+│          └──────────┬──────────┘            │
+│                     │  injects env vars     │
+└─────────────────────┼─────────────────────-─┘
+                      │
+          ┌───────────▼──────────┐
+          │  Bash Module (*.sh)  │
+          │  aircrack-ng         │
+          │  aireplay-ng         │
+          │  tshark / tcpdump    │
+          │  ...                 │
+          └───────────┬──────────┘
+                      │  $ASTRA_BIN record-finding
+                      ▼
+          ┌───────────────────────┐
+          │   Evidence Store      │
+          │  sessions/<id>/       │
+          │  evidence/            │
+          └───────────────────────┘
+```
+
+The Go core never touches the radio. All 802.11 operations happen inside isolated Bash scripts. The core handles state, scope, evidence, and the TUI.
 
 ---
 
-## 2. Directory Structure
+## 2. Package Structure
 
-```text
-/
-├── bin/                # Compiled Go binary (wifi-astra)
-├── cmd/                # CLI entry points and command definitions
+```
+wifi-astra/
+├── bin/                    # Compiled binary
+├── cmd/
+│   └── astra/              # main.go entry point
+├── cmd/
+│   ├── root.go             # Execute(), signal handling, panic recovery
+│   ├── start.go            # sessionWizard, ensureAdapterSetup, launchMainMenu
+│   └── lookup_oui.go       # OUI vendor lookup subcommand
 ├── internal/
-│   ├── config/         # Global YAML configuration management (Viper)
-│   ├── controller/     # Mission orchestration and UI flow logic
-│   ├── db/             # SQLite schema and repository layer
-│   ├── headless/       # Autonomous audit engine
-│   ├── ingest/         # Universal result parsing and data ingestion
-│   ├── module/         # Dynamic module discovery and metadata parsing
-│   ├── report/         # HTML assessment report generator
-│   ├── session/        # Session lifecycle and directory management
-│   └── ui/             # Singleton TUI and Readline management
-├── modules/            # 40+ Assessment scripts (Golden Wrappers)
+│   ├── config/             # Viper-based configuration management
+│   ├── controller/         # AssessmentController: module execution, post-run dispatch,
+│   │                       #   inline cracking, scope enforcement, cleanup checklist
+│   ├── db/                 # SQLite schema and query layer
+│   ├── evidence/           # Manifest writer, replay log, evidence index
+│   ├── headless/           # RunAutonomousAudit() — JSON plan execution
+│   ├── ingest/             # airodump-ng CSV parsing, OUI DB updates, result ingestion
+│   ├── module/             # DiscoverModules() — parses MODULE_META headers at runtime
+│   ├── report/             # GenerateReport() — structured report from session findings
+│   ├── session/            # Session struct, SQLite (module_state, config tables)
+│   └── ui/                 # PromptString, PromptConfirm, Menu, singleton Readline manager
+├── modules/                # 46 assessment scripts (Golden Wrappers)
 ├── pkg/
-│   ├── constants/      # Project-wide constants (DB keys, statuses)
-│   ├── executor/       # Process group management and privilege escalation
-│   ├── hw/             # Hardware discovery and self-healing recovery
-│   └── prereq/         # Environment validation and privilege management
-└── sessions/           # Data isolation directory (0700 permissions)
+│   ├── constants/          # Status codes, config keys, color codes
+│   ├── executor/           # Process lifecycle, SanitizeEnv, KillAll
+│   ├── hw/                 # Interface enumeration, monitor mode, Recover(), RoleRegistry
+│   └── prereq/             # VerifyEnvironment, DropPrivileges, PreflightModules
+├── tests/                  # Integration tests
+└── sessions/               # Runtime data (gitignored)
 ```
 
 ---
 
-## 3. Communication Contract
+## 3. Session Lifecycle
 
-Modules are invoked with a specific environment:
-*   `ASTRA_BIN`: Path to the core binary for findings callbacks.
-*   `SESSION_DIR`: Root path of the current session.
-*   `ASTRA_TARGET_PMF`: Target PMF status (`Required`, `Capable`, `None`).
-*   `ASTRA_TARGET_AUTH`: Detected authentication type (e.g., `WPA3-SAE`).
-*   `ASTRA_TARGET_RSSI`: Real-time signal strength of the target.
-*   `OUTPUT_CSV / OUTPUT_PCAP`: Target paths for standardized tool outputs.
+```
+Start
+  │
+  ▼
+Session Manager ──── Create / Resume / Delete
+  │
+  ▼
+Adapter Wizard ───── Assign MONITOR role (monitor mode, injection)
+  │                  Assign MANAGEMENT role (managed, operator connectivity)
+  │                  Roles locked via InterfaceRoleRegistry for session duration
+  ▼
+A1 Discovery ──────── Mandatory; populates network table
+  │
+  ▼
+Scope Selection ───── Operator selects authorized BSSIDs
+  │                   No manual entry — scope built from discovered data only
+  ▼
+Module Execution ───── Controller validates every target against scope
+  │                    SCOPE_VIOLATION events logged to session_replay.log
+  │                    Post-run dispatcher: inline cracking for D1/D2/D3/D5
+  ▼
+Report Generation ──── Structured report from all session findings
+  │
+  ▼
+Cleanup Checklist ──── Verify interfaces restored, processes killed,
+                       evidence indexed and hashed
+```
 
-Modules report findings using the hidden callback:
+---
+
+## 4. Dual-Adapter Design
+
+WiFi-Astra enforces strict separation between two wireless roles:
+
+| Role | Interface | Purpose |
+|------|-----------|---------|
+| **MONITOR** | e.g., `wlan1mon` | Monitor mode; packet injection, sniffing, attack execution |
+| **MANAGEMENT** | e.g., `wlan0` | Managed mode; operator network connectivity |
+
+The `InterfaceRoleRegistry` in `pkg/hw` tracks this assignment. The management interface is explicitly excluded from the pool available to attack modules — no module can request it, preventing accidental operator disconnection mid-engagement.
+
+---
+
+## 5. Module Communication Contract
+
+The controller injects these environment variables before each module launch. All values are sanitized by `pkg/executor.SanitizeEnv` (strips newlines, null bytes, and shell metacharacters) before being set.
+
+| Variable | Description |
+|----------|-------------|
+| `MONITOR_INTERFACE` | Monitor mode adapter (e.g., `wlan1mon`) |
+| `WIFI_INTERFACE` | Managed mode adapter for modules that associate (F, G categories) |
+| `GUEST_BSSID` | Target AP BSSID (`AA:BB:CC:DD:EE:FF`) |
+| `GUEST_SSID` | Target AP SSID |
+| `GUEST_CHANNEL` | Target AP channel |
+| `SESSION_DIR` | Session root directory (absolute path) |
+| `SESSION_EVIDENCE_DIR` | Evidence subdirectory for this module |
+| `SCAN_TIME` | Scan duration in seconds |
+| `CAPTURE_TIME` | Capture duration in seconds |
+| `ASTRA_BIN` | Path to the wifi-astra binary (for callbacks) |
+| `ASTRA_IN_WINDOW` | `true` when running inside a tmux/terminal window |
+| `ASTRA_INDEFINITE` | `true` for indefinite-mode scans |
+
+Modules report findings back to the core via the binary callback:
+
 ```bash
-$ASTRA_BIN record-finding --tc "D1" --type vulnerability --name "Name" --desc "Obs" --severity "HIGH" --rationale "Impact" --evidence "$FILE"
+"$ASTRA_BIN" record-finding \
+    --session-dir "$SESSION_DIR" \
+    --tc "D1" \
+    --type vulnerability \
+    --name "WPA2 Handshake Captured" \
+    --severity HIGH \
+    --desc "4-way handshake captured for SSID: Corp-WiFi" \
+    --target "$GUEST_BSSID" \
+    --evidence "$PCAP_FILE" \
+    --rationale "Handshake enables offline PSK cracking with hashcat."
+```
+
+Progress is reported via:
+
+```bash
+"$ASTRA_BIN" record-progress \
+    --session-dir "$SESSION_DIR" \
+    --tc "D1" \
+    --percent 65 \
+    --status "Sending deauth, waiting for handshake..."
 ```
 
 ---
 
-## 4. Security & Privilege Model (Guardian)
+## 6. Evidence System
 
-WiFi-Astra implements a "Guardian" privilege lifecycle:
-1.  **Boot (Root):** Tool starts as root to perform hardware discovery and recovery.
-2.  **Drop (User):** Immediately switches to the regular invoking user for the TUI, DB, and Parsing logic.
-3.  **Contextual Escalate:** The `executor` temporarily restores root access strictly for the duration of a tool's execution (e.g., `airodump-ng`), then drops it immediately after.
+All artifacts are written to `sessions/<session-id>/evidence/` — treated as an append-only forensic store.
+
+### Per-Module Artifacts
+
+| File | Contents |
+|------|----------|
+| `<TC_ID>_run_<timestamp>.json` | Structured run log: module ID, target, tools invoked, files written, exit code, duration |
+| `<TC_ID>_result.json` | Security finding record (used for report generation) |
+| `<TC_ID>_failure.log` | Full stderr + last 50 lines stdout — written only on non-zero exit |
+| `<TC_ID>_run_context.json` | Pre-run snapshot: adapter assignments, target params, engagement metadata |
+
+### Session-Level Artifacts
+
+| File | Contents |
+|------|----------|
+| `session_replay.log` | Chronological event stream: SESSION_START, SCOPE_SET, MODULE_START, MODULE_END, SCOPE_VIOLATION, SESSION_END |
+| `EVIDENCE_INDEX.txt` | Human-readable listing of all artifacts with hash, module, and size |
+| `manifest.sha256` | SHA256 hash of every file in `evidence/`, append-only for chain of custody |
 
 ---
 
-## 5. Performance & Reliability Patterns
+## 7. Module Discovery
 
-### Smart Exit (Real-time Polling)
-Professional attack modules (e.g., `D1`, `D2`, `D3`) do not rely on static `sleep` timers. Instead, they implement a polling loop that interrogates evidence files (e.g., via `aircrack-ng`) every few seconds. The moment a valid cryptographic artifact (handshake, WEP key, WPS PIN) is detected, the module terminates all background processes and exits with success, saving significant time during large-scale engagements.
+At session start, `internal/module.DiscoverModules()` scans `modules/*.sh` and parses the `MODULE_META` header block from each file to build the module registry without recompiling the binary.
 
-### Smart Tactical Scout Engine
-Before any disruptive module runs, the Go core executes `hw.ScoutTarget()`. This performs a surgical 5-second capture to extract:
-*   **PMF Status:** Identifies if 802.11w is Required or Capable.
-*   **Encryption:** Detects WPA3-SAE or OWE transition modes.
-*   **SNR:** Extracts RSSI to warn the operator if the signal is too weak for reliable injection.
+### MODULE_META Format
 
-### Process Group Reaper
-To prevent orphaned hardware locks (e.g., `hostapd` running after `astra` exits), the `executor` places every module in a unique **Process Group (PGID)**. Upon module termination or framework exit, the core sends a `SIGKILL` to the entire group, ensuring a 100% clean hardware state.
+```bash
+# MODULE_META
+# NAME="Hidden SSID Discovery"
+# CATEGORY="A"
+# DEPS="A1"
+# CRITICAL="no"
+# TOOLS="aireplay-ng,airodump-ng"
+# DESC="Identify and reveal SSIDs of hidden networks"
+# REQS="monitor_iface,target_bssid"
+# PCAP="yes"
+# TIMED="yes"
+# DECODE="wifi_mgmt"
+```
 
-### Hardware Interface Locking
-To prevent concurrent modules from clashing over the same wireless adapter (which causes channel-hopping corruption and driver crashes), the Go core implements a global `sync.Mutex` registry. Before an attack starts, the `AssessmentController` must acquire an exclusive lock on the physical interface name. If the interface is busy, the request is queued or rejected.
+`pkg/prereq.PreflightModules()` checks each module's `TOOLS` list against installed binaries at session launch. Modules with missing tools are flagged `[tools missing]` in the menu but do not block other modules from running.
+
+---
+
+## 8. Privilege Model
+
+WiFi-Astra starts as root (required for hardware operations) and drops to the invoking user immediately after adapter setup via `prereq.DropPrivileges()`. Hardware operations inside modules temporarily re-acquire root through the executor's process launch mechanism, then drop again on exit.
+
+Signal handling: `SIGINT`/`SIGTERM` triggers `ExecMgr.Cleanup()` then `hw.Recover(false)` before exit. A global `defer` in `Execute()` calls `hw.Recover(false)` on panic to ensure interfaces are always restored.
+
+---
+
+## 9. Inline Cracking
+
+After successful captures, the controller dispatches cracking automatically:
+
+| Module | Capture | Cracking Path |
+|--------|---------|---------------|
+| D1 | WPA2 PMKID / 4-way handshake | `hashcat -m 22000` (PMKID) or `-m 2500` (EAPOL) |
+| D2 | WEP IVs | `aircrack-ng` inline key recovery |
+| D3 | WPS | `oneshot`/`bully --pixie` (Pixie Dust primary), PIN brute-force fallback |
+| D5 | MSCHAPv2 pairs | `asleap` auto-run; `hashcat -m 5500/-m 5600` offered as fallback |
+
+Recovered credentials are recorded as `CRITICAL` findings in the evidence store.
