@@ -57,11 +57,13 @@ echo -e "${C_PROMPT}[*]${C_RESET} Starting Wi-Fi 6 beacon scan on ${C_VAR}${INTE
 TELEMETRY_PID=$!
 
 # 1. Passive beacon capture with tshark - HE (802.11ax) fields
+# Use wlan.he.capabilities (present in ALL 802.11ax beacons as the HE Capabilities IE).
+# wlan.he.operation.bss_color is optional and may be absent even on Wi-Fi 6 APs.
 timeout "${SCAN_TIME}" tshark -i "${INTERFACE}" -f "type mgt subtype beacon" \
     -T fields \
     -e wlan.ssid \
     -e wlan.bssid \
-    -e wlan.he.operation.bss_color \
+    -e wlan.he.capabilities \
     -e wlan.he.mac_cap.ofdma_ra \
     -e wlan.he.mac_cap.twt_req \
     -e wlan.he.mac_cap.dl_mu_mimo \
@@ -80,10 +82,22 @@ if [[ -f "${EVIDENCE_DIR}/A5_raw.csv" ]]; then
     [[ "${TOTAL_LINES}" -lt 0 ]] && TOTAL_LINES=0
 fi
 
-# 3. Count Wi-Fi 6 beacons: lines where he.operation.bss_color (col 3) is non-empty
+# 3. Count Wi-Fi 6 beacons: lines where wlan.he.capabilities (col 3) is non-empty
+# The HE Capabilities IE is mandatory in 802.11ax beacons — its presence means Wi-Fi 6.
 WIFI6_COUNT=0
 if [[ -f "${EVIDENCE_DIR}/A5_raw.csv" ]]; then
     WIFI6_COUNT=$(awk -F',' 'NR>1 && $3!="\"\"" && $3!="" {count++} END {print count+0}' "${EVIDENCE_DIR}/A5_raw.csv")
+fi
+
+# 3a. Per-BSSID Wi-Fi 6 summary (de-duplicate by BSSID, show SSID + capability presence)
+WIFI6_BSSIDS=""
+if [[ -f "${EVIDENCE_DIR}/A5_raw.csv" && "${WIFI6_COUNT}" -gt 0 ]]; then
+    WIFI6_BSSIDS=$(awk -F',' 'NR>1 && $3!="\"\"" && $3!="" {
+        gsub(/"/, "", $1); gsub(/"/, "", $2);
+        printf "  BSSID: %s  SSID: %s\n", $2, $1
+    }' "${EVIDENCE_DIR}/A5_raw.csv" | sort -u)
+    echo "[+] Wi-Fi 6 APs detected:"
+    echo "$WIFI6_BSSIDS"
 fi
 
 # 4. Check 6GHz adapter support
@@ -144,7 +158,7 @@ if [[ "${WIFI6_PRESENT}" == "true" ]]; then
         --type vulnerability \
         --name "Wi-Fi 6 (802.11ax) Environment Detected" \
         --severity INFO \
-        --desc "Detected ${WIFI6_COUNT} Wi-Fi 6 beacon(s) out of ${TOTAL_LINES} total. BSS Coloring, OFDMA, TWT, and MU-MIMO capabilities present. 6GHz adapter support: ${SUPPORTS_6GHZ}." \
+        --desc "Detected ${WIFI6_COUNT} Wi-Fi 6 beacon(s) out of ${TOTAL_LINES} total. HE Capabilities IE confirmed (OFDMA, TWT, MU-MIMO). 6GHz adapter support: ${SUPPORTS_6GHZ}. APs: ${WIFI6_BSSIDS}" \
         --target "Global" \
         --evidence "${EVIDENCE_DIR}/A5_raw.csv"
 else

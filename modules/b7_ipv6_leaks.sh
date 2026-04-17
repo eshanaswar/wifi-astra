@@ -56,9 +56,8 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" || true
 else
     # Run with redirection
-    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" > "$LOG_FILE" 2>&1 &
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "icmp6 and (ip6[40] == 134)" > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
-    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
 fi
 
@@ -103,6 +102,30 @@ if command -v tshark &>/dev/null && [[ -f "$PCAP_FILE" && -s "$PCAP_FILE" ]]; th
             --severity "MEDIUM" \
             --evidence "$PCAP_FILE" \
             --rationale "Active IPv6 routing often lacks same security rigor as IPv4."
+    fi
+fi
+
+# Check for DHCPv6 traffic (UDP 546/547) — indicates server-managed IPv6 addressing
+DHCPV6_PCAP="${EVIDENCE_PREFIX}_dhcpv6.pcap"
+DHCPV6_LOG="${EVIDENCE_DIR}/${TC_ID}_dhcpv6.log"
+echo "[*] Checking for DHCPv6 traffic on UDP 546/547..."
+timeout 15 tcpdump -i "$INTERFACE" -w "$DHCPV6_PCAP" "udp port 546 or udp port 547" > "$DHCPV6_LOG" 2>&1 &
+DHCPV6_PID=$!
+wait "$DHCPV6_PID" 2>/dev/null || true
+
+if command -v tshark &>/dev/null && [[ -f "$DHCPV6_PCAP" && -s "$DHCPV6_PCAP" ]]; then
+    DHCPV6_COUNT=$(tshark -r "$DHCPV6_PCAP" -T fields -e frame.number 2>/dev/null | wc -l)
+    if [[ $DHCPV6_COUNT -gt 0 ]]; then
+        FOUND=1
+        "$ASTRA_BIN" record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type "vulnerability" \
+            --name "DHCPv6 Traffic Detected" \
+            --desc "Detected ${DHCPV6_COUNT} DHCPv6 packet(s) on UDP 546/547. A DHCPv6 server is providing IPv6 addresses on this segment." \
+            --severity "MEDIUM" \
+            --evidence "$DHCPV6_PCAP" \
+            --rationale "DHCPv6 traffic confirms server-managed IPv6 addressing on the segment. A rogue DHCPv6 server can supply attacker-controlled DNS (option 23) bypassing IPv4-only controls."
     fi
 fi
 

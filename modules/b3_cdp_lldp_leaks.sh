@@ -35,6 +35,11 @@ EVIDENCE_PREFIX="${EVIDENCE_DIR}/${TC_ID}"
 PCAP_FILE="${EVIDENCE_PREFIX}_leaks.pcap"
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 
+# Note: CDP and LLDP are Layer 2 protocols forwarded between switches and APs over wired
+# uplinks. They are almost never forwarded over-the-air on standard WiFi deployments
+# (controller-based or tunneled architectures). Detection is most useful when the test
+# machine is connected via Ethernet to a trunk port, or in AP-mode bridge deployments.
+# Results on a purely wireless client interface will usually be negative.
 echo "[*] [$TC_ID] Identifying CDP/LLDP leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 
 # Identify & Target
@@ -56,10 +61,9 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
         "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" || true
 else
     # Run with redirection
-    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
         "ether host 01:00:0c:cc:cc:cc or ether host 01:80:c2:00:00:0e" > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
-    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
 fi
 

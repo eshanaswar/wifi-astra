@@ -93,17 +93,20 @@ if [[ -f "${EVIDENCE_PREFIX}_nmap_mgmt.gnmap" ]]; then
                 service=$(echo "$p_entry" | cut -d'/' -f5 | xargs)
                 version=$(echo "$p_entry" | cut -d'/' -f7 | xargs)
 
-                # Per-port severity: Telnet/HTTP cleartext admin = HIGH; SSH/HTTPS = MEDIUM; SNMP = HIGH
+                # Per-port severity:
+                # Telnet/HTTP/SNMP = HIGH (cleartext admin protocols on wireless segment)
+                # SSH/HTTPS/alternate HTTPS = MEDIUM (encrypted but still management exposure)
                 case "$port" in
-                    23|161)  PORT_SEV="HIGH" ;;
-                    80|8080) PORT_SEV="MEDIUM" ;;
-                    *)       PORT_SEV="MEDIUM" ;;
+                    23|161)       PORT_SEV="HIGH" ;;
+                    80|8080)      PORT_SEV="HIGH" ;;
+                    22|443|8443)  PORT_SEV="MEDIUM" ;;
+                    *)            PORT_SEV="MEDIUM" ;;
                 esac
 
                 echo -e "[!] ${C_BOLD}EXPOSED:${C_RESET} Management port ${C_VAR}${port}${C_RESET} (${service} ${version}) [${PORT_SEV}]"
                 FOUND=1
 
-                $ASTRA_BIN record-finding \
+                "$ASTRA_BIN" record-finding \
                     --session-dir "$SESSION_DIR" \
                     --tc "$TC_ID" \
                     --type vulnerability \
@@ -120,7 +123,7 @@ fi
 
 if [[ $FOUND -eq 0 ]]; then
     echo "[+] No management interfaces detected on the gateway."
-    $ASTRA_BIN record-finding \
+    "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \

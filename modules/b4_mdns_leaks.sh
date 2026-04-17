@@ -78,9 +78,8 @@ TELEMETRY_PID=$!
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     timeout --foreground "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" || true
 else
-    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 &
+    timeout "$((SCAN_TIME/2))" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 5353" > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
-    (sleep "$((SCAN_TIME/2))"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
 fi
 
@@ -88,7 +87,10 @@ kill "$TELEMETRY_PID" 2>/dev/null || true
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing findings..."
 FOUND=0
 if [[ -f "$AVAHI_OUT" && -s "$AVAHI_OUT" ]]; then
-    SERVICES=$(grep "^=" "$AVAHI_OUT" | awk '{print $4 " (" $5 ")"}' | sort -u || true)
+    # avahi-browse resolved lines start with "=". Extract the full service name — mDNS service
+    # names commonly contain spaces (e.g., "My MacBook._ssh._tcp"), so we cannot use fixed
+    # field numbers. Extract fields 4 onward as the service identifier.
+    SERVICES=$(grep "^=" "$AVAHI_OUT" | awk '{for(i=4;i<=NF;i++) printf "%s%s",$i,(i<NF?" ":"\n")}' | sort -u || true)
     
     if [[ -n "$SERVICES" ]]; then
         FOUND=1

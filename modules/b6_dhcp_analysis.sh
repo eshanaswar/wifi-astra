@@ -51,17 +51,13 @@ echo "[*] [$TC_ID] Identifying DHCP architecture on ${INTERFACE}..."
 ) &
 TELEMETRY_PID=$!
 
-# Start passive capture in background (always background)
-timeout 30 tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" > "$LOG_FILE" 2>&1 &
+# Start passive capture in background — use SCAN_TIME not a hardcoded value
+timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" > "$LOG_FILE" 2>&1 &
 TCPDUMP_PID=$!
 
-# Force DHCP renewal to trigger traffic
-if command -v dhclient &>/dev/null; then
-    dhclient -v -r "$INTERFACE" >/dev/null 2>&1 || true
-    dhclient -v "$INTERFACE" >/dev/null 2>&1 || true
-fi
-
-# Active discovery
+# Active discovery using nmap broadcast-dhcp-discover.
+# We do NOT run dhclient -r/-v — releasing and re-acquiring a DHCP lease is disruptive
+# and could break the operator's network connectivity mid-engagement.
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     timeout --foreground "$SCAN_TIME" nmap --script broadcast-dhcp-discover -e "$INTERFACE" | tee "$NMAP_OUT" || true
 else
@@ -70,22 +66,60 @@ fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 90 --status "Analyzing DHCP architecture..."
-DHCP_SERVERS=$(grep "Server Identifier:" "$NMAP_OUT" 2>/dev/null | awk '{print $NF}' | sort -u || true)
 
+# Collect all responding DHCP servers
+DHCP_SERVERS=$(grep "Server Identifier:" "$NMAP_OUT" 2>/dev/null | awk '{print $NF}' | sort -u || true)
+SERVER_COUNT=$(echo "$DHCP_SERVERS" | grep -c '[0-9]' || true)
+
+# Extract pentest-relevant DHCP options
+DOMAIN=$(grep -i "Domain Name:" "$NMAP_OUT" 2>/dev/null | awk '{print $NF}' | head -1 || true)
+DNS_SERVERS=$(grep -i "Domain Name Server:" "$NMAP_OUT" 2>/dev/null | awk '{$1=$2=$3=""; print $0}' | xargs || true)
+WINS=$(grep -i "NetBIOS Name Server:" "$NMAP_OUT" 2>/dev/null | awk '{print $NF}' | head -1 || true)
+
+if [[ -n "$DOMAIN" ]]; then
+    echo "[+] DHCP Domain Name (option 15): $DOMAIN"
+fi
+if [[ -n "$DNS_SERVERS" ]]; then
+    echo "[+] DHCP DNS Servers (option 6): $DNS_SERVERS"
+fi
+if [[ -n "$WINS" ]]; then
+    echo "[+] DHCP WINS/NBT Server (option 44): $WINS — indicates Windows domain environment"
+fi
+
+FOUND=0
 if [[ -n "$DHCP_SERVERS" ]]; then
-    while read -r server; do
-        [[ -z "$server" ]] && continue
+    FOUND=1
+    # Flag rogue DHCP only when MORE than one server responds
+    if [[ "$SERVER_COUNT" -gt 1 ]]; then
+        echo "[!] ROGUE DHCP: Multiple DHCP servers responding!"
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
             --tc "$TC_ID" \
             --type "vulnerability" \
-            --name "DHCP Server Discovered" \
-            --desc "Identified active DHCP server at $server." \
-            --severity "INFO" \
+            --name "Rogue DHCP Server Detected" \
+            --desc "Multiple DHCP servers responded (${SERVER_COUNT}): ${DHCP_SERVERS//$'\n'/, }. A rogue DHCP server can redirect traffic by providing attacker-controlled gateway and DNS." \
+            --severity "MEDIUM" \
             --evidence "$NMAP_OUT" \
-            --rationale "DHCP analysis is critical for mapping network topology."
-    done <<< "$DHCP_SERVERS"
-else
+            --rationale "A rogue DHCP server can supply attacker-controlled default gateway and DNS, enabling MitM without ARP spoofing."
+    fi
+
+    # Record DHCP intelligence (always — valuable recon regardless of rogue server)
+    DESC="Identified DHCP server(s): ${DHCP_SERVERS//$'\n'/, }."
+    [[ -n "$DOMAIN" ]] && DESC="${DESC} Internal domain: ${DOMAIN}."
+    [[ -n "$DNS_SERVERS" ]] && DESC="${DESC} DNS: ${DNS_SERVERS}."
+    [[ -n "$WINS" ]] && DESC="${DESC} WINS: ${WINS} (Windows AD environment likely)."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type "vulnerability" \
+        --name "DHCP Intelligence Gathered" \
+        --desc "$DESC" \
+        --severity "INFO" \
+        --evidence "$NMAP_OUT" \
+        --rationale "DHCP options reveal internal domain names, DNS servers, and Windows infrastructure — critical context for lateral movement planning."
+fi
+
+if [[ $FOUND -eq 0 ]]; then
     echo "[+] No DHCP servers detected."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \

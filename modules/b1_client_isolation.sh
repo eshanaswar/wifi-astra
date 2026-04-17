@@ -58,7 +58,7 @@ echo "[*] Running ARP scan (nmap -sn -PR)..."
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
         PCT=$(( ELAPSED * 100 / SCAN_TIME ))
         [[ $PCT -gt 90 ]] && PCT=90
-        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Scanning subnet ${SUBNET} for peers..."
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Scanning subnet ${SUBNET} for peers (ARP)..."
         sleep 5
         ELAPSED=$((ELAPSED + 5))
     done
@@ -90,19 +90,52 @@ fi
 echo "[+] Discovered ${CLIENT_COUNT} other clients on the network."
 
 if [[ $CLIENT_COUNT -gt 0 ]]; then
-    echo "[!] CLIENT ISOLATION MAY BE DISABLED."
-    $ASTRA_BIN record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type vulnerability \
-        --name "Client Isolation Disabled" \
-        --severity HIGH \
-        --desc "Discovered ${CLIENT_COUNT} other client(s) on subnet ${SUBNET} via ARP scanning. Client-to-client isolation is likely disabled." \
-        --evidence "$OUTPUT_XML" \
-        --rationale "Lack of client isolation allows an attacker to pivot and attack other devices directly on the same segment, facilitating lateral movement and internal discovery."
+    # ARP responses alone are not enough to confirm isolation failure — some APs use proxy-ARP,
+    # which makes remote clients appear visible via ARP even when L2 isolation blocks traffic.
+    # Confirm with ICMP to verify actual traffic can reach the peer.
+    echo "[!] ARP visible peers detected. Confirming with ICMP ping to rule out proxy-ARP..."
+    CONFIRMED_REACHABLE=0
+    REACHABLE_HOSTS=()
+    while read -r peer_ip; do
+        [[ -z "$peer_ip" ]] && continue
+        [[ "$peer_ip" == "$MY_IP" ]] && continue
+        [[ "$peer_ip" == "$GATEWAY_IP" ]] && continue
+        if ping -c 2 -W 1 "$peer_ip" >/dev/null 2>&1; then
+            echo "[!] ICMP REACHABLE: $peer_ip — client isolation CONFIRMED BROKEN"
+            CONFIRMED_REACHABLE=$(( CONFIRMED_REACHABLE + 1 ))
+            REACHABLE_HOSTS+=("$peer_ip")
+        else
+            echo "[+] ICMP failed to $peer_ip — may be proxy-ARP only (isolation may be enforced)"
+        fi
+    done < <(grep "addrtype=\"ipv4\"" "$OUTPUT_XML" 2>/dev/null | sed 's/.*addr="//;s/".*//')
+
+    if [[ $CONFIRMED_REACHABLE -gt 0 ]]; then
+        REACHABLE_LIST="${REACHABLE_HOSTS[*]}"
+        echo "[!] CLIENT ISOLATION DISABLED — ${CONFIRMED_REACHABLE} peer(s) directly reachable."
+        "$ASTRA_BIN" record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type vulnerability \
+            --name "Client Isolation Disabled" \
+            --severity HIGH \
+            --desc "ICMP confirmed ${CONFIRMED_REACHABLE} peer client(s) directly reachable on ${SUBNET}: ${REACHABLE_LIST}. Both ARP and ICMP succeeded, confirming L2/L3 isolation is not enforced." \
+            --evidence "$OUTPUT_XML" \
+            --rationale "Lack of client isolation allows an attacker to pivot and attack other devices directly on the same segment, facilitating lateral movement and internal discovery."
+    else
+        echo "[+] ARP saw peers but ICMP was blocked. Proxy-ARP present but isolation enforced."
+        "$ASTRA_BIN" record-finding \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --type vulnerability \
+            --name "[B1] Audit Complete" \
+            --severity INFO \
+            --desc "ARP discovered ${CLIENT_COUNT} client(s) on ${SUBNET} but ICMP ping to all was blocked — consistent with proxy-ARP with client isolation enforced." \
+            --evidence "$OUTPUT_XML" \
+            --rationale "Client-to-client isolation is a critical security control for public and guest WiFi networks to prevent peer-to-peer attacks."
+    fi
 else
     echo "[+] No other clients discovered. Isolation likely enforced."
-    $ASTRA_BIN record-finding \
+    "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \

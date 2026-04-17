@@ -51,15 +51,14 @@ echo "[*] [$TC_ID] Identifying broadcast/multicast leaks on ${INTERFACE} for ${S
 TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    # Run in foreground
+    # Capture only security-relevant broadcast protocols to avoid filling disk with ARP/DHCP/mDNS.
+    # LLMNR (5355), NetBIOS-NS (137), NetBIOS-DGM (138), SSDP (1900)
     timeout --foreground "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
-        "broadcast or multicast" || true
+        "udp port 5355 or udp port 137 or udp port 138 or udp port 1900" || true
 else
-    # Run with redirection
-    tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
-        "broadcast or multicast" > "$LOG_FILE" 2>&1 &
+    timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" \
+        "udp port 5355 or udp port 137 or udp port 138 or udp port 1900" > "$LOG_FILE" 2>&1 &
     TOOL_PID=$!
-    (sleep "$SCAN_TIME"; kill "$TOOL_PID" 2>/dev/null || true) &
     wait "$TOOL_PID" 2>/dev/null || true
 fi
 

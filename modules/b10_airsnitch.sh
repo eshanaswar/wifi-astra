@@ -58,6 +58,25 @@ if [[ -z "$GATEWAY_MAC" ]]; then
     GATEWAY_MAC=$(ip neigh show "$GATEWAY_IP" | awk '{print $5}' | head -1) || true
 fi
 
+# Validate GATEWAY_MAC looks like a MAC address before passing to Python Ether().
+# When the ARP entry is INCOMPLETE or FAILED, ip neigh prints the state word as $5,
+# not a MAC — passing that to Ether(dst=...) would crash scapy.
+if [[ ! "$GATEWAY_MAC" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
+    echo "[!] Could not resolve a valid MAC for gateway ${GATEWAY_IP} (got: '${GATEWAY_MAC}'). ARP entry may be incomplete."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[$TC_ID] Audit Incomplete" \
+        --severity INFO \
+        --desc "Gateway MAC resolution failed for ${GATEWAY_IP} — ARP entry incomplete. Cannot run Gateway Bouncing test without a valid gateway MAC." \
+        --target "Global" \
+        --evidence "${EVIDENCE_DIR}/${TC_ID}_results.txt" \
+        --rationale "AirSnitch Vector 1 (Gateway Bouncing) requires knowing the gateway MAC to craft the bypass packet."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Incomplete — gateway MAC unavailable"
+    exit 0
+fi
+
 echo "[*] Initializing AirSnitch (NDSS 2026) Audit on ${INTERFACE}..."
 
 # Identify a target client from B1 results — exclude our own interface IP only
@@ -65,11 +84,28 @@ MY_IP=$(ip -4 addr show "$INTERFACE" 2>/dev/null | awk '/inet/{print $2}' | cut 
 B1_XML="${EVIDENCE_DIR}/b1_results.xml"
 TARGET_VICTIM=""
 if [[ -f "$B1_XML" ]]; then
-    TARGET_VICTIM=$(grep "addrtype=\"ipv4\"" "$B1_XML" | grep -v "\"${MY_IP}\"" | head -1 | sed 's/.*addr="//;s/".*//') || true
+    # Exclude our own IP and the gateway — sending a bypass packet to the gateway tests
+    # routing, not isolation, and produces meaningless results.
+    TARGET_VICTIM=$(grep "addrtype=\"ipv4\"" "$B1_XML" \
+        | grep -v "\"${MY_IP}\"" \
+        | grep -v "\"${GATEWAY_IP}\"" \
+        | head -1 \
+        | sed 's/.*addr="//;s/".*//') || true
 fi
 
 if [[ -z "$TARGET_VICTIM" ]]; then
-    echo "[!] No target victims identified by B1. Cannot perform active AirSnitch audit."
+    echo "[!] No target victims identified by B1 (excluding self and gateway). Cannot perform active AirSnitch audit."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[$TC_ID] Audit Skipped — No Peer Clients" \
+        --severity INFO \
+        --desc "B1 did not discover any peer clients (excluding self and gateway) on this segment. AirSnitch bypass test requires at least one other client to be present." \
+        --target "Global" \
+        --evidence "$B1_XML" \
+        --rationale "AirSnitch isolation bypass requires a victim target IP to attempt the Gateway Bouncing vector."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Skipped — no peer clients"
     exit 0
 fi
 
@@ -80,7 +116,7 @@ AIRSNITCH_LOG="${EVIDENCE_DIR}/b10_results.txt"
 
 # 1. Gateway Bouncing Test (L3 Isolation Bypass)
 # Enhanced scapy script to support Cross-Band / Multi-Interface if needed
-cat <<EOF > "$AIRSNITCH_PY"
+cat <<'EOF' > "$AIRSNITCH_PY"
 from scapy.all import *
 import sys, time
 
