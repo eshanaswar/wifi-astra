@@ -45,6 +45,7 @@ const reportTemplate = `
         .stat-label { font-size: 14px; color: #7f8c8d; text-transform: uppercase; letter-spacing: 1px; }
         .finding-critical { border-left: 5px solid #e74c3c; background: #fdf2f2; padding: 15px; margin-bottom: 10px; border-radius: 0 4px 4px 0; }
         .finding-high { border-left: 5px solid #e67e22; background: #fff5eb; padding: 15px; margin-bottom: 10px; border-radius: 0 4px 4px 0; }
+        .finding-medium { border-left: 5px solid #f39c12; background: #fffbf0; padding: 15px; margin-bottom: 10px; border-radius: 0 4px 4px 0; }
         .finding-info { border-left: 5px solid #3498db; background: #f2f9ff; padding: 15px; margin-bottom: 10px; border-radius: 0 4px 4px 0; }
         table { width: 100%; border-collapse: collapse; margin-bottom: 30px; font-size: 14px; }
         th, td { text-align: left; padding: 12px; border-bottom: 1px solid #eee; }
@@ -78,7 +79,7 @@ const reportTemplate = `
         {{if .Vulnerabilities}}
         <h2>Identified Vulnerabilities</h2>
         {{range .Vulnerabilities}}
-        <div class="finding-{{if eq .Severity "CRITICAL"}}critical{{else if eq .Severity "HIGH"}}high{{else}}info{{end}}">
+        <div class="finding-{{if eq .Severity "CRITICAL"}}critical{{else if eq .Severity "HIGH"}}high{{else if eq .Severity "MEDIUM"}}medium{{else}}info{{end}}">
             <h3>{{.Name}} <span class="badge badge-{{lower .Severity}}">{{.Severity}}</span></h3>
             <p><strong>Target:</strong> <code>{{.TargetHost}}</code> | <strong>Detected via:</strong> {{.TCID}}</p>
             <p>{{.Description}}</p>
@@ -142,7 +143,7 @@ const reportTemplate = `
 </html>
 `
 
-func GenerateReport(s *session.Session) (string, error) {
+func buildReportData(s *session.Session) ReportData {
 	data := ReportData{
 		SessionID:   s.ID,
 		SessionName: s.Name,
@@ -165,7 +166,7 @@ func GenerateReport(s *session.Session) (string, error) {
 	data.Vulnerabilities, _ = db.ListVulnerabilities(s.DB)
 	data.Results, _ = db.GetTestResults(s.DB)
 
-	// Calculate summary
+	// Calculate summary — total module count from filesystem
 	modDir := "./modules"
 	if val, ok := data.Configs["mod_dir"]; ok {
 		modDir = val
@@ -180,17 +181,40 @@ func GenerateReport(s *session.Session) (string, error) {
 
 	data.Summary.Total = modCount
 	data.Summary.Done = len(data.Results)
-	for _, res := range data.Results {
-		if res.Status == "failed" {
-			data.Summary.Findings++
-		}
-	}
+
+	// Bug 1 fix: only count actual vulnerability records as findings, not failed runs
 	for _, v := range data.Vulnerabilities {
 		data.Summary.Findings++
 		if v.Severity == "CRITICAL" {
 			data.Summary.Critical++
 		}
 	}
+	data.Summary.Findings += len(data.Credentials)
+
+	// Bug 2 fix: compute Secure = completed modules with zero non-INFO findings
+	completedModules := make(map[string]bool)
+	for _, res := range data.Results {
+		if res.Status == "completed" {
+			completedModules[res.TCID] = true
+		}
+	}
+	moduleFindings := make(map[string]bool)
+	for _, v := range data.Vulnerabilities {
+		if v.Severity != "INFO" {
+			moduleFindings[v.TCID] = true
+		}
+	}
+	for tcID := range completedModules {
+		if !moduleFindings[tcID] {
+			data.Summary.Secure++
+		}
+	}
+
+	return data
+}
+
+func GenerateReport(s *session.Session) (string, error) {
+	data := buildReportData(s)
 
 	funcMap := template.FuncMap{
 		"lower": strings.ToLower,

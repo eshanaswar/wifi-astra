@@ -131,12 +131,18 @@ func ListNetworks(d *sql.DB) ([]Network, error) {
 	var networks []Network
 	for rows.Next() {
 		var n Network
-		var tcID, evidence sql.NullString
-		if err := rows.Scan(&n.BSSID, &n.SSID, &n.Channel, &n.Encryption, &n.Signal, &n.Beacons, &tcID, &evidence, &n.LastSeen); err != nil {
+		var ssid, encryption, tcID, evidence, lastSeen sql.NullString
+		var signal, beacons sql.NullInt64
+		if err := rows.Scan(&n.BSSID, &ssid, &n.Channel, &encryption, &signal, &beacons, &tcID, &evidence, &lastSeen); err != nil {
 			return nil, err
 		}
+		n.SSID = ssid.String
+		n.Encryption = encryption.String
+		n.Signal = int(signal.Int64)
+		n.Beacons = int(beacons.Int64)
 		n.TCID = tcID.String
 		n.EvidenceFile = evidence.String
+		n.LastSeen = lastSeen.String
 		networks = append(networks, n)
 	}
 	return networks, nil
