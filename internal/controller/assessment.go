@@ -33,6 +33,12 @@ type AssessmentController struct {
 	WindowCount  int    // Track number of open tactical windows
 }
 
+// shellSingleQuote wraps v in single quotes, escaping any embedded single quotes
+// using the standard '"'"' technique so the result is always valid shell.
+func shellSingleQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'"
+}
+
 func NewAssessmentController(s *session.Session, mgr *executor.Manager, modDir string) *AssessmentController {
 	return &AssessmentController{
 		Session:      s,
@@ -612,7 +618,7 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 
 			for _, v := range vars {
 				if val, ok := envMap[v]; ok {
-					wrapperContent += fmt.Sprintf("export %s='%s'\n", v, val)
+					wrapperContent += fmt.Sprintf("export %s=%s\n", v, shellSingleQuote(val))
 				}
 			}
 			
@@ -811,28 +817,64 @@ func (c *AssessmentController) CleanupChecklist() {
 
 func (c *AssessmentController) HandleA1PostRun() {
 	csvFile := filepath.Join(c.Session.EvidenceDir, "a1_results.csv")
-	if _, err := os.Stat(csvFile); err == nil {
-		ingest.IngestAirodumpCSV(c.Session.DB, "A1", csvFile)
-		networks, _ := ingest.ParseScanResults(csvFile)
+	if _, err := os.Stat(csvFile); err != nil {
+		fmt.Printf("\n%s[!] A1: No results CSV found — check that airodump-ng ran successfully.%s\n",
+			constants.ThemeHigh, constants.ColorReset)
+		ui.PromptString("Press Enter to continue", "")
+		return
+	}
 
-		fmt.Println("\n📊 [Discovery Summary]")
-		for i, n := range networks {
-			fmt.Printf("   %d) %-25s %-18s CH %d (%ddBm)\n", i+1, n.SSID, n.BSSID, n.Channel, n.Signal)
+	ingest.IngestAirodumpCSV(c.Session.DB, "A1", csvFile)
+	networks, _ := ingest.ParseScanResults(csvFile)
+
+	if len(networks) == 0 {
+		fmt.Printf("\n%s[!] A1: CSV found but no networks parsed — scan may have captured no beacons.%s\n",
+			constants.ThemeHigh, constants.ColorReset)
+		ui.PromptString("Press Enter to continue", "")
+		return
+	}
+
+	fmt.Println("\n📊 [Discovery Summary]")
+	fmt.Printf("   %-4s %-25s %-18s %-5s %-12s %s\n", "#", "SSID", "BSSID", "CH", "ENC", "Signal")
+	fmt.Printf("   %s\n", strings.Repeat("─", 72))
+	for i, n := range networks {
+		vendor := ingest.LookupVendor(n.BSSID)
+		vendorShort := vendor
+		if len(vendorShort) > 18 {
+			vendorShort = vendorShort[:15] + "..."
 		}
-
-		choice := ui.PromptString("\nSelect target network to set as session default", "")
-		idx, _ := strconv.Atoi(choice)
-		if idx >= 1 && idx <= len(networks) {
-			target := networks[idx-1]
-			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestSSID, target.SSID)
-			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestBSSID, target.BSSID)
-			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestChannel, strconv.Itoa(target.Channel))
-
-			// Redundant Safety: Ensure A1 is marked as completed if target is set
-			c.Session.DB.Exec("UPDATE module_state SET status = ? WHERE tc_id = 'A1'", constants.StatusCompleted)
-
-			logging.Success("Target set to %s (%s)", target.SSID, target.BSSID)
+		enc := n.Encryption
+		if enc == "" {
+			enc = "OPN"
 		}
+		fmt.Printf("   %-4d %-25s %-18s %-5d %-12s %ddBm  %s\n",
+			i+1, n.SSID, n.BSSID, n.Channel, enc, n.Signal, vendorShort)
+	}
+
+	for {
+		choice := ui.PromptString("\nSelect target network number to set as session default", "")
+		if choice == "" {
+			fmt.Println("[*] No target set. You can run A1 again to set scope.")
+			return
+		}
+		idx, err := strconv.Atoi(strings.TrimSpace(choice))
+		if err != nil || idx < 1 || idx > len(networks) {
+			fmt.Printf("%s[!] Invalid selection — enter a number between 1 and %d.%s\n",
+				constants.ThemeHigh, len(networks), constants.ColorReset)
+			continue
+		}
+		target := networks[idx-1]
+		enc := target.Encryption
+		if enc == "" {
+			enc = "OPN"
+		}
+		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestSSID, target.SSID)
+		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestBSSID, target.BSSID)
+		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestChannel, strconv.Itoa(target.Channel))
+		c.Session.DB.Exec("UPDATE module_state SET status = ? WHERE tc_id = 'A1'", constants.StatusCompleted)
+		fmt.Printf("%s[✓] Scope locked: %s (%s) CH%d [%s]%s\n",
+			constants.ThemeSuccess, target.SSID, target.BSSID, target.Channel, enc, constants.ColorReset)
+		return
 	}
 }
 
