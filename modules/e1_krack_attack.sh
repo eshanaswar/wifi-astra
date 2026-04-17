@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="yes"
 # TOOLS="tshark,krack-test"
-# DESC="Test WPA2 key reinstallation (CVE-2017-13077), nonce reuse, GTK reinstall"
+# DESC="[LEGACY] KRACK (CVE-2017-13077) — universally patched since 2018; historical reference only"
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="yes"
 # TIMED="yes"
@@ -42,6 +42,7 @@ if [[ -z "$BSSID" ]]; then
     exit 1
 fi
 
+echo "[!] LEGACY MODULE: KRACK (CVE-2017-13077) has been universally patched since 2017-2018. All modern operating systems and firmware apply the fix. Results are for audit documentation purposes only."
 echo "[*] Starting KRACK vulnerability tests against ${BSSID} (SSID: ${SSID:-Unknown})..."
 
 # Ensure channel is set correctly

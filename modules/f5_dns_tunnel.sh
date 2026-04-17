@@ -55,6 +55,8 @@ if [[ -z "$TUNNEL_DOMAIN" ]]; then
 fi
 
 echo -e "${C_PROMPT}[*]${C_RESET} Attempting DNS tunnel via ${C_VAR}${TUNNEL_DOMAIN}${C_RESET}..."
+echo "[!] OPERATOR PREREQ: Requires a running iodined server on an operator-controlled VPS."
+echo "[!]   Server setup: iodined -f -P \"${TUNNEL_PASS:-<pass>}\" 10.0.0.1 \"${TUNNEL_DOMAIN}\""
 
 LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_iodine.log"
 

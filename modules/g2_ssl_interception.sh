@@ -87,9 +87,17 @@ if command -v mitmproxy &>/dev/null; then
     # In background mode: use mitmdump (non-interactive CLI equivalent) — mitmproxy
     # requires a TTY and will fail silently without one.
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout --foreground "$SCAN_TIME" mitmproxy --mode transparent --save-stream "$FLOW_FILE" || true
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            mitmproxy --mode transparent --save-stream "$FLOW_FILE" || true
+        else
+            timeout --foreground "$SCAN_TIME" mitmproxy --mode transparent --save-stream "$FLOW_FILE" || true
+        fi
     else
-        timeout "$SCAN_TIME" mitmdump --mode transparent -w "$FLOW_FILE" > "$MITM_LOG" 2>&1 &
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            mitmdump --mode transparent -w "$FLOW_FILE" > "$MITM_LOG" 2>&1 &
+        else
+            timeout "$SCAN_TIME" mitmdump --mode transparent -w "$FLOW_FILE" > "$MITM_LOG" 2>&1 &
+        fi
         TOOL_PID=$!
         wait "$TOOL_PID" || true
     fi

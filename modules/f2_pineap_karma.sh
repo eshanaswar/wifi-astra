@@ -119,10 +119,18 @@ if command -v hostapd-mana &>/dev/null; then
     echo -e "[*] Starting hostapd-mana..."
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
         # FOREGROUND
-        timeout --foreground "$SCAN_TIME" hostapd-mana "$MANA_CONF" 2>&1 | tee "$MANA_LOG" || true
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            hostapd-mana "$MANA_CONF" 2>&1 | tee "$MANA_LOG" || true
+        else
+            timeout --foreground "$SCAN_TIME" hostapd-mana "$MANA_CONF" 2>&1 | tee "$MANA_LOG" || true
+        fi
     else
-        # BACKGROUND: bound hostapd-mana with timeout so wait does not block indefinitely
-        timeout "$SCAN_TIME" hostapd-mana "$MANA_CONF" > "$MANA_LOG" 2>&1 &
+        # BACKGROUND
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            hostapd-mana "$MANA_CONF" > "$MANA_LOG" 2>&1 &
+        else
+            timeout "$SCAN_TIME" hostapd-mana "$MANA_CONF" > "$MANA_LOG" 2>&1 &
+        fi
         MANA_PID=$!
         wait "$MANA_PID" 2>/dev/null || true
     fi

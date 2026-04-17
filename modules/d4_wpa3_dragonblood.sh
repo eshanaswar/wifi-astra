@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="no"
 # TOOLS="dragonslayer,dragondrain"
-# DESC="Test for WPA3-SAE side-channel and downgrade vulnerabilities (Dragonblood)"
+# DESC="[LEGACY] WPA3-SAE Dragonblood — universally patched; tool chain rarely available"
 # REQS="monitor_iface,target_ssid"
 # PCAP="yes"
 # TIMED="yes"
@@ -39,6 +39,7 @@ if [[ -z "$SSID" ]]; then
     exit 1
 fi
 
+echo "[!] LEGACY MODULE: Dragonblood (CVE-2019-9494) has been universally patched since 2019-2020. The dragonslayer/dragondrain tool chain is unmaintained and rarely available. Results are for historical audit documentation only."
 echo "[*] Starting WPA3 Dragonblood tests against ${SSID} (BSSID: ${BSSID:-Any})..."
 echo "--- WPA3 Dragonblood Test Results for ${SSID} ---" > "$DRAGON_OUT"
 

@@ -5,7 +5,7 @@
 # DEPS="none"
 # CRITICAL="no"
 # TOOLS="tcpdump,tshark"
-# DESC="Capture CDP/LLDP frames leaking infrastructure details"
+# DESC="[LEGACY] CDP/LLDP leak detection — wirelessly rare; most effective on wired segments"
 # REQS="managed_iface"
 # PCAP="yes"
 # TIMED="yes"
@@ -40,6 +40,7 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_tcpdump.log"
 # (controller-based or tunneled architectures). Detection is most useful when the test
 # machine is connected via Ethernet to a trunk port, or in AP-mode bridge deployments.
 # Results on a purely wireless client interface will usually be negative.
+echo "[!] LEGACY MODULE: CDP/LLDP frames are rarely forwarded over WiFi. Expect negative results in most wireless environments — this test is most effective on wired trunk connections."
 echo "[*] [$TC_ID] Identifying CDP/LLDP leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 
 # Identify & Target
@@ -95,6 +96,8 @@ fi
 
 if [[ $FOUND -eq 0 ]]; then
     echo "[+] No CDP/LLDP leaks detected."
+    # Use PCAP_FILE as evidence — LOG_FILE only exists in background mode and will not
+    # be present when ASTRA_IN_WINDOW=true (foreground tcpdump writes directly to PCAP).
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
@@ -102,7 +105,7 @@ if [[ $FOUND -eq 0 ]]; then
         --name "[$TC_ID] Audit Complete" \
         --desc "No CDP or LLDP packets were detected during the monitoring period." \
         --severity "INFO" \
-        --evidence "$LOG_FILE" \
+        --evidence "$PCAP_FILE" \
         --rationale "Properly configured network infrastructure should not leak discovery protocols on wireless client segments."
 fi
 

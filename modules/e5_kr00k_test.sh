@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="no"
 # TOOLS="tshark"
-# DESC="Test if AP/client are vulnerable to Kr00k (CVE-2019-15126) decryption"
+# DESC="[LEGACY] Kr00k (CVE-2019-15126) — widely patched since 2020; passive OUI check still valid"
 # REQS="monitor_iface,target_bssid"
 # PCAP="yes"
 # TIMED="yes"
@@ -40,6 +40,7 @@ if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
     exit 1
 fi
 
+echo "[!] LEGACY MODULE: Kr00k (CVE-2019-15126) has been widely patched since 2020. Affects only specific Broadcom/Cypress chipsets. The passive OUI check below remains valid to identify potentially unpatched legacy hardware."
 echo "[*] Starting Kr00k (CVE-2019-15126) vulnerability test against ${BSSID}..."
 
 RES_FILE="${EVIDENCE_PREFIX}_results.txt"

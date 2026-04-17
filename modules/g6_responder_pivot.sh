@@ -80,9 +80,17 @@ TEL_PID=$!
 # 2. RUN PRIMARY TOOL (Foreground in Window, Background with Wait otherwise)
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # tee to LOG_FILE so hash detection works in both modes
-    timeout --foreground "$SCAN_TIME" responder -I "$INTERFACE" -dwP 2>&1 | tee "$LOG_FILE" || true
+    if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+        responder -I "$INTERFACE" -dwP 2>&1 | tee "$LOG_FILE" || true
+    else
+        timeout --foreground "$SCAN_TIME" responder -I "$INTERFACE" -dwP 2>&1 | tee "$LOG_FILE" || true
+    fi
 else
-    timeout "$SCAN_TIME" responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1 &
+    if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+        responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1 &
+    else
+        timeout "$SCAN_TIME" responder -I "$INTERFACE" -dwP > "$LOG_FILE" 2>&1 &
+    fi
     TOOL_PID=$!
     wait "$TOOL_PID" || true
 fi
