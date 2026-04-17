@@ -14,6 +14,7 @@ type ProgressMonitor struct {
 	StartTime time.Time
 	mu        sync.Mutex
 	stop      chan struct{}
+	done      chan struct{}
 	percent   int
 	status    string
 	stuck     bool
@@ -24,12 +25,14 @@ func NewProgressMonitor(tcID string) *ProgressMonitor {
 		TCID:      tcID,
 		StartTime: time.Now(),
 		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 }
 
 func (pm *ProgressMonitor) Start(updateFunc func() (int, string, bool)) {
 	ticker := time.NewTicker(1 * time.Second)
 	go func() {
+		defer close(pm.done)
 		for {
 			select {
 			case <-pm.stop:
@@ -42,8 +45,8 @@ func (pm *ProgressMonitor) Start(updateFunc func() (int, string, bool)) {
 				pm.percent = p
 				pm.status = s
 				pm.stuck = stuck
-				pm.renderBar()
 				pm.mu.Unlock()
+				pm.renderBar() // called AFTER releasing lock to avoid reentrant deadlock
 			}
 		}
 	}()
@@ -51,51 +54,60 @@ func (pm *ProgressMonitor) Start(updateFunc func() (int, string, bool)) {
 
 func (pm *ProgressMonitor) Stop() {
 	close(pm.stop)
-	// Give it a moment to clear
-	time.Sleep(100 * time.Millisecond)
+	<-pm.done // wait for goroutine to exit
 }
 
 func (pm *ProgressMonitor) renderBar() {
+	// Read fields under lock, then render outside the lock to prevent
+	// reentrant deadlock when called from the Start() goroutine.
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	p := pm.percent
+	s := pm.status
+	stuck := pm.stuck
+	startTime := pm.StartTime
+	pm.mu.Unlock()
 
 	// SILENCE GUARD: Do not render if we are still initializing
-	if pm.percent == 0 && pm.status == "" {
+	if p == 0 && s == "" {
 		return
 	}
 
 	width := 40
 	bar := ""
-	percentStr := fmt.Sprintf("%d%%", pm.percent)
+	percentStr := fmt.Sprintf("%d%%", p)
 	statusPrefix := "RUNNING"
-	
+
 	if os.Getenv("ASTRA_INDEFINITE") == "true" {
 		statusPrefix = "INDEFINITE"
 		percentStr = "∞"
 		// Animated sliding bar for indefinite mode
-		pos := int(time.Since(pm.StartTime).Seconds()) % width
+		pos := int(time.Since(startTime).Seconds()) % width
 		bar = strings.Repeat(" ", pos) + "🛰️" + strings.Repeat(" ", width-pos-2)
-		if len(bar) > width { bar = bar[:width] }
+		if len(bar) > width {
+			bar = bar[:width]
+		}
 	} else {
-		completed := (pm.percent * width) / 100
-		if completed > width { completed = width }
+		completed := (p * width) / 100
+		if completed > width {
+			completed = width
+		}
 		bar = strings.Repeat("█", completed) + strings.Repeat("░", width-completed)
 	}
-	
+
 	color := constants.ThemeInfo
-	if pm.stuck && os.Getenv("ASTRA_INDEFINITE") != "true" {
+	if stuck && os.Getenv("ASTRA_INDEFINITE") != "true" {
 		color = constants.ThemeHigh
 		statusPrefix = "STUCK?"
-	} else if pm.percent >= 100 {
+	} else if p >= 100 {
 		color = constants.ThemeSuccess
 		statusPrefix = "FINISHING"
 	}
 
-	elapsed := time.Since(pm.StartTime).Round(time.Second)
-	
-	fmt.Printf("\033[s\033[1000;1H\033[K%s[%s]%s [%s] %s %s | %s\033[u", 
-		color, statusPrefix, constants.ColorReset, 
-		bar, percentStr, pm.status, elapsed)
+	elapsed := time.Since(startTime).Round(time.Second)
+
+	fmt.Printf("\033[s\033[1000;1H\033[K%s[%s]%s [%s] %s %s | %s\033[u",
+		color, statusPrefix, constants.ColorReset,
+		bar, percentStr, s, elapsed)
 }
 
 func (pm *ProgressMonitor) clearBar() {
