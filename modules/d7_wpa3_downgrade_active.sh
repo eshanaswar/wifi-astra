@@ -104,7 +104,7 @@ if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     fi
 
     echo "[*] Downgrade environment active. Monitoring for client association..."
-    timeout "$SCAN_TIME" hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" || true
+    timeout --foreground "$SCAN_TIME" hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" || true
 else
     # Background Mode
     hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &

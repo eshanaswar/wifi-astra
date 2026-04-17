@@ -55,8 +55,25 @@ openssl req -newkey rsa:2048 -nodes -keyout "${CERT_DIR}/server.key" -x509 -days
 printf "interface=%s\ndriver=nl80211\nssid=%s\nchannel=%s\nhw_mode=g\nieee8021x=1\neapol_key_index_workaround=0\neap_server=1\neap_user_file=/etc/hostapd-wpe/hostapd-wpe.eap_user\nca_cert=%s/server.crt\nserver_cert=%s/server.crt\nprivate_key=%s/server.key\ndh_file=/etc/hostapd-wpe/hostapd-wpe.dh\n" \
     "${INTERFACE}" "${SSID}" "${CHANNEL}" "${CERT_DIR}" "${CERT_DIR}" "${CERT_DIR}" > "${HOSTAPD_CONF}"
 
-# Run hostapd-wpe
-timeout "${CAPTURE_TIME}" hostapd-wpe "${HOSTAPD_CONF}" > "${LOG_FILE}" 2>&1 || true
+# Run hostapd-wpe with telemetry heartbeat
+(
+    ELAPSED=0
+    while [[ $ELAPSED -lt $CAPTURE_TIME ]]; do
+        PCT=$(( 10 + (ELAPSED * 80 / CAPTURE_TIME) ))
+        [[ $PCT -gt 90 ]] && PCT=90
+        "${ASTRA_BIN}" record-progress --session-dir "${SESSION_DIR}" --tc "${TC_ID}" --percent "$PCT" --status "Waiting for EAP authentication attempts..."
+        sleep 5; ELAPSED=$((ELAPSED + 5))
+    done
+) &
+TEL_PID=$!
+
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    timeout --foreground "${CAPTURE_TIME}" hostapd-wpe "${HOSTAPD_CONF}" 2>&1 | tee "${LOG_FILE}" || true
+else
+    timeout "${CAPTURE_TIME}" hostapd-wpe "${HOSTAPD_CONF}" > "${LOG_FILE}" 2>&1 || true
+fi
+
+kill "${TEL_PID}" 2>/dev/null || true
 
 # Parse LOG_FILE
 VULNERABLE_CLIENTS=0
@@ -86,11 +103,12 @@ if [[ "${STATUS}" == "VULNERABLE" ]]; then
         "${ASTRA_COLOR_RED}" "${VULNERABLE_CLIENTS}" "${ASTRA_COLOR_RESET}"
 
     "${ASTRA_BIN}" record-finding \
+        --session-dir "${SESSION_DIR}" \
+        --tc "${TC_ID}" \
         --type "vulnerability" \
         --severity "CRITICAL" \
         --name "EAP Certificate Validation Bypass" \
         --desc "Client devices connected to Rogue AP '${SSID}' without validating the RADIUS server certificate, exposing potential credentials." \
-        --tc "${TC_ID}" \
         --evidence "${RESULT_JSON}" \
         --rationale "Failure to validate RADIUS certificates allows attackers to intercept WPA-Enterprise credentials (MSCHAPv2 hashes) or perform Machine-in-the-Middle attacks on EAP-TLS/PEAP sessions."
 else
@@ -98,15 +116,16 @@ else
         "${ASTRA_COLOR_GREEN}" "${ASTRA_COLOR_RESET}"
 
     "${ASTRA_BIN}" record-finding \
+        --session-dir "${SESSION_DIR}" \
+        --tc "${TC_ID}" \
         --type "info" \
         --severity "INFO" \
         --name "[D8] EAP Cert Validation Secure" \
         --desc "No evidence of certificate validation bypass observed for SSID '${SSID}'." \
-        --tc "${TC_ID}" \
         --evidence "${RESULT_JSON}" \
         --rationale "Clients either did not attempt connection or correctly rejected the untrusted RADIUS certificate presented by the test server."
 fi
 
-"${ASTRA_BIN}" record-progress --percent 100 --status 'Mission Complete'
+"${ASTRA_BIN}" record-progress --session-dir "${SESSION_DIR}" --percent 100 --status 'Mission Complete'
 
 exit 0

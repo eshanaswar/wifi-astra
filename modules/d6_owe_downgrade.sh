@@ -103,16 +103,33 @@ if [[ -f "${CSV_FILE}" ]]; then
     fi
 fi
 
+# Read back active association test result to determine actual bypass outcome
+BYPASS_RESULT=$(grep "^transition_bypass=" "${EVIDENCE_DIR}/D6_result.txt" 2>/dev/null | tail -1 | cut -d= -f2 || true)
+
 if [[ "$OWE_PRESENT" == "YES" ]]; then
+    if [[ "$BYPASS_RESULT" == "true" ]]; then
+        FINDING_SEVERITY="HIGH"
+        FINDING_NAME="OWE Transition Mode Bypass Confirmed"
+        FINDING_DESC="The network ${SSID} uses OWE Transition Mode and the client successfully associated to the open BSSID (${OPEN_BSSID}), bypassing OWE encryption entirely."
+    elif [[ "$BYPASS_RESULT" == "false" ]]; then
+        FINDING_SEVERITY="MEDIUM"
+        FINDING_NAME="OWE Transition Mode Detected (Bypass Blocked)"
+        FINDING_DESC="The network ${SSID} broadcasts both OWE and Open BSSIDs (transition mode). Active association to the open BSSID failed — OWE enforcement appears active for this client."
+    else
+        # untested or no managed interface available
+        FINDING_SEVERITY="MEDIUM"
+        FINDING_NAME="OWE Transition Mode Detected"
+        FINDING_DESC="The network ${SSID} uses OWE Transition Mode, broadcasting both OWE and Open BSSIDs. Active bypass test was not performed (WIFI_INTERFACE not set)."
+    fi
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
         --tc "$TC_ID" \
         --type vulnerability \
-        --name "OWE Transition Mode Detected" \
-        --desc "The network ${SSID} uses OWE Transition Mode, broadcasted both OWE and Open BSSIDs." \
-        --severity MEDIUM \
+        --name "$FINDING_NAME" \
+        --desc "$FINDING_DESC" \
+        --severity "$FINDING_SEVERITY" \
         --evidence "$CSV_FILE" \
-        --rationale "Transition mode is susceptible to downgrade attacks."
+        --rationale "OWE Transition Mode allows legacy clients to connect without encryption. If the AP does not enforce OWE for capable clients, an attacker can trivially downgrade to an open association."
 else
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \

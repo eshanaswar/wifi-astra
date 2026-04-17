@@ -56,14 +56,14 @@ TEL_PID=$!
 RET=0
 if command -v eaphammer &>/dev/null; then
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        # Foreground Execution
+        # Foreground Execution: capture eaphammer exit code via PIPESTATUS, not tee's
         timeout --foreground "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
-        RET=$?
+        RET=${PIPESTATUS[0]}
     else
-        # Background Execution: plain timeout (no --foreground for background processes)
+        # Background Execution: wait captures the tool's actual exit code
         timeout "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
         TOOL_PID=$!
-        wait $TOOL_PID || true
+        wait $TOOL_PID; RET=$?
     fi
 else
     echo "[!] eaphammer tool not found."
@@ -75,7 +75,7 @@ kill $TEL_PID 2>/dev/null || true
 
 # Reporting
 if [[ $RET -eq 0 ]] && [[ -f "$EAP_OUT" ]]; then
-    if grep -qiE "captured|credential|password|hash" "$EAP_OUT" 2>/dev/null; then
+    if grep -qiE "credential|mschapv2|gtc_password|eap.*captured" "$EAP_OUT" 2>/dev/null; then
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
             --tc "$TC_ID" \
@@ -104,7 +104,7 @@ else
         --name "[$TC_ID] Audit Skipped" \
         --desc "The eaphammer tool is missing or failed." \
         --severity INFO \
-        --evidence "$EVIDENCE_DIR" \
+        --evidence "$EAP_OUT" \
         --rationale "EAP testing requires specialized tools."
 fi
 
