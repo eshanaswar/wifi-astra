@@ -126,7 +126,18 @@ if command -v mitmproxy &>/dev/null; then
     fi
 else
     echo "[!] mitmproxy not found. Skipping SSL interception test."
-    exit 1
+    echo "mitmproxy not installed" > "$MITM_LOG"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[G2] Audit Skipped — mitmproxy Missing" \
+        --severity INFO \
+        --desc "SSL/TLS interception test could not run — mitmproxy is not installed. Install with: apt install mitmproxy" \
+        --target "Local Clients" \
+        --evidence "$MITM_LOG" \
+        --rationale "mitmproxy is required to intercept and inspect TLS traffic via transparent proxy."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Skipped — mitmproxy missing"
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "SSL Interception test complete."

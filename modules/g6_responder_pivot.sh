@@ -48,7 +48,19 @@ LOG_FILE="${EVIDENCE_DIR}/${TC_ID}_responder.log"
 
 if ! command -v responder &>/dev/null; then
     echo "[!] responder tool not found."
-    exit 1
+    echo "responder not installed" > "$LOG_FILE"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[G6] Audit Skipped — responder Missing" \
+        --severity INFO \
+        --desc "Responder pivot could not run — responder is not installed. Install with: apt install responder" \
+        --target "Local Clients" \
+        --evidence "$LOG_FILE" \
+        --rationale "responder is required to poison LLMNR/NBT-NS queries and capture NTLMv2 hashes from Windows clients."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Skipped — responder missing"
+    exit 0
 fi
 
 # 1. 🛰️ DYNAMIC TELEMETRY HEARTBEAT (Background)

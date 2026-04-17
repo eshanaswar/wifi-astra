@@ -133,8 +133,19 @@ EOF
             --rationale "ARP spoofing may be mitigated by static ARP entries or DAI (Dynamic ARP Inspection) on the switch. This audit confirms the attempt was made and identifies whether immediate interception was successful."
     fi
 else
-    echo "[!] bettercap not found. Skipping."
-    exit 1
+    echo "[!] bettercap not found. Skipping ARP spoofing test."
+    echo "bettercap not installed" > "$LOG_FILE"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[G1] Audit Skipped — bettercap Missing" \
+        --severity INFO \
+        --desc "ARP spoofing test could not run — bettercap is not installed. Install with: apt install bettercap" \
+        --target "${GATEWAY:-Global}" \
+        --evidence "$LOG_FILE" \
+        --rationale "bettercap is required for ARP spoofing and MITM positioning on the local segment."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Skipped — bettercap missing"
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "ARP Spoofing test complete."

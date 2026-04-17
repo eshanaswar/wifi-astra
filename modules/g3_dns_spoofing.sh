@@ -105,16 +105,19 @@ EOF
     "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 95 --status "Checking DNS redirection results..."
 
     # 2. Reporting
-    if [[ -f "$JSON_LOG" && -s "$JSON_LOG" ]]; then
+    # Check the LOG for actual dns.spoof events — the events JSON file is always
+    # created non-empty by bettercap on startup, so file existence is not a reliable
+    # indicator of whether any DNS queries were actually spoofed.
+    if grep -qiE "dns\.spoof|dns.*spoofed|spoofed.*query" "$LOG_FILE" 2>/dev/null; then
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
             --tc "$TC_ID" \
             --type vulnerability \
             --name "DNS Spoofing Active" \
             --severity HIGH \
-            --desc "Successfully executed DNS redirection attack against local clients on $INTERFACE." \
+            --desc "Successfully executed DNS redirection attack against local clients on $INTERFACE. Bettercap confirmed active DNS spoofing events." \
             --target "Local Clients" \
-            --evidence "$JSON_LOG" \
+            --evidence "$LOG_FILE" \
             --rationale "DNS spoofing allows an attacker to redirect users to malicious clones of legitimate websites. This is a primary vector for phishing, credential theft, and malware distribution."
     else
         "$ASTRA_BIN" record-finding \
@@ -123,14 +126,25 @@ EOF
             --type vulnerability \
             --name "[G3] Audit Complete" \
             --severity INFO \
-            --desc "DNS spoofing attack cycle finished. No active DNS queries were intercepted or spoofed." \
+            --desc "DNS spoofing attack cycle finished. No active DNS queries were intercepted or spoofed during the test window." \
             --target "Local Clients" \
             --evidence "$LOG_FILE" \
             --rationale "Modern clients and browsers use DNS-over-HTTPS (DoH) or DNS-over-TLS (DoT), which mitigates traditional DNS spoofing. This audit confirms whether the target environment is susceptible to basic UDP-based DNS redirection."
     fi
 else
     echo "[!] bettercap not found. Skipping DNS spoofing test."
-    exit 1
+    echo "bettercap not installed" > "$LOG_FILE"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[G3] Audit Skipped — bettercap Missing" \
+        --severity INFO \
+        --desc "DNS spoofing test could not run — bettercap is not installed. Install with: apt install bettercap" \
+        --target "Local Clients" \
+        --evidence "$LOG_FILE" \
+        --rationale "bettercap is required for DNS spoofing and response injection on the local segment."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Skipped — bettercap missing"
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "DNS Spoofing test complete."
