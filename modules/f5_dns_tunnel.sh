@@ -84,18 +84,20 @@ TUNNEL_SUCCESS=0
 
 if command -v iodine &>/dev/null; then
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        # FOREGROUND
-        timeout "$SCAN_TIME" iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" 2>&1 | tee "$LOG_FILE" || true
+        # FOREGROUND: iodine output is live; check dns0 after timeout kills it
+        timeout --foreground "$SCAN_TIME" iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" 2>&1 | tee "$LOG_FILE" || true
+        # In window mode, check dns0 from log — iodine tears down the interface on exit
+        grep -qi "tunnel established\|Sending raw traffic" "$LOG_FILE" 2>/dev/null && TUNNEL_SUCCESS=1 || true
     else
-        # BACKGROUND
-        iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" > "$LOG_FILE" 2>&1 &
+        # BACKGROUND: check dns0 while iodine is still running, then bound and wait
+        timeout "$SCAN_TIME" iodine -f -P "$TUNNEL_PASS" "$TUNNEL_DOMAIN" > "$LOG_FILE" 2>&1 &
         IODINE_PID=$!
+        # Give iodine time to establish the tunnel before checking
+        sleep 10
+        if ip addr show dns0 >/dev/null 2>&1; then
+            TUNNEL_SUCCESS=1
+        fi
         wait "$IODINE_PID" 2>/dev/null || true
-    fi
-
-    # Check if the dns0 tunnel interface was created (iodine creates it on success)
-    if ip addr show dns0 >/dev/null 2>&1; then
-        TUNNEL_SUCCESS=1
     fi
 
     cleanup

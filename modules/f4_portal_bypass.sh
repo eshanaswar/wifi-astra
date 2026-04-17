@@ -115,7 +115,7 @@ echo -e "[*] Requesting DHCP lease with custom Fingerprint (Option 55) (${SCAN_T
 TELEMETRY_PID=$!
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    timeout "$SCAN_TIME" dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
+    timeout --foreground "$SCAN_TIME" dhclient -v -cf "$DHCP_CONF" "$INTERFACE" || true
 else
     timeout "$SCAN_TIME" dhclient -cf "$DHCP_CONF" "$INTERFACE" >/dev/null 2>&1 &
     TOOL_PID=$!

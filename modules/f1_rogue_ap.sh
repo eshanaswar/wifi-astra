@@ -158,10 +158,10 @@ fi
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # FOREGROUND
-    timeout "$SCAN_TIME" hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" || true
+    timeout --foreground "$SCAN_TIME" hostapd "$HOSTAPD_CONF" 2>&1 | tee "$HOSTAPD_LOG" || true
 else
-    # BACKGROUND
-    hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
+    # BACKGROUND: bound hostapd with timeout so wait does not block indefinitely
+    timeout "$SCAN_TIME" hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
     HOSTAPD_PID=$!
     wait "$HOSTAPD_PID" 2>/dev/null || true
 fi
