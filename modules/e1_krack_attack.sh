@@ -82,7 +82,7 @@ if [[ -n "$KRACK_SCRIPT" ]]; then
     echo "[*] Running KRACK test script: ${KRACK_SCRIPT}..."
     # Must write to RES_FILE in both modes for detection to work
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" 2>&1 | tee "$RES_FILE" || true
+        timeout --foreground 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" 2>&1 | tee "$RES_FILE" || true
     else
         timeout 120 python3 "$KRACK_SCRIPT" -i "$INTERFACE" -b "$BSSID" -s "${SSID:-}" > "$RES_FILE" 2>&1 || true
     fi

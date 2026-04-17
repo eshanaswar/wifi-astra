@@ -109,7 +109,18 @@ if command -v mdk4 &>/dev/null; then
     fi
 else
     echo "[!] mdk4 not found. Fuzzing cannot proceed."
-    exit 1
+    echo "mdk4 not installed" > "$FUZZ_OUT"
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[$TC_ID] Audit Skipped — mdk4 Missing" \
+        --severity INFO \
+        --desc "The mdk4 tool was not found. Wireless frame fuzzing could not be performed against ${BSSID}. Install with: apt install mdk4" \
+        --target "${BSSID}" \
+        --evidence "$FUZZ_OUT" \
+        --rationale "mdk4 is required for 802.11 frame fuzzing. Without it this module cannot test AP robustness."
+    "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Skipped — mdk4 missing"
 fi
 
 "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
