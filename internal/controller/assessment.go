@@ -298,9 +298,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	}
 
 	// 5. Run the Module
-	fmt.Printf("\n%s\n", strings.Repeat("┈", 80))
-	fmt.Println("🛰️  MISSION FEED:")
-	fmt.Printf("%s\n\n", strings.Repeat("┈", 80))
+	fmt.Printf("\n%s%s%s\n", constants.ThemeMission, strings.Repeat("┈", 80), constants.ColorReset)
+	fmt.Printf("%s🛰️  MISSION FEED:%s\n", constants.ThemeMission, constants.ColorReset)
+	fmt.Printf("%s%s%s\n\n", constants.ThemeMission, strings.Repeat("┈", 80), constants.ColorReset)
 
 	startTime := time.Now()
 	replayPath := filepath.Join(c.Session.EvidenceDir, "SESSION_REPLAY.log")
@@ -391,13 +391,13 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	evidence.WriteIndex(c.Session.EvidenceDir,
 		filepath.Join(c.Session.EvidenceDir, "EVIDENCE_INDEX.txt"))
 
-	fmt.Printf("\n%s\n", strings.Repeat("┈", 80))
+	fmt.Printf("\n%s%s%s\n", constants.ThemeMission, strings.Repeat("┈", 80), constants.ColorReset)
 	if status == constants.StatusCompleted {
-		fmt.Println("✅ MISSION COMPLETE")
+		fmt.Printf("%s✅ MISSION COMPLETE%s\n", constants.ThemeSuccess, constants.ColorReset)
 	} else {
-		fmt.Printf("❌ MISSION FAILED (Exit Code: %d)\n", exitCode)
+		fmt.Printf("%s❌ MISSION FAILED (Exit Code: %d)%s\n", constants.ThemeHigh, exitCode, constants.ColorReset)
 	}
-	fmt.Printf("%s\n", strings.Repeat("┈", 80))
+	fmt.Printf("%s%s%s\n", constants.ThemeMission, strings.Repeat("┈", 80), constants.ColorReset)
 
 	// 6. Evidence Summary
 	c.DisplayEvidence(m.ID)
@@ -408,7 +408,7 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	// 8. Mission Observation Summary
 	c.DisplayMissionSummary(m.ID)
 
-	fmt.Printf("\n%s\n", strings.Repeat("═", 80))
+	fmt.Printf("\n%s%s%s\n", constants.ThemeHeader, strings.Repeat("═", 80), constants.ColorReset)
 	if os.Getenv("ASTRA_HEADLESS") != "true" {
 		ui.PromptString("Press Enter to return to menu", "")
 	}
