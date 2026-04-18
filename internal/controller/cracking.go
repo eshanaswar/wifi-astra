@@ -163,6 +163,18 @@ func ParseWPSCreds(logText string) (string, string) {
 	return psk, pin
 }
 
+var aircrackKeyRe = regexp.MustCompile(`KEY FOUND!\s*\[\s*([0-9A-Fa-f:]+)\s*\]`)
+
+// ParseAircrackKey extracts the recovered WEP key from aircrack-ng stdout.
+// Returns empty string if no key was found.
+func ParseAircrackKey(log string) string {
+	m := aircrackKeyRe.FindStringSubmatch(log)
+	if len(m) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
+}
+
 // hashcatLogPath returns the evidence path for a hashcat run log.
 func hashcatLogPath(evidenceDir, tcID string) string {
 	return filepath.Join(evidenceDir, strings.ToLower(tcID)+"_hashcat.log")

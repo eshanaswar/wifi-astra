@@ -167,6 +167,33 @@ func TestHandleD3PostRun_ParseIntegration(t *testing.T) {
 	}
 }
 
+func TestParseAircrackKeyFound(t *testing.T) {
+	log := `
+Aircrack-ng 1.7
+
+          [00:00:01] Tested 1234 keys (got 12345 IVs)
+
+   KB    depth   byte(vote)
+    0    0/  1   AB(  512) CD(  256)
+    1    0/  1   CD(  512) EF(  256)
+
+                         KEY FOUND! [ AB:CD:EF:01:23 ]
+	Master Key     : AB CD EF 01 23 45 67 89 AB CD EF 01 23 45 67 89
+`
+	key := ParseAircrackKey(log)
+	if key != "AB:CD:EF:01:23" {
+		t.Errorf("expected key AB:CD:EF:01:23, got %q", key)
+	}
+}
+
+func TestParseAircrackKeyNotFound(t *testing.T) {
+	log := "Aircrack-ng 1.7\n\nNot enough IVs. Try capturing more.\n"
+	key := ParseAircrackKey(log)
+	if key != "" {
+		t.Errorf("expected empty key for not-found output, got %q", key)
+	}
+}
+
 func TestParseWPSCreds_PSKOnly(t *testing.T) {
 	input := "[+] WPA PSK: 'securepass'"
 	psk, pin := ParseWPSCreds(input)

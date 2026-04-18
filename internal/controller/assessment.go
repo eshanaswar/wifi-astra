@@ -746,6 +746,8 @@ func (c *AssessmentController) HandlePostRun(m *module.Module) {
 		c.HandleA1PostRun()
 	case "D1":
 		c.HandleD1PostRun()
+	case "D2":
+		c.HandleD2PostRun()
 	case "D3":
 		c.HandleD3PostRun()
 	case "D5":
@@ -919,6 +921,34 @@ func (c *AssessmentController) HandleA1PostRun() {
 			constants.ThemeSuccess, target.SSID, target.BSSID, target.Channel, enc, constants.ColorReset)
 		return
 	}
+}
+
+// HandleD2PostRun fires after D2 (WEP Cracking) completes.
+// It reads the aircrack-ng log, extracts any recovered WEP key,
+// and records it as a credential finding.
+func (c *AssessmentController) HandleD2PostRun() {
+	logFile := filepath.Join(c.Session.EvidenceDir, "D2_aircrack_results.txt")
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		return
+	}
+	key := ParseAircrackKey(string(data))
+	if key == "" {
+		return
+	}
+
+	fmt.Printf("\n%s[!] WEP KEY RECOVERED: %s%s\n", constants.ThemeCritical, key, constants.ColorReset)
+
+	var targetBSSID string
+	c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&targetBSSID)
+
+	c.Session.DB.Exec(`
+		INSERT OR REPLACE INTO credential (tc_id, proto, target_host, username, password, evidence_file, rationale)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"D2", "WEP", targetBSSID,
+		"<WEP network>", key, logFile,
+		"WEP encryption is broken — RC4 key stream reuse allows key recovery from ~40,000 IVs. All traffic is decryptable.",
+	)
 }
 
 // HandleD1PostRun fires after D1 (WPA Handshake & PMKID Capture) completes.
