@@ -730,7 +730,7 @@ func (c *AssessmentController) LaunchSupportModule(tcID string) error {
 }
 
 func (c *AssessmentController) DisplayEvidence(tcID string) {
-	fmt.Println("\n📁 [Generated Evidence]")
+	fmt.Printf("\n%s📁 [Generated Evidence]%s\n", constants.ThemeHeader, constants.ColorReset)
 	files, _ := os.ReadDir(c.Session.EvidenceDir)
 	evidenceFound := false
 	for _, f := range files {
@@ -898,7 +898,7 @@ func (c *AssessmentController) HandleA1PostRun() {
 		return
 	}
 
-	fmt.Println("\n📊 [Discovery Summary]")
+	fmt.Printf("\n%s📊 [Discovery Summary]%s\n", constants.ThemeHeader, constants.ColorReset)
 	fmt.Printf("   %-4s %-25s %-18s %-5s %-12s %s\n", "#", "SSID", "BSSID", "CH", "ENC", "Signal")
 	fmt.Printf("   %s\n", strings.Repeat("─", 72))
 	for i, n := range networks {
@@ -915,8 +915,8 @@ func (c *AssessmentController) HandleA1PostRun() {
 			i+1, n.SSID, n.BSSID, n.Channel, enc, n.Signal, vendorShort)
 	}
 
-	fmt.Println("\n[?] Enter numbers for ALL authorized targets (e.g. 1,3 for multiple).")
-	fmt.Println("    First selection becomes the active target for module execution.")
+	fmt.Printf("\n%s[?] Enter numbers for ALL authorized targets (e.g. 1,3 for multiple).%s\n", constants.ThemeHeader, constants.ColorReset)
+	fmt.Printf("    %sFirst selection becomes the active target for module execution.%s\n", constants.ColorGray, constants.ColorReset)
 	for {
 		choice := ui.PromptString("Authorized target number(s)", "")
 		if choice == "" {
