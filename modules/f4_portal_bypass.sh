@@ -50,6 +50,14 @@ fi
 
 if [[ -z "$TARGET_CLIENT" ]]; then
     echo "[!] No target client specified. Identity spoofing requires a victim MAC."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[$TC_ID] Skipped — No Target Client" \
+        --desc "Captive portal bypass was not executed because no authenticated client MAC was specified. Re-run after running A4 (Client Fingerprinting) to identify a portal-authenticated station to clone." \
+        --severity INFO \
+        --rationale "MAC-clone portal bypass requires an authenticated client MAC to impersonate."
     exit 0
 fi
 

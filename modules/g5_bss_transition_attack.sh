@@ -46,6 +46,14 @@ fi
 
 if [[ -z "$TARGET_CLIENT" ]]; then
     echo "[!] No target client specified. BSS Transition requires a victim station."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[$TC_ID] Skipped — No Target Client" \
+        --desc "BSS Transition attack was not executed because no target client MAC was specified. Re-run after running A4 (Client Fingerprinting) to identify a roaming-capable station." \
+        --severity INFO \
+        --rationale "BSS Transition Management Request injection requires a specific client MAC to address the action frame."
     exit 0
 fi
 

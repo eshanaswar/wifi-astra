@@ -113,6 +113,8 @@ func sessionWizard() {
 		if len(existing) > 0 {
 			fmt.Println("2) Resume Existing Session")
 			fmt.Println("3) Delete Existing Session")
+		} else {
+			fmt.Printf("%s    No existing sessions — create one to get started.%s\n", constants.ColorGray, constants.ColorReset)
 		}
 
 		choice := ui.PromptString("Select an option", "1")
@@ -617,17 +619,21 @@ func ensureAdapterSetup(s *session.Session) string {
 		fmt.Printf("\n%s[✓] Attack adapter:%s %s\n", constants.ThemeSuccess, constants.ColorReset, monIface)
 		fmt.Printf("%s[?]%s Optionally select a management adapter for internet/C2 connectivity:\n",
 			constants.ThemeHeader, constants.ColorReset)
-		for i, iface := range ifaces {
-			if iface.Name == monIface {
-				continue
+		// Build a filtered list excluding the monitor adapter, with sequential numbering
+		var mgmtCandidates []hw.Interface
+		for _, iface := range ifaces {
+			if iface.Name != monIface {
+				mgmtCandidates = append(mgmtCandidates, iface)
 			}
-			fmt.Printf("   %d) %s\n", i+1, iface.Name)
 		}
-		mgmtChoice := ui.PromptString("Management adapter number (or Enter to skip)", "")
+		for i, iface := range mgmtCandidates {
+			fmt.Printf("   %d) %-12s %s (%s)\n", i+1, iface.Name, iface.Chipset, iface.Driver)
+		}
+		mgmtChoice := ui.PromptString(fmt.Sprintf("Management adapter [1-%d] (or Enter to skip)", len(mgmtCandidates)), "")
 		if mgmtChoice != "" {
 			mgmtIdx, _ := strconv.Atoi(mgmtChoice)
-			if mgmtIdx >= 1 && mgmtIdx <= len(ifaces) && ifaces[mgmtIdx-1].Name != monIface {
-				mgmtIface = ifaces[mgmtIdx-1].Name
+			if mgmtIdx >= 1 && mgmtIdx <= len(mgmtCandidates) {
+				mgmtIface = mgmtCandidates[mgmtIdx-1].Name
 				fmt.Printf("%s[✓] Management adapter:%s %s\n", constants.ThemeSuccess, constants.ColorReset, mgmtIface)
 			} else {
 				fmt.Printf("%s[!] Invalid selection — no management adapter set.%s\n",

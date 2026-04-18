@@ -44,6 +44,14 @@ fi
 
 if [[ -z "$TARGET_CLIENT" ]]; then
     echo "[!] No target client specified. Resilience test requires an associated station."
+    "$ASTRA_BIN" record-finding \
+        --session-dir "$SESSION_DIR" \
+        --tc "$TC_ID" \
+        --type vulnerability \
+        --name "[$TC_ID] Skipped — No Target Client" \
+        --desc "802.11w deauth resilience test was not executed because no target client MAC was specified. Re-run after running A4 (Client Fingerprinting) to identify an associated station." \
+        --severity INFO \
+        --rationale "Deauth resilience testing requires an associated client to direct frames at."
     exit 0
 fi
 
