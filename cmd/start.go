@@ -397,7 +397,7 @@ func launchMainMenu(s *session.Session) {
 				currentCat = mod.Category
 				catLabel := catNames[currentCat]
 				fmt.Printf("\n  %sCategory %s: %s%s\n", constants.ThemeHeader, currentCat, catLabel, constants.ColorReset)
-				fmt.Printf("  %s\n", strings.Repeat("─", 60))
+				fmt.Printf("  %s%s%s\n", constants.ThemeHeader, strings.Repeat("─", 60), constants.ColorReset)
 			}
 			var dbStatus string
 			s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", mod.ID).Scan(&dbStatus)

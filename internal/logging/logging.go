@@ -146,10 +146,9 @@ func Error(msg string, args ...any) {
 
 func Success(msg string, args ...any) {
 	formattedMsg := fmt.Sprintf(msg, args...)
+	fmt.Printf("%s[✓]%s %s\n", constants.ThemeSuccess, constants.ColorReset, formattedMsg)
 	if Logger != nil {
 		Logger.Info("[✓] " + formattedMsg)
-	} else {
-		fmt.Printf("%s[✓]%s %s\n", constants.ThemeSuccess, constants.ColorReset, formattedMsg)
 	}
 }
 

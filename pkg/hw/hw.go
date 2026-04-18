@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 	"wifi-astra/internal/logging"
+	"wifi-astra/pkg/constants"
 )
 
 type Interface struct {
@@ -334,29 +335,29 @@ func Recover(headless bool) {
 		return
 	}
 
-	fmt.Printf("\n[!] WARNING: %d interface(s) appear stuck in Monitor Mode: %v\n", len(stuck), stuck)
-	fmt.Println("    This usually happens after an unclean exit and will break normal networking.")
-	
-	fmt.Print("    Restore them to Managed Mode now? [y/N]: ")
+	fmt.Printf("\n%s[!] WARNING:%s %d interface(s) appear stuck in Monitor Mode: %v\n", constants.ThemeHigh, constants.ColorReset, len(stuck), stuck)
+	fmt.Printf("    %sThis usually happens after an unclean exit and will break normal networking.%s\n", constants.ColorGray, constants.ColorReset)
+
+	fmt.Printf("    %sRestore them to Managed Mode now?%s [y/N]: ", constants.ThemeHeader, constants.ColorReset)
 	var response string
 	fmt.Scanln(&response)
 
 	if strings.ToLower(response) == "y" {
 		for _, iface := range stuck {
-			fmt.Printf("    [*] Restoring %s... ", iface)
+			fmt.Printf("    %s[*]%s Restoring %s... ", constants.ThemeHeader, constants.ColorReset, iface)
 			out, err := exec.Command("airmon-ng", "stop", iface).CombinedOutput()
 			if err != nil {
 				logging.Warn("airmon-ng stop %s failed: %v (output: %s)", iface, err, strings.TrimSpace(string(out)))
-				fmt.Println("FAILED (check logs)")
+				fmt.Printf("%sFAILED%s (check logs)\n", constants.ThemeHigh, constants.ColorReset)
 			} else {
-				fmt.Println("DONE")
+				fmt.Printf("%sDONE%s\n", constants.ThemeSuccess, constants.ColorReset)
 			}
 		}
-		fmt.Print("    [*] Restart NetworkManager to restore connectivity? [y/N]: ")
+		fmt.Printf("    %s[*]%s Restart NetworkManager to restore connectivity? [y/N]: ", constants.ThemeHeader, constants.ColorReset)
 		fmt.Scanln(&response)
 		if strings.ToLower(response) == "y" {
 			exec.Command("systemctl", "restart", "NetworkManager").Run()
-			fmt.Println("    [✓] NetworkManager restarted.")
+			fmt.Printf("    %s[✓]%s NetworkManager restarted.\n", constants.ThemeSuccess, constants.ColorReset)
 		}
 	}
 }

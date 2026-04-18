@@ -193,17 +193,17 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 			}
 			path, err := exec.LookPath(t)
 			if err == nil {
-				fmt.Printf("   [✓] %-12s found at %s\n", t, path)
+				fmt.Printf("   %s[✓]%s %-12s found at %s\n", constants.ThemeSuccess, constants.ColorReset, t, path)
 				foundCount++
 			} else {
-				fmt.Printf("   [✗] %-12s NOT FOUND\n", t)
+				fmt.Printf("   %s[✗]%s %-12s NOT FOUND\n", constants.ThemeHigh, constants.ColorReset, t)
 			}
 		}
 		if foundCount < len(tools) && m.Critical {
 			return fmt.Errorf("missing critical tool dependencies")
 		}
 	} else {
-		fmt.Println("   [✓] No tool dependencies.")
+		fmt.Printf("   %s[✓]%s No tool dependencies.\n", constants.ThemeSuccess, constants.ColorReset)
 	}
 
 	// 4. Hardware Prep & Locking
@@ -213,16 +213,16 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	defer hw.UnlockInterface(iface)
 
 	if strings.Contains(m.Reqs, constants.ReqMonitorIface) {
-		fmt.Print("   [*] Enabling Monitor Mode... ")
+		fmt.Printf("   %s[*]%s Enabling Monitor Mode... ", constants.ThemeHeader, constants.ColorReset)
 		if !hw.IsValidInterfaceName(iface) {
 			return fmt.Errorf("invalid interface name: %s", iface)
 		}
 		monIface, err := hw.EnableMonitorMode(iface)
 		if err != nil {
-			fmt.Println("FAILED")
+			fmt.Printf("%sFAILED%s\n", constants.ThemeHigh, constants.ColorReset)
 			return err
 		}
-		fmt.Println("SUCCESS (" + monIface + ")")
+		fmt.Printf("%sSUCCESS%s (%s)\n", constants.ThemeSuccess, constants.ColorReset, monIface)
 		
 		// Lock the newly created monitor interface as well
 		if err := hw.LockInterface(monIface, m.ID); err != nil {
@@ -744,7 +744,7 @@ func (c *AssessmentController) DisplayEvidence(tcID string) {
 		}
 	}
 	if !evidenceFound {
-		fmt.Println("   • No specific evidence files recorded.")
+		fmt.Printf("   %s• No specific evidence files recorded.%s\n", constants.ColorGray, constants.ColorReset)
 	}
 }
 
@@ -804,7 +804,7 @@ func (c *AssessmentController) CleanupChecklist() {
 				}
 				exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", "8080").Run()
 				exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", "8080").Run()
-				fmt.Println("   iptables NAT rules cleared (or were not present).")
+				fmt.Printf("   %siptables NAT rules cleared (or were not present).%s\n", constants.ColorGray, constants.ColorReset)
 				return nil
 			},
 		},
@@ -822,7 +822,7 @@ func (c *AssessmentController) CleanupChecklist() {
 					}
 				}
 				if !found {
-					fmt.Println("   No lingering attack processes detected.")
+					fmt.Printf("   %sNo lingering attack processes detected.%s\n", constants.ColorGray, constants.ColorReset)
 				}
 				return nil
 			},
@@ -960,7 +960,7 @@ func (c *AssessmentController) HandleA1PostRun() {
 		fmt.Printf("%s[✓] Active target: %s (%s) CH%d%s\n",
 			constants.ThemeSuccess, primary.SSID, primary.BSSID, primary.Channel, constants.ColorReset)
 		if len(selectedIdxs) > 1 {
-			fmt.Printf("[*] Authorized scope: %s\n", strings.Join(bssids, ", "))
+			fmt.Printf("%s[*] Authorized scope:%s %s\n", constants.ColorGray, constants.ColorReset, strings.Join(bssids, ", "))
 		}
 		return
 	}
@@ -1142,7 +1142,7 @@ func (c *AssessmentController) HandleD3PostRun() {
 	if psk != "" {
 		fmt.Printf("\n%s[!!!] WPS PSK RECOVERED: %s%s\n", constants.ThemeSuccess, psk, constants.ColorReset)
 		if pin != "" {
-			fmt.Printf("      WPS PIN: %s\n", pin)
+			fmt.Printf("      %sWPS PIN:%s %s\n", constants.ColorGray, constants.ColorReset, pin)
 		}
 		c.Session.DB.Exec(
 			`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
@@ -1156,7 +1156,7 @@ func (c *AssessmentController) HandleD3PostRun() {
 
 	// PIN recovered but no PSK — record for manual follow-up
 	fmt.Printf("\n%s[+] WPS PIN recovered (no PSK extracted): %s%s\n", constants.ThemeHeader, pin, constants.ColorReset)
-	fmt.Println("    Use this PIN with reaver/bully manually to recover the PSK.")
+	fmt.Printf("    %sUse this PIN with reaver/bully manually to recover the PSK.%s\n", constants.ColorGray, constants.ColorReset)
 	c.Session.DB.Exec(
 		`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,

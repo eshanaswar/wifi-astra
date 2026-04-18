@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"wifi-astra/internal/controller"
+	"wifi-astra/pkg/constants"
 	"wifi-astra/pkg/executor"
 	"wifi-astra/pkg/hw"
 	"wifi-astra/pkg/prereq"
@@ -27,7 +28,7 @@ var RootCmd = &cobra.Command{
 	Short: "WiFi-Astra: Wireless Security Assessment Framework",
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		if err := prereq.VerifyEnvironment(); err != nil {
-			fmt.Printf("[✗] Environment check failed: %v\n", err)
+			fmt.Printf("%s[✗] Environment check failed: %v%s\n", constants.ThemeHigh, err, constants.ColorReset)
 			os.Exit(1)
 		}
 		// Root-only operations handled here if global, 
@@ -56,11 +57,11 @@ func Execute() {
 		for {
 			<-sigChan
 			if Ctrl != nil && Ctrl.Running != "" {
-				fmt.Printf("\n[!] Interrupt received. Aborting module %s...\n", Ctrl.Running)
+				fmt.Printf("\n%s[!] Interrupt received. Aborting module %s...%s\n", constants.ThemeHigh, Ctrl.Running, constants.ColorReset)
 				Ctrl.ExecMgr.Stop(Ctrl.Running)
 				Ctrl.Running = ""
 			} else {
-				fmt.Println("\n[!] Interrupt received. Cleaning up processes and restoring networking...")
+				fmt.Printf("\n%s[!] Interrupt received. Cleaning up processes and restoring networking...%s\n", constants.ThemeHigh, constants.ColorReset)
 				ExecMgr.Cleanup()
 				// Restore system networking state
 				hw.Recover(false)
