@@ -147,7 +147,8 @@ func (m *Menu) Display() error {
 
 		choice, err := strconv.Atoi(input)
 		if err != nil || choice < 1 || choice > len(m.Options) {
-			fmt.Println("Invalid choice. Please try again.")
+			fmt.Printf("%s[!] Invalid choice. Enter a number between 1 and %d, or 'q' to go back.%s\n",
+				constants.ThemeHigh, len(m.Options), constants.ColorReset)
 			continue
 		}
 

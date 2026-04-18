@@ -920,7 +920,8 @@ func (c *AssessmentController) HandleA1PostRun() {
 	for {
 		choice := ui.PromptString("Authorized target number(s)", "")
 		if choice == "" {
-			fmt.Println("[*] No targets set.")
+			fmt.Printf("%s[*] No targets set. Run A1 again to select authorized targets.%s\n",
+				constants.ColorGray, constants.ColorReset)
 			return
 		}
 
@@ -1024,6 +1025,10 @@ func (c *AssessmentController) HandleD1PostRun() {
 		fmt.Printf("\n%s[+] EAPOL handshake captured (%s → converted to hc22000).%s\n",
 			constants.ThemeSuccess, capFile, constants.ColorReset)
 	} else {
+		fmt.Printf("\n%s[*] D1: No PMKID or EAPOL handshake capture found — inline crack not available.%s\n",
+			constants.ColorGray, constants.ColorReset)
+		fmt.Printf("    %sCapture files (if any) are in: %s%s\n",
+			constants.ColorGray, evidenceDir, constants.ColorReset)
 		logging.Debug("D1 post-run: no crackable capture file found, skipping inline crack offer")
 		return
 	}
@@ -1040,7 +1045,8 @@ func (c *AssessmentController) HandleD1PostRun() {
 		return
 	}
 
-	fmt.Printf("[*] Starting hashcat -m %s ... (stream output below)\n\n", mode)
+	fmt.Printf("%s[*] Starting hashcat -m %s%s — stream output below:\n\n",
+		constants.ThemeHeader, mode, constants.ColorReset)
 	logFile := hashcatLogPath(evidenceDir, "D1")
 	result, err := RunHashcat(context.Background(), captureFile, wordlist, mode, logFile, c.ExecMgr)
 	if err != nil {
