@@ -180,9 +180,7 @@ func (m *Menu) Display() error {
 					constants.ColorGray, help, constants.ColorReset)
 			}
 			fmt.Printf("  %sq)%s Quit / Back\n\n", constants.ThemeHeader, constants.ColorReset)
-			if PromptString("Press Enter to continue", "sentinel") == "" {
-				break
-			}
+			PromptString("Press Enter to continue", "")
 			continue
 		}
 
