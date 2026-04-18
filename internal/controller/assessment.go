@@ -723,12 +723,13 @@ func (c *AssessmentController) LaunchSupportModule(tcID string) error {
 	env = append(env, fmt.Sprintf("SESSION_EVIDENCE_DIR=%s", c.Session.EvidenceDir))
 	
 	// Re-load config from DB
-	rows, _ := c.Session.DB.Query("SELECT key, value FROM config")
-	defer rows.Close()
-	for rows.Next() {
-		var k, v string
-		rows.Scan(&k, &v)
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
+	if cfgRows, err := c.Session.DB.Query("SELECT key, value FROM config"); err == nil {
+		defer cfgRows.Close()
+		for cfgRows.Next() {
+			var k, v string
+			cfgRows.Scan(&k, &v)
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
 	}
 
 	logFile := filepath.Join(c.Session.LogDir, fmt.Sprintf("%s_bg.log", strings.ToLower(tcID)))
