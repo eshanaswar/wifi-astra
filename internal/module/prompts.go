@@ -222,7 +222,8 @@ func promptTunnelConfig(m *Module, _ *sql.DB) error {
 	}
 	os.Setenv("TUNNEL_DOMAIN", domain)
 
-	pass := ui.PromptString("Enter tunnel password", "")
+	fmt.Printf("%s[*] Leave password blank if the iodined server has no password. Ctrl+C here cannot cancel — use Ctrl+C at the domain prompt to abort.%s\n", constants.ColorGray, constants.ColorReset)
+	pass := ui.PromptString("Enter tunnel password (blank = no password)", "")
 	os.Setenv("TUNNEL_PASS", pass)
 	return nil
 }
