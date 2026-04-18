@@ -93,12 +93,13 @@ func init() {
 func sessionWizard() {
 	for {
 		ui.GetManager().ClearScreen()
+		ui.GetManager().PrintBanner()
 		baseDir := "./sessions"
 		if config.GlobalConfig != nil && config.GlobalConfig.SessionDir != "" {
 			baseDir = config.GlobalConfig.SessionDir
 		}
 
-		fmt.Println("\n--- WiFi-Astra: Session Manager ---")
+		ui.PrintHeader("Session Manager")
 
 		sessions, _ := os.ReadDir(baseDir)
 		var existing []os.DirEntry
@@ -121,7 +122,7 @@ func sessionWizard() {
 		}
 
 		if choice == "1" {
-			fmt.Println("\n--- New Session Setup ---")
+			ui.PrintHeader("New Session Setup")
 			name := ui.PromptString("Enter session name (optional)", "")
 			s, err := session.NewSession(name, baseDir)
 			if err != nil {
@@ -133,9 +134,24 @@ func sessionWizard() {
 			launchMainMenu(s)
 			return
 		} else if choice == "2" && len(existing) > 0 {
-			fmt.Println("\n--- Available Sessions ---")
-			for i, s := range existing {
-				fmt.Printf("%d) %s\n", i+1, s.Name())
+			ui.PrintHeader("Available Sessions")
+			for i, entry := range existing {
+				meta, err := session.QueryMeta(filepath.Join(baseDir, entry.Name()))
+				if err != nil || meta.Name == "" {
+					fmt.Printf("  %d) %s\n", i+1, entry.Name())
+					continue
+				}
+				createdAt := meta.CreatedAt
+				if len(createdAt) > 10 {
+					createdAt = createdAt[:10]
+				}
+				fmt.Printf("  %d) %s%-20s%s  %s  |  %s%d modules done%s  |  %s%d findings%s\n",
+					i+1,
+					constants.ColorBold, meta.Name, constants.ColorReset,
+					createdAt,
+					constants.ThemeSuccess, meta.ModulesDone, constants.ColorReset,
+					constants.ThemeHigh, meta.FindingCount, constants.ColorReset,
+				)
 			}
 			sIdx := ui.PromptString("Select session to resume", "")
 			if sIdx == "" {
@@ -153,9 +169,24 @@ func sessionWizard() {
 				logging.Error("Failed to load session: %v", err)
 			}
 		} else if choice == "3" && len(existing) > 0 {
-			fmt.Println("\n--- Available Sessions for Deletion ---")
-			for i, s := range existing {
-				fmt.Printf("%d) %s\n", i+1, s.Name())
+			ui.PrintHeader("Delete Session")
+			for i, entry := range existing {
+				meta, err := session.QueryMeta(filepath.Join(baseDir, entry.Name()))
+				if err != nil || meta.Name == "" {
+					fmt.Printf("  %d) %s\n", i+1, entry.Name())
+					continue
+				}
+				createdAt := meta.CreatedAt
+				if len(createdAt) > 10 {
+					createdAt = createdAt[:10]
+				}
+				fmt.Printf("  %d) %s%-20s%s  %s  |  %s%d modules done%s  |  %s%d findings%s\n",
+					i+1,
+					constants.ColorBold, meta.Name, constants.ColorReset,
+					createdAt,
+					constants.ThemeSuccess, meta.ModulesDone, constants.ColorReset,
+					constants.ThemeHigh, meta.FindingCount, constants.ColorReset,
+				)
 			}
 			sIdx := ui.PromptString("Select session to delete (or 0 to cancel)", "0")
 			if sIdx == "" {
@@ -244,6 +275,10 @@ func launchMainMenu(s *session.Session) {
 			if avail, known := moduleAvail[mod.ID]; known && !avail {
 				suffix = fmt.Sprintf(" %s[tools missing]%s", constants.ColorGray, constants.ColorReset)
 			}
+			if strings.HasPrefix(mod.Desc, "[LEGACY]") {
+				suffix += fmt.Sprintf(" %s[legacy]%s", constants.ColorGray, constants.ColorReset)
+				return fmt.Sprintf("%s%s%s: %s%s", prefix, constants.ColorGray, mod.ID, mod.Name+suffix, constants.ColorReset)
+			}
 			return prefix + mod.ID + ": " + mod.Name + suffix
 		}, func() error {
 			return Ctrl.ExecuteModule(&mod)
@@ -272,27 +307,80 @@ func launchMainMenu(s *session.Session) {
 		}
 	}
 
+	mainMenu.PreRender = func() {
+		var ssid, bssid, ch string
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestChannel).Scan(&ch)
+
+		iface := ""
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigWifiInterface).Scan(&iface)
+
+		scopeStr := fmt.Sprintf("%s<NOT SET — run A1>%s", constants.ThemeHigh, constants.ColorReset)
+		if ssid != "" {
+			scopeStr = fmt.Sprintf("%s%s%s (%s) CH%s",
+				constants.ColorBold, ssid, constants.ColorReset, bssid, ch)
+		}
+
+		fmt.Printf("%s SESSION:%s %-18s  %sTARGET:%s %s  %sIFACE:%s %s\n",
+			constants.ThemeHeader, constants.ColorReset, s.Name,
+			constants.ThemeHeader, constants.ColorReset, scopeStr,
+			constants.ThemeHeader, constants.ColorReset, iface,
+		)
+		fmt.Printf("%s\n", strings.Repeat("─", 70))
+	}
+
 	mainMenu.AddOption("List All Available Modules", func() error {
-		fmt.Println("\n--- All Assessment Modules ---")
-		for _, m := range modules {
-			status := ""
+		ui.PrintHeader("All Assessment Modules")
+		currentCat := ""
+		for _, mod := range modules {
+			if mod.Category != currentCat {
+				currentCat = mod.Category
+				catLabel := catNames[currentCat]
+				fmt.Printf("\n  %sCategory %s: %s%s\n", constants.ThemeHeader, currentCat, catLabel, constants.ColorReset)
+				fmt.Printf("  %s\n", strings.Repeat("─", 60))
+			}
 			var dbStatus string
-			s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", m.ID).Scan(&dbStatus)
+			s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", mod.ID).Scan(&dbStatus)
+			statusIcon := "  "
 			switch dbStatus {
 			case constants.StatusCompleted:
-				status = fmt.Sprintf(" %s✓%s", constants.ColorGreen, constants.ColorReset)
+				statusIcon = fmt.Sprintf("%s✓ %s", constants.ColorGreen, constants.ColorReset)
 			case constants.StatusFailed:
-				status = fmt.Sprintf(" %s✗%s", constants.ColorRed, constants.ColorReset)
+				statusIcon = fmt.Sprintf("%s✗ %s", constants.ColorRed, constants.ColorReset)
 			}
-			avail, known := moduleAvail[m.ID]
 			toolsNote := ""
-			if known && !avail {
+			if avail, known := moduleAvail[mod.ID]; known && !avail {
 				toolsNote = fmt.Sprintf(" %s[tools missing]%s", constants.ColorGray, constants.ColorReset)
 			}
-			fmt.Printf("[%s] %-4s %-30s%s%s - %s\n", m.Category, m.ID, m.Name, status, toolsNote, m.Desc)
+			legacyNote := ""
+			if strings.HasPrefix(mod.Desc, "[LEGACY]") {
+				legacyNote = fmt.Sprintf(" %s[legacy]%s", constants.ColorGray, constants.ColorReset)
+			}
+			desc := mod.Desc
+			if strings.HasPrefix(desc, "[LEGACY]") {
+				desc = desc[8:]
+			}
+			fmt.Printf("  %s%-4s %-28s%s%s  %s\n",
+				statusIcon, mod.ID, mod.Name, toolsNote, legacyNote, desc)
 		}
 		fmt.Println()
-		ui.PromptString("Press Enter to return to menu", "")
+		ui.PromptString("Press Enter to return", "")
+		return nil
+	})
+
+	mainMenu.AddOption("Run Module Directly (by ID)", func() error {
+		modID := strings.ToUpper(strings.TrimSpace(ui.PromptString("Enter module ID (e.g. D1, G4)", "")))
+		if modID == "" {
+			return nil
+		}
+		for i := range modules {
+			if modules[i].ID == modID {
+				return Ctrl.ExecuteModule(&modules[i])
+			}
+		}
+		fmt.Printf("%s[!] Module %s not found.%s\n", constants.ThemeHigh, modID, constants.ColorReset)
+		ui.PromptString("Press Enter to continue", "")
 		return nil
 	})
 
@@ -307,9 +395,56 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
-	mainMenu.AddOption("Show Session Info", func() error {
-		fmt.Printf("Session ID: %s\n", s.ID)
-		fmt.Printf("Log Directory: %s\n", s.LogDir)
+	mainMenu.AddOption("Show Session Info & Coverage", func() error {
+		ui.PrintHeader("Session Status")
+		fmt.Printf("  Session:    %s%s%s (%s)\n", constants.ColorBold, s.Name, constants.ColorReset, s.ID)
+		fmt.Printf("  Evidence:   %s\n", s.EvidenceDir)
+		fmt.Printf("  Report dir: %s\n", s.ReportDir)
+
+		var ssid, bssid, ch string
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestChannel).Scan(&ch)
+		if ssid != "" {
+			fmt.Printf("  Scope:      %s%s%s (%s) CH%s\n", constants.ColorBold, ssid, constants.ColorReset, bssid, ch)
+		} else {
+			fmt.Printf("  Scope:      %s<NOT SET>%s\n", constants.ThemeHigh, constants.ColorReset)
+		}
+
+		// Coverage
+		total := 0
+		for _, n := range catTotal {
+			total += n
+		}
+		var done int
+		s.DB.QueryRow("SELECT COUNT(*) FROM module_state WHERE status = 'completed'").Scan(&done)
+		pct := 0
+		if total > 0 {
+			pct = done * 100 / total
+		}
+		fmt.Printf("\n  Coverage:   %d/%d modules completed (%d%%)\n", done, total, pct)
+
+		sevs := []string{"CRITICAL", "HIGH", "MEDIUM", "INFO"}
+		fmt.Printf("\n  Findings by severity:\n")
+		for _, sev := range sevs {
+			var cnt int
+			s.DB.QueryRow("SELECT COUNT(*) FROM vulnerability WHERE severity = ?", sev).Scan(&cnt)
+			if cnt > 0 {
+				color := constants.ColorWhite
+				switch sev {
+				case "CRITICAL":
+					color = constants.ThemeCritical
+				case "HIGH":
+					color = constants.ThemeHigh
+				case "MEDIUM":
+					color = constants.ThemeMedium
+				}
+				fmt.Printf("    %s%-8s%s %d\n", color, sev, constants.ColorReset, cnt)
+			}
+		}
+
+		fmt.Println()
+		ui.PromptString("Press Enter to return", "")
 		return nil
 	})
 

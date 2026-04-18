@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	"wifi-astra/pkg/constants"
+
 	"github.com/chzyer/readline"
 )
 
@@ -43,6 +45,27 @@ func (m *Manager) ClearScreen() {
 	fmt.Print("\033[H\033[2J")
 }
 
+// PrintBanner prints the wifi-astra startup banner.
+func (m *Manager) PrintBanner() {
+	fmt.Printf("\n%s", constants.ThemeMission)
+	fmt.Println(`  ██╗    ██╗██╗███████╗██╗      █████╗ ███████╗████████╗██████╗  █████╗ `)
+	fmt.Println(`  ██║    ██║██║██╔════╝██║     ██╔══██╗██╔════╝╚══██╔══╝██╔══██╗██╔══██╗`)
+	fmt.Println(`  ██║ █╗ ██║██║█████╗  ██║     ███████║███████╗   ██║   ██████╔╝███████║`)
+	fmt.Println(`  ██║███╗██║██║██╔══╝  ██║     ██╔══██║╚════██║   ██║   ██╔══██╗██╔══██║`)
+	fmt.Println(`  ╚███╔███╔╝██║██║     ██║     ██║  ██║███████║   ██║   ██║  ██║██║  ██║`)
+	fmt.Println(`   ╚══╝╚══╝ ╚═╝╚═╝     ╚═╝     ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝`)
+	fmt.Printf("%s\n", constants.ColorReset)
+	fmt.Printf("  %sWiFi Penetration Testing Framework%s  |  %sAuthorized Use Only%s\n\n",
+		constants.ColorBold, constants.ColorReset, constants.ThemeHigh, constants.ColorReset)
+}
+
+// PrintHeader prints a themed section header.
+func PrintHeader(title string) {
+	fmt.Printf("\n%s%s%s\n", constants.ThemeHeader, strings.Repeat("═", 70), constants.ColorReset)
+	fmt.Printf("%s  %s%s\n", constants.ThemeHeader, title, constants.ColorReset)
+	fmt.Printf("%s%s%s\n", constants.ThemeHeader, strings.Repeat("─", 70), constants.ColorReset)
+}
+
 func (m *Manager) Close() {
 	managerMu.Lock()
 	defer managerMu.Unlock()
@@ -59,9 +82,10 @@ type MenuOption struct {
 }
 
 type Menu struct {
-	Title   string
-	Options []MenuOption
-	Prompt  string
+	Title     string
+	Options   []MenuOption
+	Prompt    string
+	PreRender func() // called before rendering options each loop iteration
 }
 
 func NewMenu(title string) *Menu {
@@ -94,7 +118,10 @@ func (m *Menu) Display() error {
 
 	for {
 		mgr.ClearScreen()
-		fmt.Printf("\n--- %s ---\n", m.Title)
+		if m.PreRender != nil {
+			m.PreRender()
+		}
+		PrintHeader(m.Title)
 		for i, opt := range m.Options {
 			label := opt.Label
 			if opt.DynamicLabel != nil {
