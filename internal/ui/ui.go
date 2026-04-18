@@ -191,7 +191,7 @@ func (m *Menu) Display() error {
 		}
 
 		if err := m.Options[choice-1].Action(); err != nil {
-			fmt.Printf("Error: %v\n", err)
+			fmt.Printf("%s[!] Error: %v%s\n", constants.ThemeHigh, err, constants.ColorReset)
 		}
 	}
 	return nil

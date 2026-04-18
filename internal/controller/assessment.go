@@ -879,7 +879,7 @@ func (c *AssessmentController) CleanupChecklist() {
 	}
 
 	for i, item := range items {
-		fmt.Printf("\n%d. %s\n", i+1, item.label)
+		fmt.Printf("\n%s%d. %s%s\n", constants.ThemeHeader, i+1, item.label, constants.ColorReset)
 		if ui.PromptConfirm("   Run this step?", true) {
 			if err := item.auto(); err != nil {
 				logging.Warn("Cleanup step %d failed: %v", i+1, err)

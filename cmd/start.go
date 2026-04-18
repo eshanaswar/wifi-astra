@@ -241,6 +241,7 @@ func launchMainMenu(s *session.Session) {
 	moduleAvail := prereq.PreflightModules(prereq.ModuleToolMap)
 
 	mainMenu := ui.NewMenu("Assessment Menu")
+	mainMenu.Prompt = "Select an option (? for help): "
 
 	catNames := map[string]string{
 		"A": "Discovery & Recon (Passive/Active)",
@@ -415,7 +416,7 @@ func launchMainMenu(s *session.Session) {
 			}
 			var dbStatus string
 			s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", mod.ID).Scan(&dbStatus)
-			statusIcon := "  "
+			statusIcon := fmt.Sprintf("%s·%s ", constants.ColorGray, constants.ColorReset)
 			switch dbStatus {
 			case constants.StatusCompleted:
 				statusIcon = fmt.Sprintf("%s✓ %s", constants.ColorGreen, constants.ColorReset)
