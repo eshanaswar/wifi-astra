@@ -180,6 +180,7 @@ func (m *Menu) Display() error {
 					constants.ColorGray, help, constants.ColorReset)
 			}
 			fmt.Printf("  %sq)%s Quit / Back\n\n", constants.ThemeHeader, constants.ColorReset)
+			PromptString("Press Enter to continue", "")
 			continue
 		}
 
@@ -192,6 +193,7 @@ func (m *Menu) Display() error {
 
 		if err := m.Options[choice-1].Action(); err != nil {
 			fmt.Printf("%s[!] Error: %v%s\n", constants.ThemeHigh, err, constants.ColorReset)
+			PromptString("Press Enter to continue", "")
 		}
 	}
 	return nil
