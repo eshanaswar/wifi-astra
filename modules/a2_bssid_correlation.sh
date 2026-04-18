@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="no"
 # TOOLS="airmon-ng,airodump-ng"
-# DESC="Map BSSIDs to same controller, detect infra overlap"
+# DESC="Correlate BSSIDs to shared controllers via OUI vendor lookup, probe patterns, and SSID clustering"
 # REQS="monitor_iface,target_ssid"
 # PCAP="no"
 # DECODE="wifi_mgmt"

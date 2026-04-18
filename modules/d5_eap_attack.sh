@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="no"
 # TOOLS="eaphammer"
-# DESC="Test for EAP-level vulnerabilities (GTC downgrade, certificate validation bypass)"
+# DESC="Deploy rogue RADIUS to capture MSCHAPv2/GTC credentials; runs inline asleap for hash cracking"
 # REQS="monitor_iface,target_ssid"
 # PCAP="yes"
 # TIMED="yes"

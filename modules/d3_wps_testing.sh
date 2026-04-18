@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="no"
 # TOOLS="wash,reaver,bully"
-# DESC="Detect WPS-enabled APs and test for PIN/PBC vulnerabilities"
+# DESC="Detect WPS-enabled APs; runs Pixie Dust (primary) and PIN brute-force with inline PSK recovery"
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="no"
 # TIMED="yes"

@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="no"
 # TOOLS="hostapd,python3,scapy"
-# DESC="Force clients to transition to a malicious AP using 802.11v BSS Transition Management Requests"
+# DESC="Abuse 802.11v BSS Transition Management to steer clients to a rogue AP without sending deauth frames"
 # REQS="monitor_iface,target_ssid,target_bssid"
 # PCAP="yes"
 # DECODE="wifi_mgmt"

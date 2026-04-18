@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="no"
 # TOOLS="aireplay-ng,airodump-ng"
-# DESC="Test if Management Frame Protection (MFP) is actually enforced"
+# DESC="Actively test 802.11w deauth resilience by replaying deauth frames to distinguish passive support from active enforcement"
 # REQS="monitor_iface,target_bssid,target_channel"
 # PCAP="no"
 # TIMED="yes"

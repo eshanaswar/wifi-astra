@@ -5,7 +5,7 @@
 # DEPS="none"
 # CRITICAL="no"
 # TOOLS="airmon-ng,airodump-ng"
-# DESC="Enumerate all SSIDs, BSSIDs, channels, encryption using monitor mode"
+# DESC="Scan 2.4/5/6 GHz for all APs (SSID, BSSID, channel, encryption, signal). Run first — results populate scope selection"
 # REQS="monitor_iface"
 # PCAP="no"
 # TIMED="yes"

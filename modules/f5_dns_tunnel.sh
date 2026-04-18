@@ -5,7 +5,7 @@
 # DEPS="none"
 # CRITICAL="no"
 # TOOLS="iodine"
-# DESC="Bypass restrictive portals using DNS tunneling via iodine"
+# DESC="Test whether DNS tunneling via iodine is possible from the target network, indicating a data exfiltration risk"
 # REQS="managed_iface"
 # PCAP="no"
 # TIMED="yes"

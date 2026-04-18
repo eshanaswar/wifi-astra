@@ -5,7 +5,7 @@
 # DEPS="A1"
 # CRITICAL="yes"
 # TOOLS="aireplay-ng,aircrack-ng,hcxdumptool,hcxpcapngtool"
-# DESC="Capture WPA PMKID and 4-way handshakes for offline cracking"
+# DESC="Capture PMKID (primary) and 4-way EAPOL handshake; offers inline hashcat cracking on completion"
 # REQS="monitor_iface,target_ssid,target_bssid,target_channel"
 # PCAP="yes"
 # TIMED="yes"
