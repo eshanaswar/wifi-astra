@@ -116,9 +116,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	}
 
 	ui.GetManager().ClearScreen()
-	fmt.Printf("\n%s\n", strings.Repeat("═", 80))
-	fmt.Printf("🚀 MISSION START: %s (%s)\n", m.Name, m.ID)
-	fmt.Printf("%s\n", strings.Repeat("─", 80))
+	fmt.Printf("\n%s%s%s\n", constants.ThemeHeader, strings.Repeat("═", 80), constants.ColorReset)
+	fmt.Printf("%s🚀 MISSION START: %s (%s)%s\n", constants.ColorBold, m.Name, m.ID, constants.ColorReset)
+	fmt.Printf("%s%s%s\n", constants.ThemeHeader, strings.Repeat("─", 80), constants.ColorReset)
 	fmt.Printf("📝 Description: %s\n", m.Desc)
 
 	// 1. Load Session Config
@@ -172,7 +172,7 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	}
 
 	// 2. Target Briefing
-	fmt.Println("\n📡 [Target Briefing]")
+	fmt.Printf("\n%s📡 [Target Briefing]%s\n", constants.ThemeHeader, constants.ColorReset)
 	iface := config[constants.ConfigWifiInterface]
 	fmt.Printf("   • Interface: %s\n", iface)
 	if config[constants.ConfigGuestSSID] != "" {
@@ -182,7 +182,7 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	}
 
 	// 3. Dependency Check
-	fmt.Println("\n🛠️  [Pre-flight Check]")
+	fmt.Printf("\n%s🛠️  [Pre-flight Check]%s\n", constants.ThemeHeader, constants.ColorReset)
 	if m.Tools != "" && m.Tools != "none" {
 		tools := strings.Split(m.Tools, ",")
 		foundCount := 0
