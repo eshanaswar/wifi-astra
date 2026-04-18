@@ -117,7 +117,7 @@ func sessionWizard() {
 
 		choice := ui.PromptString("Select an option", "1")
 		if choice == "" {
-			fmt.Println("\n[!] Operation cancelled.")
+			fmt.Printf("\n%s[!] Operation cancelled.%s\n", constants.ThemeHigh, constants.ColorReset)
 			os.Exit(0)
 		}
 
@@ -153,7 +153,7 @@ func sessionWizard() {
 					constants.ThemeHigh, meta.FindingCount, constants.ColorReset,
 				)
 			}
-			sIdx := ui.PromptString("Select session to resume", "")
+			sIdx := ui.PromptString(fmt.Sprintf("Select session to resume [1-%d]", len(existing)), "")
 			if sIdx == "" {
 				continue
 			}
@@ -167,6 +167,9 @@ func sessionWizard() {
 					return
 				}
 				logging.Error("Failed to load session: %v", err)
+			} else {
+				fmt.Printf("%s[!] Invalid selection. Enter a number between 1 and %d.%s\n",
+					constants.ThemeHigh, len(existing), constants.ColorReset)
 			}
 		} else if choice == "3" && len(existing) > 0 {
 			ui.PrintHeader("Delete Session")
@@ -195,8 +198,9 @@ func sessionWizard() {
 			idx, _ := strconv.Atoi(sIdx)
 			if idx >= 1 && idx <= len(existing) {
 				sessionID := existing[idx-1].Name()
-				warning := fmt.Sprintf("\n[!] WARNING: This will permanently delete all logs, evidence, and results for session %s.", sessionID)
-				fmt.Println(warning)
+				fmt.Printf("\n%s[!] WARNING:%s This will permanently delete all logs, evidence, and results for session %s%s%s.\n",
+					constants.ThemeHigh, constants.ColorReset,
+					constants.ColorBold, sessionID, constants.ColorReset)
 				if ui.PromptConfirm("Are you sure?", false) {
 					path := filepath.Join(baseDir, sessionID)
 					if err := os.RemoveAll(path); err != nil {
