@@ -559,29 +559,34 @@ func ensureAdapterSetup(s *session.Session) string {
 	}
 
 	// Pick attack/monitor adapter
-	var monChoice string
 	if len(ifaces) == 1 {
 		fmt.Printf("\nOnly one interface found: %s\n", ifaces[0].Name)
 		if !ui.PromptConfirm("Use this as the attack (monitor) adapter?", true) {
 			return ""
 		}
-		monChoice = "1"
+		monIface = ifaces[0].Name
 	} else {
-		monChoice = ui.PromptString("Select attack/monitor adapter [1-"+strconv.Itoa(len(ifaces))+"]", "")
+		for {
+			monChoice := ui.PromptString("Select attack/monitor adapter [1-"+strconv.Itoa(len(ifaces))+"]", "")
+			if monChoice == "" {
+				return ""
+			}
+			monIdx, _ := strconv.Atoi(monChoice)
+			if monIdx < 1 || monIdx > len(ifaces) {
+				fmt.Printf("%s[!] Invalid selection. Enter a number between 1 and %d.%s\n",
+					constants.ThemeHigh, len(ifaces), constants.ColorReset)
+				continue
+			}
+			monIface = ifaces[monIdx-1].Name
+			break
+		}
 	}
-	if monChoice == "" {
-		return ""
-	}
-	monIdx, _ := strconv.Atoi(monChoice)
-	if monIdx < 1 || monIdx > len(ifaces) {
-		return ""
-	}
-	monIface = ifaces[monIdx-1].Name
 
 	// Pick management adapter (optional, only when >1 interface)
 	if len(ifaces) > 1 {
-		fmt.Printf("\n[*] Attack adapter: %s\n", monIface)
-		fmt.Println("[?] Optionally select a management adapter for internet/C2 connectivity:")
+		fmt.Printf("\n%s[✓] Attack adapter:%s %s\n", constants.ThemeSuccess, constants.ColorReset, monIface)
+		fmt.Printf("%s[?]%s Optionally select a management adapter for internet/C2 connectivity:\n",
+			constants.ThemeHeader, constants.ColorReset)
 		for i, iface := range ifaces {
 			if iface.Name == monIface {
 				continue
@@ -593,7 +598,13 @@ func ensureAdapterSetup(s *session.Session) string {
 			mgmtIdx, _ := strconv.Atoi(mgmtChoice)
 			if mgmtIdx >= 1 && mgmtIdx <= len(ifaces) && ifaces[mgmtIdx-1].Name != monIface {
 				mgmtIface = ifaces[mgmtIdx-1].Name
+				fmt.Printf("%s[✓] Management adapter:%s %s\n", constants.ThemeSuccess, constants.ColorReset, mgmtIface)
+			} else {
+				fmt.Printf("%s[!] Invalid selection — no management adapter set.%s\n",
+					constants.ThemeHigh, constants.ColorReset)
 			}
+		} else {
+			fmt.Printf("%s[*] No management adapter selected.%s\n", constants.ColorGray, constants.ColorReset)
 		}
 	}
 
