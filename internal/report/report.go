@@ -1,6 +1,7 @@
 package report
 
 import (
+	"fmt"
 	"html/template"
 	"os"
 	"path/filepath"
@@ -70,6 +71,7 @@ const reportTemplate = `
             <div class="stat-card"><div class="stat-val">{{.Summary.Done}}/{{.Summary.Total}}</div><div class="stat-label">Tests Run</div></div>
             <div class="stat-card"><div class="stat-val">{{.Summary.Findings}}</div><div class="stat-label">Total Findings</div></div>
             <div class="stat-card"><div class="stat-val" style="color: #e74c3c;">{{.Summary.Critical}}</div><div class="stat-label">Critical Risks</div></div>
+            <div class="stat-card"><div class="stat-val" style="color: #27ae60;">{{.Summary.Secure}}</div><div class="stat-label">Modules Secure</div></div>
         </div>
 
         <h2>Executive Summary</h2>
@@ -211,6 +213,90 @@ func buildReportData(s *session.Session) ReportData {
 	}
 
 	return data
+}
+
+// GenerateMarkdownReport writes assessment_report.md alongside the HTML report.
+func GenerateMarkdownReport(s *session.Session) (string, error) {
+	data := buildReportData(s)
+
+	var sb strings.Builder
+
+	sb.WriteString("# WiFi-Astra Security Assessment\n\n")
+	sb.WriteString(fmt.Sprintf("**Session:** %s (`%s`)  \n", data.SessionName, data.SessionID))
+	sb.WriteString(fmt.Sprintf("**Generated:** %s  \n\n", data.GeneratedAt))
+
+	sb.WriteString("## Summary\n\n")
+	sb.WriteString("| Metric | Value |\n|--------|-------|\n")
+	sb.WriteString(fmt.Sprintf("| Tests Run | %d / %d |\n", data.Summary.Done, data.Summary.Total))
+	sb.WriteString(fmt.Sprintf("| Total Findings | %d |\n", data.Summary.Findings))
+	sb.WriteString(fmt.Sprintf("| Critical Risks | %d |\n", data.Summary.Critical))
+	sb.WriteString(fmt.Sprintf("| Modules Secure | %d |\n\n", data.Summary.Secure))
+
+	if len(data.Vulnerabilities) > 0 {
+		sb.WriteString("## Vulnerabilities\n\n")
+		for _, v := range data.Vulnerabilities {
+			sb.WriteString(fmt.Sprintf("### [%s] %s\n\n", v.Severity, v.Name))
+			sb.WriteString(fmt.Sprintf("- **Module:** %s\n", v.TCID))
+			sb.WriteString(fmt.Sprintf("- **Target:** `%s`\n", v.TargetHost))
+			if v.Description != "" {
+				sb.WriteString(fmt.Sprintf("- **Description:** %s\n", v.Description))
+			}
+			if v.Rationale != "" {
+				sb.WriteString(fmt.Sprintf("- **Rationale:** %s\n", v.Rationale))
+			}
+			if v.Remediation != "" {
+				sb.WriteString(fmt.Sprintf("- **Remediation:** %s\n", v.Remediation))
+			}
+			if v.EvidenceFile != "" {
+				sb.WriteString(fmt.Sprintf("- **Evidence:** `%s`\n", filepath.Base(v.EvidenceFile)))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	if len(data.Credentials) > 0 {
+		sb.WriteString("## Captured Credentials\n\n")
+		sb.WriteString("| Module | Protocol | Target | Username | Secret |\n")
+		sb.WriteString("|--------|----------|--------|----------|--------|\n")
+		for _, cred := range data.Credentials {
+			secret := cred.Hash
+			if cred.Password != "" {
+				secret = cred.Password
+			}
+			sb.WriteString(fmt.Sprintf("| %s | %s | `%s` | **%s** | `%s` |\n",
+				cred.TCID, cred.Proto, cred.TargetHost, cred.Username, secret))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("## Discovered Networks\n\n")
+	sb.WriteString("| BSSID | SSID | CH | Encryption | Signal |\n")
+	sb.WriteString("|-------|------|----|------------|--------|\n")
+	for _, n := range data.Networks {
+		ssid := n.SSID
+		if ssid == "" {
+			ssid = "*HIDDEN*"
+		}
+		sb.WriteString(fmt.Sprintf("| `%s` | %s | %d | %s | %ddBm |\n",
+			n.BSSID, ssid, n.Channel, n.Encryption, n.Signal))
+	}
+	sb.WriteString("\n")
+
+	if len(data.Results) > 0 {
+		sb.WriteString("## Module Execution Log\n\n")
+		sb.WriteString("| Module | Status | Duration |\n")
+		sb.WriteString("|--------|--------|----------|\n")
+		for _, r := range data.Results {
+			sb.WriteString(fmt.Sprintf("| %s | %s | %ds |\n", r.TCID, r.Status, r.DurationSec))
+		}
+		sb.WriteString("\n")
+	}
+
+	outputPath := filepath.Join(s.ReportDir, "assessment_report.md")
+	if err := os.WriteFile(outputPath, []byte(sb.String()), 0644); err != nil {
+		return "", err
+	}
+	return outputPath, nil
 }
 
 func GenerateReport(s *session.Session) (string, error) {

@@ -47,11 +47,9 @@ func TestFindingsCounterIgnoresFailedRuns(t *testing.T) {
 	// Insert one real vulnerability finding
 	s.DB.Exec(`INSERT INTO vulnerability (tc_id, name, severity) VALUES (?, ?, ?)`, "D1", "WPA2 Handshake Captured", "HIGH")
 
-	path, _ := GenerateReport(s)
-	content, _ := os.ReadFile(path)
-	// Should show exactly 1 finding in the stat card, not 2
-	if !strings.Contains(string(content), ">1<") {
-		t.Errorf("expected findings stat to be 1, report content snippet: %s", string(content)[:min(500, len(string(content)))])
+	data := buildReportData(s)
+	if data.Summary.Findings != 1 {
+		t.Errorf("expected 1 finding (from vulnerability table only), got %d", data.Summary.Findings)
 	}
 }
 
@@ -86,6 +84,35 @@ func TestMediumSeverityCSS(t *testing.T) {
 	content, _ := os.ReadFile(path)
 	if !strings.Contains(string(content), "finding-medium") {
 		t.Errorf("MEDIUM severity finding should use finding-medium CSS class")
+	}
+}
+
+func TestGenerateMarkdownReport(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := session.NewSession("md_test", tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	defer s.Cleanup()
+
+	s.DB.Exec("INSERT INTO vulnerability (tc_id, name, severity, description) VALUES (?, ?, ?, ?)",
+		"D1", "WPA2 Handshake Captured", "CRITICAL", "4-way handshake captured.")
+	s.DB.Exec("INSERT INTO network (bssid, ssid, channel) VALUES (?, ?, ?)", "AA:BB:CC:DD:EE:FF", "CorpWiFi", 6)
+
+	path, err := GenerateMarkdownReport(s)
+	if err != nil {
+		t.Fatalf("GenerateMarkdownReport failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(path)
+	if !strings.Contains(string(content), "WPA2 Handshake Captured") {
+		t.Errorf("markdown report missing vulnerability name")
+	}
+	if !strings.Contains(string(content), "CorpWiFi") {
+		t.Errorf("markdown report missing network name")
+	}
+	if !strings.Contains(string(content), "## Vulnerabilities") {
+		t.Errorf("markdown report missing Vulnerabilities section header")
 	}
 }
 

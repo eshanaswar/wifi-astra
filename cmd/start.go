@@ -395,6 +395,17 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
+	mainMenu.AddOption("Generate Markdown Report", func() error {
+		fmt.Print("[*] Generating Markdown report... ")
+		path, err := report.GenerateMarkdownReport(s)
+		if err != nil {
+			fmt.Println("FAILED")
+			return err
+		}
+		fmt.Printf("OK\n[+] Saved to: %s\n", path)
+		return nil
+	})
+
 	mainMenu.AddOption("Show Session Info & Coverage", func() error {
 		ui.PrintHeader("Session Status")
 		fmt.Printf("  Session:    %s%s%s (%s)\n", constants.ColorBold, s.Name, constants.ColorReset, s.ID)
