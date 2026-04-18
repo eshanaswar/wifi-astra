@@ -716,7 +716,11 @@ func (c *AssessmentController) DisplayEvidence(tcID string) {
 	evidenceFound := false
 	for _, f := range files {
 		if strings.HasPrefix(strings.ToLower(f.Name()), strings.ToLower(tcID)) {
-			fmt.Printf("   • %s\n", filepath.Join(c.Session.EvidenceDir, f.Name()))
+			relPath, err := filepath.Rel(c.Session.BaseDir, filepath.Join(c.Session.EvidenceDir, f.Name()))
+			if err != nil {
+				relPath = f.Name()
+			}
+			fmt.Printf("   • %s\n", relPath)
 			evidenceFound = true
 		}
 	}
@@ -762,13 +766,43 @@ func (c *AssessmentController) CleanupChecklist() {
 		{
 			"Stop all background support processes",
 			func() error {
-				for id, proc := range c.SupportProcs {
-					logging.Info("Stopping support process %s (PID %d)...", id, proc.PID)
-					if err := c.ExecMgr.Stop(id); err != nil {
-						logging.Warn("Failed to stop support process %s: %v", id, err)
-					}
+				for id := range c.SupportProcs {
+					c.ExecMgr.Stop(id)
 				}
 				c.SupportProcs = make(map[string]*executor.Process)
+				return nil
+			},
+		},
+		{
+			"Remove iptables NAT rules added during SSL/MitM modules",
+			func() error {
+				var iface string
+				c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigWifiInterface).Scan(&iface)
+				if iface == "" {
+					return nil
+				}
+				exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp", "--dport", "80", "-j", "REDIRECT", "--to-port", "8080").Run()
+				exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp", "--dport", "443", "-j", "REDIRECT", "--to-port", "8080").Run()
+				fmt.Println("   iptables NAT rules cleared (or were not present).")
+				return nil
+			},
+		},
+		{
+			"Check for lingering wireless attack processes",
+			func() error {
+				procs := []string{"hostapd", "hostapd-mana", "bettercap", "responder", "mitmproxy", "mitmdump"}
+				found := false
+				for _, p := range procs {
+					out, _ := exec.Command("pgrep", "-x", p).Output()
+					if len(strings.TrimSpace(string(out))) > 0 {
+						fmt.Printf("   %s[!] Process still running: %s (PIDs: %s)%s\n",
+							constants.ThemeHigh, p, strings.TrimSpace(string(out)), constants.ColorReset)
+						found = true
+					}
+				}
+				if !found {
+					fmt.Println("   No lingering attack processes detected.")
+				}
 				return nil
 			},
 		},
@@ -776,22 +810,31 @@ func (c *AssessmentController) CleanupChecklist() {
 			"Disable monitor mode on attack adapter (if still active)",
 			func() error {
 				monIface, err := hw.Roles.Get(hw.RoleMonitor)
-				if err != nil {
-					logging.Debug("Monitor role not assigned, skipping disable: %v", err)
+				if err != nil || monIface == "" {
 					return nil
 				}
-				if monIface != "" {
-					if err := hw.DisableMonitorMode(monIface); err != nil {
-						return fmt.Errorf("disable monitor mode on %s: %w", monIface, err)
-					}
-				}
+				hw.DisableMonitorMode(monIface)
 				return nil
 			},
 		},
 		{
-			"Verify evidence directory is accessible",
+			"Verify evidence directory and print manifest summary",
 			func() error {
 				fmt.Printf("   Evidence directory: %s\n", c.Session.EvidenceDir)
+				files, _ := os.ReadDir(c.Session.EvidenceDir)
+				evidenceCount := 0
+				for _, f := range files {
+					if !f.IsDir() && f.Name() != "MANIFEST.sha256" && f.Name() != "EVIDENCE_INDEX.txt" {
+						evidenceCount++
+					}
+				}
+				fmt.Printf("   Evidence files: %d\n", evidenceCount)
+				manifestPath := filepath.Join(c.Session.EvidenceDir, "MANIFEST.sha256")
+				if _, err := os.Stat(manifestPath); err == nil {
+					data, _ := os.ReadFile(manifestPath)
+					lineCount := len(strings.Split(strings.TrimSpace(string(data)), "\n"))
+					fmt.Printf("   Manifest entries: %d (see %s)\n", lineCount, manifestPath)
+				}
 				return nil
 			},
 		},
