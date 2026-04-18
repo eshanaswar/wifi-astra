@@ -426,6 +426,8 @@ func launchMainMenu(s *session.Session) {
 	mainMenu.AddOption("Run Module Directly (by ID)", func() error {
 		modID := strings.ToUpper(strings.TrimSpace(ui.PromptString("Enter module ID (e.g. D1, G4)", "")))
 		if modID == "" {
+			fmt.Printf("%s[*] No module selected.%s\n", constants.ColorGray, constants.ColorReset)
+			ui.PromptString("Press Enter to continue", "")
 			return nil
 		}
 		for i := range modules {
@@ -519,6 +521,7 @@ func launchMainMenu(s *session.Session) {
 
 	mainMenu.AddOption("End Engagement (Cleanup Checklist)", func() error {
 		Ctrl.CleanupChecklist()
+		ui.PromptString("Press Enter to return to menu", "")
 		return nil
 	})
 
