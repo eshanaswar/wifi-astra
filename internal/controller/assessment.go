@@ -95,13 +95,13 @@ func (c *AssessmentController) CheckPreviousRun(m *module.Module) bool {
 	}
 
 	ui.GetManager().ClearScreen()
-	fmt.Printf("\n%s[!] ATTENTION: Module %s (%s) was already completed in this session.%s\n", constants.ThemeHigh, m.ID, m.Name, constants.ColorReset)
-	
+	ui.PrintHeader(fmt.Sprintf("Module %s: Already Completed", m.ID))
+	fmt.Printf("%s%s%s\n", constants.ColorBold, m.Name, constants.ColorReset)
+
 	c.DisplayMissionSummary(m.ID)
 
-	fmt.Printf("\n%sWould you like to rerun this module?%s\n", constants.ColorBold, constants.ColorReset)
-	fmt.Println("Existing findings will be preserved, but rerunning may take additional time.")
-	
+	fmt.Printf("\n%sRerun this module?%s Existing findings will be preserved.\n", constants.ColorBold, constants.ColorReset)
+
 	rerun := ui.PromptConfirm("Rerun?", false)
 	if !rerun {
 		ui.PromptString("\nPress Enter to return to menu", "")
