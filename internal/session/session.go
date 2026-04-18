@@ -110,3 +110,29 @@ func (s *Session) Cleanup() {
 		s.DB.Close()
 	}
 }
+
+// SessionMeta holds lightweight display info for the session picker.
+type SessionMeta struct {
+	ID           string
+	Name         string
+	CreatedAt    string
+	ModulesDone  int
+	FindingCount int
+}
+
+// QueryMeta opens the session DB and returns display metadata without
+// loading the full session into memory.
+func QueryMeta(sessionDir string) (SessionMeta, error) {
+	dbPath := filepath.Join(sessionDir, "session.db")
+	database, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return SessionMeta{}, err
+	}
+	defer database.Close()
+
+	var m SessionMeta
+	database.QueryRow("SELECT id, name, created_at FROM session LIMIT 1").Scan(&m.ID, &m.Name, &m.CreatedAt)
+	database.QueryRow("SELECT COUNT(*) FROM module_state WHERE status = 'completed'").Scan(&m.ModulesDone)
+	database.QueryRow("SELECT COUNT(*) FROM vulnerability WHERE severity != 'INFO'").Scan(&m.FindingCount)
+	return m, nil
+}
