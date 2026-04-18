@@ -170,6 +170,7 @@ func sessionWizard() {
 			} else {
 				fmt.Printf("%s[!] Invalid selection. Enter a number between 1 and %d.%s\n",
 					constants.ThemeHigh, len(existing), constants.ColorReset)
+				ui.PromptString("Press Enter to continue", "")
 			}
 		} else if choice == "3" && len(existing) > 0 {
 			ui.PrintHeader("Delete Session")

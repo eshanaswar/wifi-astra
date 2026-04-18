@@ -252,7 +252,8 @@ func PromptList(title string, options []string) int {
 
 		choice, err := strconv.Atoi(input)
 		if err != nil || choice < 1 || choice > len(options) {
-			fmt.Println("Invalid choice. Please try again.")
+			fmt.Printf("%s[!] Invalid choice. Enter a number between 1 and %d.%s\n",
+				constants.ThemeHigh, len(options), constants.ColorReset)
 			continue
 		}
 
