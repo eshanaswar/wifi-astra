@@ -276,7 +276,7 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 			// Set very large timeouts to effectively bypass 'timeout' commands in scripts
 			os.Setenv("SCAN_TIME", "36000")
 			os.Setenv("CAPTURE_TIME", "36000")
-			fmt.Printf("\n%s[*] Indefinite mode active. Results will be recorded as they occur.%s\n", constants.ThemeSuccess, constants.ColorReset)
+			fmt.Printf("\n%s[*] Indefinite mode active — press Ctrl+C to stop and record results.%s\n", constants.ThemeSuccess, constants.ColorReset)
 		} else {
 			os.Setenv("ASTRA_INDEFINITE", "false")
 		}
@@ -983,7 +983,15 @@ func (c *AssessmentController) HandleA1PostRun() {
 		fmt.Printf("%s[✓] Active target: %s (%s) CH%d%s\n",
 			constants.ThemeSuccess, primary.SSID, primary.BSSID, primary.Channel, constants.ColorReset)
 		if len(selectedIdxs) > 1 {
-			fmt.Printf("%s[*] Authorized scope:%s %s\n", constants.ColorGray, constants.ColorReset, strings.Join(bssids, ", "))
+			fmt.Printf("%s[*] Authorized scope (%d networks):%s\n", constants.ColorGray, len(selectedIdxs), constants.ColorReset)
+			for _, idx := range selectedIdxs {
+				n := networks[idx]
+				marker := "  "
+				if n.BSSID == primary.BSSID {
+					marker = fmt.Sprintf("%s→%s", constants.ThemeSuccess, constants.ColorReset)
+				}
+				fmt.Printf("    %s %-24s %-18s CH%d\n", marker, n.SSID, n.BSSID, n.Channel)
+			}
 		}
 		return
 	}
