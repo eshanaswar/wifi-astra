@@ -45,7 +45,8 @@ assessment lifecycle without interactive prompts. Example plan structure:
   }
 
 Requires root privileges for hardware operations (monitor mode, packet injection).
-Privileges are dropped immediately after adapter setup is complete.`,
+The process runs as root throughout; SUDO_UID/SUDO_GID are captured only for chown
+operations on session directories.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// 1. Load Global Config
 		cfg, err := config.LoadConfig(ConfigFile)
@@ -505,7 +506,7 @@ func launchMainMenu(s *session.Session) {
 		"Generate a full HTML engagement report from all session findings.",
 		func() error {
 		fmt.Printf("%s[*] Generating HTML report...%s ", constants.ThemeHeader, constants.ColorReset)
-		path, err := report.GenerateReport(s)
+		path, err := report.GenerateReport(s, ModDir)
 		if err != nil {
 			fmt.Printf("%sFAILED%s\n", constants.ThemeHigh, constants.ColorReset)
 			ui.PromptString("Press Enter to continue", "")
@@ -520,7 +521,7 @@ func launchMainMenu(s *session.Session) {
 		"Generate a Markdown report suitable for pasting into a ticket or wiki.",
 		func() error {
 		fmt.Printf("%s[*] Generating Markdown report...%s ", constants.ThemeHeader, constants.ColorReset)
-		path, err := report.GenerateMarkdownReport(s)
+		path, err := report.GenerateMarkdownReport(s, ModDir)
 		if err != nil {
 			fmt.Printf("%sFAILED%s\n", constants.ThemeHigh, constants.ColorReset)
 			ui.PromptString("Press Enter to continue", "")

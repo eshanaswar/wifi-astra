@@ -20,6 +20,8 @@ type AuditPlan struct {
 	TargetBSSID      string   `json:"target_bssid"`
 	TargetChan       string   `json:"target_channel"`
 	Modules          []string `json:"modules"`
+	CaptureTime      int      `json:"capture_time"`
+	ScanTime         int      `json:"scan_time"`
 }
 
 // RunAutonomousAudit executes an assessment without user interaction based on a plan file.
@@ -81,6 +83,15 @@ func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*sess
 		modMap[modules[i].ID] = &modules[i]
 	}
 
+	// Inject timing env vars from plan (modules default gracefully if unset, but
+	// headless plans should be able to override them).
+	if plan.CaptureTime > 0 {
+		os.Setenv("CAPTURE_TIME", fmt.Sprintf("%d", plan.CaptureTime))
+	}
+	if plan.ScanTime > 0 {
+		os.Setenv("SCAN_TIME", fmt.Sprintf("%d", plan.ScanTime))
+	}
+
 	// Execute planned modules
 	for _, modID := range plan.Modules {
 		m, exists := modMap[modID]
@@ -95,7 +106,7 @@ func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*sess
 	}
 
 	logging.Info("🏁 Autonomous Audit Complete. Generating report...")
-	reportPath, err := report.GenerateReport(s)
+	reportPath, err := report.GenerateReport(s, modDir)
 	if err != nil {
 		logging.Error("Report generation failed: %v", err)
 	} else {

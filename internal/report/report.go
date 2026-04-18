@@ -148,7 +148,7 @@ const reportTemplate = `
 </html>
 `
 
-func buildReportData(s *session.Session) ReportData {
+func buildReportData(s *session.Session, modDir string) ReportData {
 	data := ReportData{
 		SessionID:   s.ID,
 		SessionName: s.Name,
@@ -172,10 +172,6 @@ func buildReportData(s *session.Session) ReportData {
 	data.Results, _ = db.GetTestResults(s.DB)
 
 	// Calculate summary — total module count from filesystem
-	modDir := "./modules"
-	if val, ok := data.Configs["mod_dir"]; ok {
-		modDir = val
-	}
 	entries, _ := os.ReadDir(modDir)
 	modCount := 0
 	for _, e := range entries {
@@ -219,8 +215,8 @@ func buildReportData(s *session.Session) ReportData {
 }
 
 // GenerateMarkdownReport writes assessment_report.md alongside the HTML report.
-func GenerateMarkdownReport(s *session.Session) (string, error) {
-	data := buildReportData(s)
+func GenerateMarkdownReport(s *session.Session, modDir string) (string, error) {
+	data := buildReportData(s, modDir)
 
 	var sb strings.Builder
 
@@ -302,8 +298,8 @@ func GenerateMarkdownReport(s *session.Session) (string, error) {
 	return outputPath, nil
 }
 
-func GenerateReport(s *session.Session) (string, error) {
-	data := buildReportData(s)
+func GenerateReport(s *session.Session, modDir string) (string, error) {
+	data := buildReportData(s, modDir)
 
 	funcMap := template.FuncMap{
 		"lower": strings.ToLower,
