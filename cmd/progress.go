@@ -33,9 +33,9 @@ var progressCmd = &cobra.Command{
 }
 
 func init() {
-	progressCmd.Flags().String("session-dir", "", "Session directory")
-	progressCmd.Flags().String("tc", "", "Test Case ID")
-	progressCmd.Flags().Int("percent", 0, "Progress percentage")
-	progressCmd.Flags().String("status", "", "Current status text")
+	progressCmd.Flags().String("session-dir", "", "Absolute path to the active session directory (set by the controller via $SESSION_DIR)")
+	progressCmd.Flags().String("tc", "", "Test case ID of the reporting module (e.g. D1)")
+	progressCmd.Flags().Int("percent", 0, "Completion percentage (0–100)")
+	progressCmd.Flags().String("status", "", "Human-readable status message displayed in the TUI progress bar")
 	RootCmd.AddCommand(progressCmd)
 }

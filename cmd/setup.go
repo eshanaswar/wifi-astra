@@ -13,7 +13,14 @@ import (
 
 var setupCmd = &cobra.Command{
 	Use:   "setup",
-	Short: "Install required system dependencies",
+	Short: "Install required system dependencies (requires root)",
+	Long: `Install all wireless auditing tools needed by WiFi-Astra via apt.
+
+Packages installed: aircrack-ng, nmap, tcpdump, tshark, hostapd, dnsmasq,
+yersinia, responder, bettercap, macchanger, curl, jq, fping, snmp, onesixtyone.
+
+Must be run as root (sudo astra setup). Runs 'apt update' then 'apt install -y'
+for the full dependency list.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if os.Geteuid() != 0 {
 			fmt.Println("[✗] Setup requires root privileges (sudo).")

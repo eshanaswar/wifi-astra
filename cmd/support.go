@@ -39,7 +39,7 @@ var launchSupportCmd = &cobra.Command{
 }
 
 func init() {
-	launchSupportCmd.Flags().String("session-dir", "", "Session directory")
-	launchSupportCmd.Flags().String("tc", "", "Support module TC ID")
+	launchSupportCmd.Flags().String("session-dir", "", "Absolute path to the active session directory (set by the controller via $SESSION_DIR)")
+	launchSupportCmd.Flags().String("tc", "", "Test case ID of the support module to launch (e.g. B10)")
 	RootCmd.AddCommand(launchSupportCmd)
 }

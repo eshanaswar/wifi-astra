@@ -18,7 +18,15 @@ var (
 
 var cleanCmd = &cobra.Command{
 	Use:   "clean",
-	Short: "Archive or delete old session data",
+	Short: "Remove stale session directories older than a threshold",
+	Long: `Scan the sessions directory and permanently delete session folders whose last
+modification time exceeds the --older-than threshold.
+
+Use --dry-run first to review what would be removed before committing to deletion.
+
+Example:
+  astra clean --older-than 7 --dry-run   # preview sessions older than 7 days
+  astra clean --older-than 7             # delete them`,
 	Run: func(cmd *cobra.Command, args []string) {
 		baseDir := "./sessions"
 		if config.GlobalConfig != nil && config.GlobalConfig.SessionDir != "" {
@@ -91,7 +99,7 @@ func getDirSize(path string) int64 {
 }
 
 func init() {
-	cleanCmd.Flags().IntVarP(&olderThan, "older-than", "t", 30, "Cleanup sessions older than N days")
-	cleanCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Scan only without deleting")
+	cleanCmd.Flags().IntVarP(&olderThan, "older-than", "t", 30, "Delete sessions whose last modification time exceeds N days")
+	cleanCmd.Flags().BoolVar(&dryRun, "dry-run", false, "List sessions that would be removed without deleting them")
 	RootCmd.AddCommand(cleanCmd)
 }

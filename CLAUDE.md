@@ -28,13 +28,13 @@ go build -o bin/wifi-astra ./cmd/astra/
 # Run interactive session
 sudo bin/wifi-astra start
 
-# Run with verbose logging
+# Run with verbose/debug logging (writes to console and session log file)
 sudo bin/wifi-astra start -v
 
-# Run headless (autonomous audit plan)
+# Run headless with a JSON audit plan (unattended autonomous mode)
 sudo bin/wifi-astra start --config plan.json
 
-# Override modules directory
+# Override modules directory (default: ./modules)
 sudo bin/wifi-astra start --mod-dir ./modules
 
 # Test suite
@@ -44,11 +44,49 @@ go test ./...
 shellcheck -S warning modules/*.sh
 ```
 
+### CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `astra start` | Start or resume an interactive assessment session |
+| `astra clean` | Remove stale session directories older than a threshold (default 30 days) |
+| `astra setup` | Install all required system dependencies via apt (requires root) |
+| `astra update-oui` | Force-refresh the local IEEE OUI database used for vendor lookups |
+| `astra lookup-oui [MAC/OUI]` | Look up hardware vendor for a MAC address or OUI prefix |
+
+**Global flags** (available on all commands):
+
+| Flag | Description |
+|------|-------------|
+| `--config <path>` | YAML config file (settings) or JSON audit plan (headless mode) |
+| `--mod-dir <path>` | Path to directory containing assessment module scripts (`*.sh`); default `./modules` |
+| `-v, --verbose` | Enable debug-level logging to console and session log file |
+
+**`astra clean` flags:**
+
+| Flag | Description |
+|------|-------------|
+| `-t, --older-than <N>` | Delete sessions whose last modification time exceeds N days (default 30) |
+| `--dry-run` | List sessions that would be removed without deleting them |
+
+**Headless audit plan format** (`--config plan.json`):
+
+```json
+{
+  "session_name": "corp-wifi-2026",
+  "monitor_interface": "wlan1",
+  "modules": ["A1", "D1", "D3"],
+  "capture_time": 60,
+  "scan_time": 30
+}
+```
+
 ### Operational Notes
 
 - Root required: Hardware ops (monitor mode, interface control) require root. Privileges are dropped via `prereq.DropPrivileges()` immediately after adapter setup.
 - Signal handling: SIGINT/SIGTERM triggers `ExecMgr.Cleanup()` then `hw.Recover(false)` before exit.
 - Panic recovery: A global `defer` in `Execute()` calls `hw.Recover(false)` on crash to restore interfaces.
+- OUI refresh: `astra start` automatically refreshes the OUI database in the background if missing or older than 30 days.
 
 ---
 
@@ -139,15 +177,18 @@ All modules receive these env vars from the Go controller at launch. All values 
 
 | Variable | Description |
 |----------|-------------|
-| MONITOR_INTERFACE | Monitor mode adapter name (e.g., wlan1mon) |
-| GUEST_BSSID | Target AP BSSID (AA:BB:CC:DD:EE:FF) |
-| GUEST_SSID | Target AP SSID |
-| GUEST_CHANNEL | Target AP channel number |
-| SESSION_DIR | Session root directory (absolute path) |
-| SESSION_EVIDENCE_DIR | Evidence subdirectory for this module's artifacts |
-| CAPTURE_TIME | Capture duration in seconds |
-| SCAN_TIME | Scan duration in seconds |
-| TARGET_CLIENT | Specific client MAC address (optional, module-dependent) |
+| MONITOR_INTERFACE | Monitor mode adapter name (e.g., `wlan1mon`) |
+| GUEST_BSSID | Target AP BSSID in `AA:BB:CC:DD:EE:FF` format |
+| GUEST_SSID | Target AP SSID (may be empty for hidden networks) |
+| GUEST_CHANNEL | Target AP channel number (1–196) |
+| SESSION_DIR | Absolute path to the session root directory |
+| SESSION_EVIDENCE_DIR | Absolute path to this module's evidence subdirectory |
+| CAPTURE_TIME | Packet capture duration in seconds |
+| SCAN_TIME | Channel scan duration in seconds |
+| TARGET_CLIENT | Specific client MAC address to target (optional, module-dependent) |
+| ASTRA_BIN | Path to the `wifi-astra` binary; use for `record-finding` and `record-progress` calls within module scripts |
+| ASTRA_HEADLESS | Set to `true` when running in headless/unattended mode; modules can skip interactive prompts |
+| ASTRA_INDEFINITE | Set to `true` when capture time is indefinite (operator-controlled stop); modules should loop and report progress until interrupted |
 
 ### Tool Preflight
 

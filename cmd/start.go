@@ -27,6 +27,25 @@ import (
 var startCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start or resume an assessment session",
+	Long: `Launch an interactive wireless assessment session.
+
+On first run, the session wizard prompts for a session name and adapter role assignment
+(monitor interface and management interface). All subsequent module execution is scoped
+to BSSIDs discovered and authorized during the initial A1 discovery scan.
+
+Headless / unattended mode: supply a JSON audit plan via --config to drive the full
+assessment lifecycle without interactive prompts. Example plan structure:
+
+  {
+    "session_name": "corp-wifi-2026",
+    "monitor_interface": "wlan1",
+    "modules": ["A1","D1","D3"],
+    "capture_time": 60,
+    "scan_time": 30
+  }
+
+Requires root privileges for hardware operations (monitor mode, packet injection).
+Privileges are dropped immediately after adapter setup is complete.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// 1. Load Global Config
 		cfg, err := config.LoadConfig(ConfigFile)

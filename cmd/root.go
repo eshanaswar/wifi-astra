@@ -26,6 +26,16 @@ var (
 var RootCmd = &cobra.Command{
 	Use:   "astra",
 	Short: "WiFi-Astra: Wireless Security Assessment Framework",
+	Long: `WiFi-Astra is a professional wireless penetration testing framework for authorized engagements.
+
+It covers the full 802.11 attack lifecycle — from passive discovery and client fingerprinting to
+encryption attacks, rogue AP deployment, MitM pivoting, and automated report generation.
+
+All operations require written authorization. The framework enforces scope boundaries at runtime:
+modules are blocked from targeting BSSIDs outside the operator-defined scope list.
+
+Run 'astra start' to launch an interactive session, or supply a JSON audit plan with --config
+for unattended headless execution.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		if err := prereq.VerifyEnvironment(); err != nil {
 			fmt.Printf("%s[✗] Environment check failed: %v%s\n", constants.ThemeHigh, err, constants.ColorReset)
@@ -70,9 +80,9 @@ func Execute() {
 		}
 	}()
 
-	RootCmd.PersistentFlags().BoolVarP(&Verbose, "verbose", "v", false, "Enable verbose output")
-	RootCmd.PersistentFlags().StringVar(&ModDir, "mod-dir", "./modules", "Path to assessment modules")
-	RootCmd.PersistentFlags().StringVar(&ConfigFile, "config", "", "Path to global configuration file or headless audit plan")
+	RootCmd.PersistentFlags().BoolVarP(&Verbose, "verbose", "v", false, "Enable debug-level logging to console and session log file")
+	RootCmd.PersistentFlags().StringVar(&ModDir, "mod-dir", "./modules", "Path to directory containing assessment module scripts (*.sh)")
+	RootCmd.PersistentFlags().StringVar(&ConfigFile, "config", "", "YAML config file (settings) or JSON audit plan (headless mode)")
 
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
