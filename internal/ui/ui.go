@@ -221,7 +221,7 @@ func PromptConfirm(prompt string, defaultValue bool) bool {
 func PromptList(title string, options []string) int {
 	mgr := GetManager()
 	if mgr.rl == nil {
-		fmt.Printf("\n--- %s ---\n", title)
+		PrintHeader(title)
 		for i, opt := range options {
 			fmt.Printf("%d) %s\n", i+1, opt)
 		}
@@ -232,7 +232,7 @@ func PromptList(title string, options []string) int {
 		return choice - 1
 	}
 
-	fmt.Printf("\n--- %s ---\n", title)
+	PrintHeader(title)
 	for i, opt := range options {
 		fmt.Printf("%d) %s\n", i+1, opt)
 	}
