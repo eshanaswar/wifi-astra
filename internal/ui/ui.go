@@ -79,6 +79,7 @@ type MenuOption struct {
 	Label        string
 	DynamicLabel func() string
 	Action       func() error
+	Help         string
 }
 
 type Menu struct {
@@ -110,6 +111,14 @@ func (m *Menu) AddDynamicOption(dynamicLabel func() string, action func() error)
 	})
 }
 
+func (m *Menu) AddOptionWithHelp(label string, help string, action func() error) {
+	m.Options = append(m.Options, MenuOption{
+		Label:  label,
+		Help:   help,
+		Action: action,
+	})
+}
+
 func (m *Menu) Display() error {
 	mgr := GetManager()
 	if mgr.rl == nil {
@@ -130,6 +139,7 @@ func (m *Menu) Display() error {
 			fmt.Printf("%d) %s\n", i+1, label)
 		}
 		fmt.Printf("q) Quit / Back\n")
+		fmt.Printf("?) Help\n")
 
 		mgr.rl.SetPrompt(m.Prompt)
 		line, err := mgr.rl.Readline()
@@ -143,6 +153,26 @@ func (m *Menu) Display() error {
 		input := strings.TrimSpace(line)
 		if input == "q" {
 			break
+		}
+
+		if input == "?" || input == "h" {
+			fmt.Printf("\n%s[?] Available options:%s\n", constants.ThemeHeader, constants.ColorReset)
+			for i, opt := range m.Options {
+				label := opt.Label
+				if opt.DynamicLabel != nil {
+					label = opt.DynamicLabel()
+				}
+				help := opt.Help
+				if help == "" {
+					help = "(no description available)"
+				}
+				fmt.Printf("  %s%d)%s %s\n     %s%s%s\n",
+					constants.ThemeHeader, i+1, constants.ColorReset,
+					label,
+					constants.ColorGray, help, constants.ColorReset)
+			}
+			fmt.Printf("  %sq)%s Quit / Back\n\n", constants.ThemeHeader, constants.ColorReset)
+			continue
 		}
 
 		choice, err := strconv.Atoi(input)

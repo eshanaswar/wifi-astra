@@ -275,7 +275,7 @@ func launchMainMenu(s *session.Session) {
 		categories[m.Category].AddDynamicOption(func() string {
 			var status string
 			s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", mod.ID).Scan(&status)
-			prefix := ""
+			prefix := fmt.Sprintf("%s·%s ", constants.ColorGray, constants.ColorReset)
 			switch status {
 			case constants.StatusCompleted:
 				prefix = fmt.Sprintf("%s✓%s ", constants.ColorGreen, constants.ColorReset)
@@ -397,7 +397,9 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
-	mainMenu.AddOption("List All Available Modules", func() error {
+	mainMenu.AddOptionWithHelp("List All Available Modules",
+		"Show all modules with run status, tool availability, and descriptions.",
+		func() error {
 		ui.PrintHeader("All Assessment Modules")
 		currentCat := ""
 		for _, mod := range modules {
@@ -436,7 +438,9 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
-	mainMenu.AddOption("Run Module Directly (by ID)", func() error {
+	mainMenu.AddOptionWithHelp("Run Module Directly (by ID)",
+		"Skip category menus — type a module ID (e.g. D1, G4) to run it immediately.",
+		func() error {
 		modID := strings.ToUpper(strings.TrimSpace(ui.PromptString("Enter module ID (e.g. D1, G4)", "")))
 		if modID == "" {
 			fmt.Printf("%s[*] No module selected.%s\n", constants.ColorGray, constants.ColorReset)
@@ -453,7 +457,9 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
-	mainMenu.AddOption("Generate Assessment Report", func() error {
+	mainMenu.AddOptionWithHelp("Generate Assessment Report",
+		"Generate a full HTML engagement report from all session findings.",
+		func() error {
 		fmt.Printf("%s[*] Generating HTML report...%s ", constants.ThemeHeader, constants.ColorReset)
 		path, err := report.GenerateReport(s)
 		if err != nil {
@@ -466,7 +472,9 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
-	mainMenu.AddOption("Generate Markdown Report", func() error {
+	mainMenu.AddOptionWithHelp("Generate Markdown Report",
+		"Generate a Markdown report suitable for pasting into a ticket or wiki.",
+		func() error {
 		fmt.Printf("%s[*] Generating Markdown report...%s ", constants.ThemeHeader, constants.ColorReset)
 		path, err := report.GenerateMarkdownReport(s)
 		if err != nil {
@@ -479,7 +487,9 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
-	mainMenu.AddOption("Show Session Info & Coverage", func() error {
+	mainMenu.AddOptionWithHelp("Show Session Info & Coverage",
+		"Display session metadata, scope, module completion percentage, and findings by severity.",
+		func() error {
 		ui.PrintHeader("Session Status")
 		fmt.Printf("  Session:    %s%s%s (%s)\n", constants.ColorBold, s.Name, constants.ColorReset, s.ID)
 		fmt.Printf("  Evidence:   %s\n", s.EvidenceDir)
@@ -532,7 +542,9 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
-	mainMenu.AddOption("End Engagement (Cleanup Checklist)", func() error {
+	mainMenu.AddOptionWithHelp("End Engagement (Cleanup Checklist)",
+		"Walk through post-engagement housekeeping: stop processes, restore interfaces, verify evidence.",
+		func() error {
 		Ctrl.CleanupChecklist()
 		ui.PromptString("Press Enter to return to menu", "")
 		return nil

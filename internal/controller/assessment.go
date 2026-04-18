@@ -410,6 +410,16 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 
 	fmt.Printf("\n%s%s%s\n", constants.ThemeHeader, strings.Repeat("═", 80), constants.ColorReset)
 	if os.Getenv("ASTRA_HEADLESS") != "true" {
+		logFile := filepath.Join(c.Session.LogDir, fmt.Sprintf("%s.log", strings.ToLower(m.ID)))
+		if _, statErr := os.Stat(logFile); statErr == nil {
+			if ui.PromptConfirm(fmt.Sprintf("View full log (%s.log)?", strings.ToLower(m.ID)), false) {
+				pager := exec.Command("less", "-R", logFile)
+				pager.Stdin = os.Stdin
+				pager.Stdout = os.Stdout
+				pager.Stderr = os.Stderr
+				pager.Run()
+			}
+		}
 		ui.PromptString("Press Enter to return to menu", "")
 	}
 	return nil
@@ -911,8 +921,14 @@ func (c *AssessmentController) HandleA1PostRun() {
 		if enc == "" {
 			enc = "OPN"
 		}
-		fmt.Printf("   %-4d %-25s %-18s %-5d %-12s %ddBm  %s\n",
-			i+1, n.SSID, n.BSSID, n.Channel, enc, n.Signal, vendorShort)
+		encColor := ""
+		encReset := ""
+		if enc == "OPN" {
+			encColor = constants.ThemeHigh
+			encReset = constants.ColorReset
+		}
+		fmt.Printf("   %-4d %-25s %-18s %-5d %s%-12s%s %ddBm  %s\n",
+			i+1, n.SSID, n.BSSID, n.Channel, encColor, enc, encReset, n.Signal, vendorShort)
 	}
 
 	fmt.Printf("\n%s[?] Enter numbers for ALL authorized targets (e.g. 1,3 for multiple).%s\n", constants.ThemeHeader, constants.ColorReset)
