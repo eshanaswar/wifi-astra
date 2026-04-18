@@ -735,7 +735,10 @@ func (c *AssessmentController) LaunchSupportModule(tcID string) error {
 	
 	modFile := filepath.Join(c.ModDir, fmt.Sprintf("%s_*.sh", strings.ToLower(tcID)))
 	matches, _ := filepath.Glob(modFile)
-	
+	if len(matches) == 0 {
+		return fmt.Errorf("support module script for %s not found in %s", tcID, c.ModDir)
+	}
+
 	proc, err := c.ExecMgr.SpawnWithEnv(context.Background(), tcID+"_bg", matches[0], []string{}, logFile, env)
 	if err != nil {
 		return err
