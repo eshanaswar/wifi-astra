@@ -116,9 +116,9 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	}
 
 	ui.GetManager().ClearScreen()
-	fmt.Printf("\n%s%s%s\n", constants.ThemeHeader, strings.Repeat("═", 80), constants.ColorReset)
+	fmt.Printf("\n%s%s%s\n", constants.ThemeHeader, strings.Repeat("═", 70), constants.ColorReset)
 	fmt.Printf("%s🚀 MISSION START: %s (%s)%s\n", constants.ColorBold, m.Name, m.ID, constants.ColorReset)
-	fmt.Printf("%s%s%s\n", constants.ThemeHeader, strings.Repeat("─", 80), constants.ColorReset)
+	fmt.Printf("%s%s%s\n", constants.ThemeHeader, strings.Repeat("─", 70), constants.ColorReset)
 	fmt.Printf("📝 Description: %s\n", m.Desc)
 
 	// 1. Load Session Config
@@ -408,16 +408,23 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	// 8. Mission Observation Summary
 	c.DisplayMissionSummary(m.ID)
 
-	fmt.Printf("\n%s%s%s\n", constants.ThemeHeader, strings.Repeat("═", 80), constants.ColorReset)
+	fmt.Printf("\n%s%s%s\n", constants.ThemeHeader, strings.Repeat("═", 70), constants.ColorReset)
 	if os.Getenv("ASTRA_HEADLESS") != "true" {
 		logFile := filepath.Join(c.Session.LogDir, fmt.Sprintf("%s.log", strings.ToLower(m.ID)))
 		if _, statErr := os.Stat(logFile); statErr == nil {
 			if ui.PromptConfirm(fmt.Sprintf("View full log (%s.log)?", strings.ToLower(m.ID)), false) {
-				pager := exec.Command("less", "-R", logFile)
-				pager.Stdin = os.Stdin
-				pager.Stdout = os.Stdout
-				pager.Stderr = os.Stderr
-				pager.Run()
+				var pager *exec.Cmd
+				if _, err := exec.LookPath("less"); err == nil {
+					pager = exec.Command("less", "-R", logFile)
+				} else if _, err := exec.LookPath("more"); err == nil {
+					pager = exec.Command("more", logFile)
+				}
+				if pager != nil {
+					pager.Stdin = os.Stdin
+					pager.Stdout = os.Stdout
+					pager.Stderr = os.Stderr
+					pager.Run()
+				}
 			}
 		}
 		ui.PromptString("Press Enter to return to menu", "")

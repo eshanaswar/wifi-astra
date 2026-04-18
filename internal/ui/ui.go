@@ -111,6 +111,14 @@ func (m *Menu) AddDynamicOption(dynamicLabel func() string, action func() error)
 	})
 }
 
+func (m *Menu) AddDynamicOptionWithHelp(dynamicLabel func() string, help string, action func() error) {
+	m.Options = append(m.Options, MenuOption{
+		DynamicLabel: dynamicLabel,
+		Help:         help,
+		Action:       action,
+	})
+}
+
 func (m *Menu) AddOptionWithHelp(label string, help string, action func() error) {
 	m.Options = append(m.Options, MenuOption{
 		Label:  label,
@@ -272,7 +280,7 @@ func PromptList(title string, options []string) int {
 	}
 
 	for {
-		mgr.rl.SetPrompt("Select an option: ")
+		mgr.rl.SetPrompt("Select an option (? for list): ")
 		line, err := mgr.rl.Readline()
 		if err != nil {
 			return -1
@@ -281,6 +289,13 @@ func PromptList(title string, options []string) int {
 		input := strings.TrimSpace(line)
 		if input == "" {
 			return -1
+		}
+
+		if input == "?" || input == "h" {
+			for i, opt := range options {
+				fmt.Printf("  %s%d)%s %s\n", constants.ThemeHeader, i+1, constants.ColorReset, opt)
+			}
+			continue
 		}
 
 		choice, err := strconv.Atoi(input)

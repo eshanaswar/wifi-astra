@@ -272,7 +272,11 @@ func launchMainMenu(s *session.Session) {
 		}
 
 		mod := m
-		categories[m.Category].AddDynamicOption(func() string {
+		modDesc := m.Desc
+		if strings.HasPrefix(modDesc, "[LEGACY]") {
+			modDesc = strings.TrimPrefix(modDesc, "[LEGACY]")
+		}
+		categories[m.Category].AddDynamicOptionWithHelp(func() string {
 			var status string
 			s.DB.QueryRow("SELECT status FROM module_state WHERE tc_id = ?", mod.ID).Scan(&status)
 			prefix := fmt.Sprintf("%s·%s ", constants.ColorGray, constants.ColorReset)
@@ -293,7 +297,7 @@ func launchMainMenu(s *session.Session) {
 				return fmt.Sprintf("%s%s%s: %s%s", prefix, constants.ColorGray, mod.ID, mod.Name+suffix, constants.ColorReset)
 			}
 			return prefix + mod.ID + ": " + mod.Name + suffix
-		}, func() error {
+		}, strings.TrimSpace(modDesc), func() error {
 			return Ctrl.ExecuteModule(&mod)
 		})
 	}
@@ -343,7 +347,7 @@ func launchMainMenu(s *session.Session) {
 		fmt.Printf("%s%s%s\n", constants.ThemeHeader, strings.Repeat("─", 70), constants.ColorReset)
 	}
 
-	mainMenu.AddDynamicOption(func() string {
+	mainMenu.AddDynamicOptionWithHelp(func() string {
 		var ssid, bssid string
 		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
 		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
@@ -351,7 +355,7 @@ func launchMainMenu(s *session.Session) {
 			return fmt.Sprintf("%sSwitch Active Target%s  (no scope set)", constants.ThemeHigh, constants.ColorReset)
 		}
 		return fmt.Sprintf("Switch Active Target  (current: %s%s%s / %s)", constants.ColorBold, ssid, constants.ColorReset, bssid)
-	}, func() error {
+	}, "Change which authorized BSSID modules will target. Scope must be set via A1 first.", func() error {
 		var scopeBSSIDs string
 		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigScopeBSSIDs).Scan(&scopeBSSIDs)
 		if scopeBSSIDs == "" {
