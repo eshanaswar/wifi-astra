@@ -13,6 +13,7 @@ const (
 	ConfigSessionID       = "SESSION_ID"
 	ConfigSessionName     = "SESSION_NAME"
 	ConfigManagementIface = "MANAGEMENT_INTERFACE"
+	ConfigScopeBSSIDs     = "SCOPE_BSSIDS"
 )
 
 // Module Reqs

@@ -147,6 +147,25 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		return nil
 	}
 
+	// Verify active target is in authorized scope (if scope is set)
+	if scopeBSSIDs, ok := config[constants.ConfigScopeBSSIDs]; ok && scopeBSSIDs != "" {
+		activeBSSID := config[constants.ConfigGuestBSSID]
+		authorized := false
+		for _, b := range strings.Split(scopeBSSIDs, ",") {
+			if strings.TrimSpace(b) == activeBSSID {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
+			fmt.Printf("\n%s[!] SCOPE VIOLATION: Active target %s is not in the authorized scope list.%s\n",
+				constants.ThemeCritical, activeBSSID, constants.ColorReset)
+			fmt.Printf("    Authorized scope: %s\n", scopeBSSIDs)
+			ui.PromptString("Press Enter to return to menu", "")
+			return nil
+		}
+	}
+
 	// Pre-run hooks: modules requiring operator input before env is built.
 	if m.ID == "G4" {
 		c.prepareG4Env()
@@ -896,29 +915,52 @@ func (c *AssessmentController) HandleA1PostRun() {
 			i+1, n.SSID, n.BSSID, n.Channel, enc, n.Signal, vendorShort)
 	}
 
+	fmt.Println("\n[?] Enter numbers for ALL authorized targets (e.g. 1,3 for multiple).")
+	fmt.Println("    First selection becomes the active target for module execution.")
 	for {
-		choice := ui.PromptString("\nSelect target network number to set as session default", "")
+		choice := ui.PromptString("Authorized target number(s)", "")
 		if choice == "" {
-			fmt.Println("[*] No target set. You can run A1 again to set scope.")
+			fmt.Println("[*] No targets set.")
 			return
 		}
-		idx, err := strconv.Atoi(strings.TrimSpace(choice))
-		if err != nil || idx < 1 || idx > len(networks) {
-			fmt.Printf("%s[!] Invalid selection — enter a number between 1 and %d.%s\n",
-				constants.ThemeHigh, len(networks), constants.ColorReset)
+
+		parts := strings.Split(choice, ",")
+		var selectedIdxs []int
+		valid := true
+		for _, p := range parts {
+			idx, err := strconv.Atoi(strings.TrimSpace(p))
+			if err != nil || idx < 1 || idx > len(networks) {
+				fmt.Printf("%s[!] Invalid selection: %q — enter numbers 1–%d separated by commas.%s\n",
+					constants.ThemeHigh, strings.TrimSpace(p), len(networks), constants.ColorReset)
+				valid = false
+				break
+			}
+			selectedIdxs = append(selectedIdxs, idx-1)
+		}
+		if !valid {
+			selectedIdxs = nil
 			continue
 		}
-		target := networks[idx-1]
-		enc := target.Encryption
-		if enc == "" {
-			enc = "OPN"
+
+		// First selected = active target
+		primary := networks[selectedIdxs[0]]
+		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestSSID, primary.SSID)
+		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestBSSID, primary.BSSID)
+		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestChannel, strconv.Itoa(primary.Channel))
+
+		// All selected = authorized scope
+		var bssids []string
+		for _, i := range selectedIdxs {
+			bssids = append(bssids, networks[i].BSSID)
 		}
-		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestSSID, target.SSID)
-		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestBSSID, target.BSSID)
-		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestChannel, strconv.Itoa(target.Channel))
+		c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigScopeBSSIDs, strings.Join(bssids, ","))
+
 		c.Session.DB.Exec("UPDATE module_state SET status = ? WHERE tc_id = 'A1'", constants.StatusCompleted)
-		fmt.Printf("%s[✓] Scope locked: %s (%s) CH%d [%s]%s\n",
-			constants.ThemeSuccess, target.SSID, target.BSSID, target.Channel, enc, constants.ColorReset)
+		fmt.Printf("%s[✓] Active target: %s (%s) CH%d%s\n",
+			constants.ThemeSuccess, primary.SSID, primary.BSSID, primary.Channel, constants.ColorReset)
+		if len(selectedIdxs) > 1 {
+			fmt.Printf("[*] Authorized scope: %s\n", strings.Join(bssids, ", "))
+		}
 		return
 	}
 }

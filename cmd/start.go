@@ -330,6 +330,60 @@ func launchMainMenu(s *session.Session) {
 		fmt.Printf("%s\n", strings.Repeat("─", 70))
 	}
 
+	mainMenu.AddDynamicOption(func() string {
+		var ssid, bssid string
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
+		if ssid == "" {
+			return fmt.Sprintf("%sSwitch Active Target%s  (no scope set)", constants.ThemeHigh, constants.ColorReset)
+		}
+		return fmt.Sprintf("Switch Active Target  (current: %s%s%s / %s)", constants.ColorBold, ssid, constants.ColorReset, bssid)
+	}, func() error {
+		var scopeBSSIDs string
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigScopeBSSIDs).Scan(&scopeBSSIDs)
+		if scopeBSSIDs == "" {
+			fmt.Printf("%s[!] No authorized scope set — run A1 first to select targets.%s\n",
+				constants.ThemeHigh, constants.ColorReset)
+			ui.PromptString("Press Enter", "")
+			return nil
+		}
+
+		bssidList := strings.Split(scopeBSSIDs, ",")
+		ui.PrintHeader("Switch Active Target")
+		for i, b := range bssidList {
+			b = strings.TrimSpace(b)
+			var ssid string
+			var ch int
+			s.DB.QueryRow("SELECT ssid, channel FROM network WHERE bssid = ?", b).Scan(&ssid, &ch)
+			if ssid == "" {
+				ssid = "<unknown>"
+			}
+			fmt.Printf("  %d) %-20s  %s  CH%d\n", i+1, ssid, b, ch)
+		}
+
+		choice := ui.PromptString("Select target number", "")
+		idx, err := strconv.Atoi(strings.TrimSpace(choice))
+		if err != nil || idx < 1 || idx > len(bssidList) {
+			fmt.Printf("%s[!] Invalid selection.%s\n", constants.ThemeHigh, constants.ColorReset)
+			ui.PromptString("Press Enter", "")
+			return nil
+		}
+
+		newBSSID := strings.TrimSpace(bssidList[idx-1])
+		var newSSID string
+		var newCh int
+		s.DB.QueryRow("SELECT ssid, channel FROM network WHERE bssid = ?", newBSSID).Scan(&newSSID, &newCh)
+
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestBSSID, newBSSID)
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestSSID, newSSID)
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigGuestChannel, strconv.Itoa(newCh))
+
+		fmt.Printf("%s[✓] Active target switched to: %s (%s) CH%d%s\n",
+			constants.ThemeSuccess, newSSID, newBSSID, newCh, constants.ColorReset)
+		ui.PromptString("Press Enter", "")
+		return nil
+	})
+
 	mainMenu.AddOption("List All Available Modules", func() error {
 		ui.PrintHeader("All Assessment Modules")
 		currentCat := ""
