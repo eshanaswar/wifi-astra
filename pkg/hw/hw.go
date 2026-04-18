@@ -171,7 +171,16 @@ func EnableMonitorMode(iface string) (string, error) {
 	}
 
 	logging.Info("Enabling monitor mode on %s...", iface)
-	
+
+	// Kill processes that fight with monitor mode (NetworkManager, wpa_supplicant).
+	// Ignore errors — if no conflicting processes exist, this exits non-zero.
+	killCmd := exec.Command("airmon-ng", "check", "kill")
+	if killOut, killErr := killCmd.CombinedOutput(); killErr != nil {
+		logging.Debug("airmon-ng check kill: %v (output: %s)", killErr, strings.TrimSpace(string(killOut)))
+	} else {
+		logging.Debug("airmon-ng check kill output: %s", strings.TrimSpace(string(killOut)))
+	}
+
 	cmd := exec.Command("airmon-ng", "start", iface)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

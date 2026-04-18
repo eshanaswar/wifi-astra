@@ -152,7 +152,7 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		activeBSSID := config[constants.ConfigGuestBSSID]
 		authorized := false
 		for _, b := range strings.Split(scopeBSSIDs, ",") {
-			if strings.TrimSpace(b) == activeBSSID {
+			if strings.EqualFold(strings.TrimSpace(b), activeBSSID) {
 				authorized = true
 				break
 			}
