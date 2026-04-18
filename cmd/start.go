@@ -546,7 +546,7 @@ func ensureAdapterSetup(s *session.Session) string {
 		return ""
 	}
 
-	fmt.Println("\n--- Adapter Setup ---")
+	ui.PrintHeader("Adapter Setup")
 	for i, iface := range ifaces {
 		fmt.Printf("%d) %-12s %s (%s) [Mode: %s]\n", i+1, iface.Name, iface.Chipset, iface.Driver, iface.Mode)
 	}
