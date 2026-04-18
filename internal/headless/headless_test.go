@@ -55,3 +55,52 @@ func TestRunAutonomousAudit(t *testing.T) {
 		t.Errorf("expected 1 module run, got %d", runCount)
 	}
 }
+
+func TestAuditPlanTimingInjected(t *testing.T) {
+	// Verify that capture_time and scan_time from the plan are injected as env vars.
+	os.Unsetenv("CAPTURE_TIME")
+	os.Unsetenv("SCAN_TIME")
+
+	tmpDir := "test_timing_sessions"
+	os.MkdirAll(tmpDir, 0755)
+	defer os.RemoveAll(tmpDir)
+
+	plan := AuditPlan{
+		SessionName: "timing_test",
+		Modules:     []string{"MOCK"},
+		CaptureTime: 120,
+		ScanTime:    45,
+	}
+	planPath := "test_timing_plan.json"
+	data, _ := json.Marshal(plan)
+	os.WriteFile(planPath, data, 0644)
+	defer os.Remove(planPath)
+
+	modDir := "test_timing_mods"
+	os.MkdirAll(modDir, 0755)
+	defer os.RemoveAll(modDir)
+	modFile := filepath.Join(modDir, "mock_test.sh")
+	os.WriteFile(modFile, []byte("# MODULE_META\n# NAME=\"Mock\"\n# CATEGORY=\"M\"\n"), 0755)
+
+	var captureTime, scanTime string
+	mockRunFunc := func(s *session.Session, m *module.Module) error {
+		captureTime = os.Getenv("CAPTURE_TIME")
+		scanTime = os.Getenv("SCAN_TIME")
+		return nil
+	}
+
+	cwd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(cwd)
+
+	if err := RunAutonomousAudit(filepath.Join("..", planPath), filepath.Join("..", modDir), mockRunFunc); err != nil {
+		t.Fatalf("RunAutonomousAudit failed: %v", err)
+	}
+
+	if captureTime != "120" {
+		t.Errorf("expected CAPTURE_TIME=120, got %q", captureTime)
+	}
+	if scanTime != "45" {
+		t.Errorf("expected SCAN_TIME=45, got %q", scanTime)
+	}
+}
