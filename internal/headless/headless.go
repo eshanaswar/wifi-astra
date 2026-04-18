@@ -13,12 +13,13 @@ import (
 )
 
 type AuditPlan struct {
-	SessionName string   `json:"session_name"`
-	Interface   string   `json:"interface"`
-	TargetSSID  string   `json:"target_ssid"`
-	TargetBSSID string   `json:"target_bssid"`
-	TargetChan  string   `json:"target_channel"`
-	Modules     []string `json:"modules"`
+	SessionName      string   `json:"session_name"`
+	Interface        string   `json:"interface"`
+	MonitorInterface string   `json:"monitor_interface"`
+	TargetSSID       string   `json:"target_ssid"`
+	TargetBSSID      string   `json:"target_bssid"`
+	TargetChan       string   `json:"target_channel"`
+	Modules          []string `json:"modules"`
 }
 
 // RunAutonomousAudit executes an assessment without user interaction based on a plan file.
@@ -58,6 +59,9 @@ func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*sess
 	// Persist plan configuration
 	if plan.Interface != "" {
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "WIFI_INTERFACE", plan.Interface)
+	}
+	if plan.MonitorInterface != "" {
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "MONITOR_INTERFACE", plan.MonitorInterface)
 	}
 	if plan.TargetSSID != "" {
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "GUEST_SSID", plan.TargetSSID)
