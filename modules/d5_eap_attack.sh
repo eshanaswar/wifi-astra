@@ -79,7 +79,7 @@ fi
 kill $TEL_PID 2>/dev/null || true
 
 # Reporting
-if [[ $RET -eq 0 ]] && [[ -f "$EAP_OUT" ]]; then
+if [[ ($RET -eq 0 || $RET -eq 124) ]] && [[ -f "$EAP_OUT" ]]; then
     if grep -qiE "credential|mschapv2|gtc_password|eap.*captured" "$EAP_OUT" 2>/dev/null; then
         "$ASTRA_BIN" record-finding \
             --session-dir "$SESSION_DIR" \
