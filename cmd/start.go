@@ -393,10 +393,19 @@ func launchMainMenu(s *session.Session) {
 		var scopeBSSIDs string
 		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigScopeBSSIDs).Scan(&scopeBSSIDs)
 		if scopeBSSIDs == "" {
-			fmt.Printf("%s[!] No authorized scope set — run A1 first to select targets.%s\n",
-				constants.ThemeHigh, constants.ColorReset)
-			ui.PromptString("Press Enter", "")
-			return nil
+			// Fallback: if an active target is already set (e.g. from a headless session) but
+			// SCOPE_BSSIDS was never written, reconstruct it from the current active BSSID.
+			var activeBSSID string
+			s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&activeBSSID)
+			if activeBSSID != "" {
+				scopeBSSIDs = activeBSSID
+				s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigScopeBSSIDs, activeBSSID)
+			} else {
+				fmt.Printf("%s[!] No authorized scope set — run A1 first to select targets.%s\n",
+					constants.ThemeHigh, constants.ColorReset)
+				ui.PromptString("Press Enter", "")
+				return nil
+			}
 		}
 
 		bssidList := strings.Split(scopeBSSIDs, ",")

@@ -67,6 +67,8 @@ func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*sess
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "GUEST_SSID", plan.TargetSSID)
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "GUEST_BSSID", plan.TargetBSSID)
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "GUEST_CHANNEL", plan.TargetChan)
+		// Seed SCOPE_BSSIDS so resumed interactive sessions have a consistent scope list.
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "SCOPE_BSSIDS", plan.TargetBSSID)
 	}
 
 	// Discover all modules to get metadata
