@@ -146,8 +146,8 @@ func (m *Menu) Display() error {
 			}
 			fmt.Printf("%d) %s\n", i+1, label)
 		}
-		fmt.Printf("q) Quit / Back\n")
-		fmt.Printf("?) Help\n")
+		fmt.Printf("%sq) Quit / Back%s\n", constants.ColorGray, constants.ColorReset)
+		fmt.Printf("%s?) Help%s\n", constants.ColorGray, constants.ColorReset)
 
 		mgr.rl.SetPrompt(m.Prompt)
 		line, err := mgr.rl.Readline()
