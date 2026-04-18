@@ -275,6 +275,17 @@ func launchMainMenu(s *session.Session) {
 		"H": "Policy & WIDS Validation",
 	}
 
+	catDescs := map[string]string{
+		"A": "Passive and active scanning across 2.4/5/6 GHz. Identifies APs, BSSIDs, clients, hidden SSIDs, and vendor information. Run A1 first — scope selection depends on its output.",
+		"B": "Recon performed from an associated client position. Tests client isolation, management interface exposure, CDP/LLDP leaks, mDNS/Bonjour, SNMP, DHCP, IPv6, and broadcast traffic analysis.",
+		"C": "Validates network segmentation from a wireless client. Tests VLAN hopping, RADIUS reachability, DNS split-horizon, private subnet routing, and egress filter bypass (DNS/HTTP/ICMP/NTP tunnels).",
+		"D": "Active attacks against wireless encryption and authentication. Covers WPA2 handshake/PMKID capture, WEP cracking, WPS Pixie Dust and PIN brute-force, WPA3 Dragonblood, EAP credential capture, and OWE/WPA3 downgrade.",
+		"E": "Tests for known protocol-level implementation flaws. Covers KRACK (CVE-2017-13077), FragAttacks (CVE-2020-24586/87/88), 802.11w PMF deauth resilience, Kr00k (CVE-2019-15126), and driver-level fuzzing.",
+		"F": "Deploys rogue APs and evil twins to intercept client traffic. Includes KARMA/PineAP probe harvesting, captive portal with vendor fingerprinting, portal bypass techniques, and DNS tunneling detection.",
+		"G": "Man-in-the-middle and lateral movement attacks from a compromised wireless position. Covers ARP spoofing, SSL/TLS interception, DNS spoofing, NAC bypass via MAC cloning, BSS Transition abuse, and Responder NTLM capture.",
+		"H": "Validates wireless security policy enforcement. Tests WIDS/WIPS detection and evasion capability, and verifies 802.11w Protected Management Frame enforcement against deauth spoofing.",
+	}
+
 	// Pre-compute total module count per category from the discovered module list.
 	// The DB only tracks modules that have been run, so using it as the denominator
 	// causes [2/2] when only 2 of 5 modules in a category have ever been executed.
@@ -329,7 +340,8 @@ func launchMainMenu(s *session.Session) {
 		if sub, ok := categories[k]; ok {
 			catKey := k
 			catName := catNames[k]
-			mainMenu.AddDynamicOption(func() string {
+			catDesc := catDescs[k]
+			mainMenu.AddDynamicOptionWithHelp(func() string {
 				total := catTotal[catKey]
 				var completed int
 				s.DB.QueryRow("SELECT COUNT(*) FROM module_state WHERE tc_id LIKE ? AND status = ?", catKey+"%", constants.StatusCompleted).Scan(&completed)
@@ -339,7 +351,7 @@ func launchMainMenu(s *session.Session) {
 					statusStr += fmt.Sprintf(" %s✓%s", constants.ColorGreen, constants.ColorReset)
 				}
 				return fmt.Sprintf("Category %s: %s%s", catKey, catName, statusStr)
-			}, func() error {
+			}, catDesc, func() error {
 				ui.GetManager().ClearScreen()
 				return sub.Display()
 			})
