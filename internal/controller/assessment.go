@@ -986,11 +986,12 @@ func (c *AssessmentController) HandleA1PostRun() {
 			fmt.Printf("%s[*] Authorized scope (%d networks):%s\n", constants.ColorGray, len(selectedIdxs), constants.ColorReset)
 			for _, idx := range selectedIdxs {
 				n := networks[idx]
-				marker := "  "
 				if n.BSSID == primary.BSSID {
-					marker = fmt.Sprintf("%s→%s", constants.ThemeSuccess, constants.ColorReset)
+					fmt.Printf("    %s→%s %-24s %-18s CH%d\n",
+						constants.ThemeSuccess, constants.ColorReset, n.SSID, n.BSSID, n.Channel)
+				} else {
+					fmt.Printf("      %-24s %-18s CH%d\n", n.SSID, n.BSSID, n.Channel)
 				}
-				fmt.Printf("    %s %-24s %-18s CH%d\n", marker, n.SSID, n.BSSID, n.Channel)
 			}
 		}
 		return
