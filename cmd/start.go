@@ -439,24 +439,24 @@ func launchMainMenu(s *session.Session) {
 	})
 
 	mainMenu.AddOption("Generate Assessment Report", func() error {
-		fmt.Print("[*] Generating report... ")
+		fmt.Printf("%s[*] Generating HTML report...%s ", constants.ThemeHeader, constants.ColorReset)
 		path, err := report.GenerateReport(s)
 		if err != nil {
-			fmt.Println("FAILED")
+			fmt.Printf("%sFAILED%s\n", constants.ThemeHigh, constants.ColorReset)
 			return err
 		}
-		fmt.Printf("SUCCESS\n[+] Report saved to: %s\n", path)
+		fmt.Printf("%s[✓]%s Report saved to: %s\n", constants.ThemeSuccess, constants.ColorReset, path)
 		return nil
 	})
 
 	mainMenu.AddOption("Generate Markdown Report", func() error {
-		fmt.Print("[*] Generating Markdown report... ")
+		fmt.Printf("%s[*] Generating Markdown report...%s ", constants.ThemeHeader, constants.ColorReset)
 		path, err := report.GenerateMarkdownReport(s)
 		if err != nil {
-			fmt.Println("FAILED")
+			fmt.Printf("%sFAILED%s\n", constants.ThemeHigh, constants.ColorReset)
 			return err
 		}
-		fmt.Printf("OK\n[+] Saved to: %s\n", path)
+		fmt.Printf("%s[✓]%s Saved to: %s\n", constants.ThemeSuccess, constants.ColorReset, path)
 		return nil
 	})
 
