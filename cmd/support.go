@@ -24,9 +24,6 @@ var launchSupportCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// We need an AssessmentController instance
-		// In a real environment, we'd use a singleton or a running instance via a socket
-		// But for now, we can instantiate a temporary one to spawn the process
 		mgr := executor.NewManager()
 		c := controller.NewAssessmentController(s, mgr, "./modules")
 		

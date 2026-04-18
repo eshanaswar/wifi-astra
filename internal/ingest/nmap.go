@@ -85,7 +85,6 @@ func IngestNmapXML(database *sql.DB, tcID, filePath string) error {
 			}
 		}
 
-		// Use IPv4 as primary IP for now, fallback to IPv6
 		primaryIP := ip4
 		if primaryIP == "" { primaryIP = ip6 }
 

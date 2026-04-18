@@ -84,10 +84,7 @@ Privileges are dropped immediately after adapter setup is complete.`,
 			os.Chown(baseDir, user.UID, user.GID)
 		}
 
-		// 4. Drop Privileges for the rest of the execution
-		prereq.DropPrivileges()
-
-		// 5. Check for Headless Plan
+		// 4. Check for Headless Plan
 		if isHeadless {
 			// In headless mode, the session is created inside RunAutonomousAudit
 			err := headless.RunAutonomousAudit(ConfigFile, ModDir, func(s *session.Session, m *module.Module) error {

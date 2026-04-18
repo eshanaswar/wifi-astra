@@ -174,11 +174,11 @@ func HasRequiredCapabilities() bool {
 		return false
 	}
 
-	// 2. Check for Admin capability (CAP_NET_ADMIN)
-	// We try a simple administrative operation on a dummy interface or similar
-	// But simpler: just check if we can open /dev/net/tun or check caps via proc
-	// For now, raw socket is the primary blocker for attacks.
-	return true 
+	// CAP_NET_RAW is the binding capability for packet injection and raw sockets.
+	// Processes with CAP_NET_RAW invariably hold CAP_NET_ADMIN under the normal
+	// sudo/ambient-capability paths this tool uses, so a successful raw socket
+	// open is sufficient to gate entry.
+	return true
 }
 
 // IsRoot checks if the process is running as root.

@@ -33,15 +33,3 @@ func GetSudoUser() (*UserInfo, error) {
 	}, nil
 }
 
-// DropPrivileges switches the process effective UID/GID back to the original user.
-// DEPRECATED: Seteuid in a multi-threaded Go app causes critical privilege escalation race conditions.
-// The app will now run as the invoking user (root) and use OS-level process isolation where needed.
-func DropPrivileges() error {
-	return nil
-}
-
-// RestorePrivileges switches back to root if needed.
-// DEPRECATED: See DropPrivileges.
-func RestorePrivileges() error {
-	return nil
-}

@@ -83,7 +83,7 @@ shellcheck -S warning modules/*.sh
 
 ### Operational Notes
 
-- Root required: Hardware ops (monitor mode, interface control) require root. Privileges are dropped via `prereq.DropPrivileges()` immediately after adapter setup.
+- Root required: Hardware ops (monitor mode, interface control) require root. The process runs as root throughout; `SUDO_UID`/`SUDO_GID` are captured via `prereq.GetSudoUser()` only for `chown` operations on session directories.
 - Signal handling: SIGINT/SIGTERM triggers `ExecMgr.Cleanup()` then `hw.Recover(false)` before exit.
 - Panic recovery: A global `defer` in `Execute()` calls `hw.Recover(false)` on crash to restore interfaces.
 - OUI refresh: `astra start` automatically refreshes the OUI database in the background if missing or older than 30 days.
@@ -270,7 +270,7 @@ The controller dispatches cracking automatically after successful captures:
 | ui | `internal/ui/` | PromptString, PromptConfirm, Menu, GetManager |
 | executor | `pkg/executor/` | Manager: process lifecycle, `SanitizeEnv` (strips newlines/null bytes/shell metacharacters from all env vars before module launch), KillAll |
 | hw | `pkg/hw/` | ListInterfaces, Recover(bool), InterfaceRoleRegistry (RoleMonitor/RoleManagement), monitor mode control; all ops use CombinedOutput() for full error capture |
-| prereq | `pkg/prereq/` | VerifyEnvironment, DropPrivileges, PreflightModules, ModuleToolMap, GetSudoUser |
+| prereq | `pkg/prereq/` | VerifyEnvironment, PreflightModules, ModuleToolMap, GetSudoUser, HasRequiredCapabilities |
 | constants | `pkg/constants/` | StatusCompleted/Failed/Running, color codes, config key names |
 
 ---

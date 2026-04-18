@@ -26,7 +26,6 @@ import (
 type AssessmentController struct {
 	Session      *session.Session
 	ExecMgr      *executor.Manager
-	NetMgr       *executor.NetworkManager
 	ModDir       string
 	Running      string // ID of currently running module
 	SupportProcs map[string]*executor.Process
@@ -714,9 +713,7 @@ func (c *AssessmentController) LaunchSupportModule(tcID string) error {
 	}
 
 	logging.Info("Launching background support module: %s...", m.Name)
-	
-	// Prepare environment (re-use logic from runModuleWithCode)
-	// For brevity, we'll implement a helper or inline it
+
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("%s=%s", constants.ConfigSessionID, c.Session.ID))
 	env = append(env, fmt.Sprintf("SESSION_DIR=%s", c.Session.BaseDir))
