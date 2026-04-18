@@ -88,8 +88,8 @@ func IngestResultJSON(database *sql.DB, tcID string, evidenceDir string) error {
 	}
 
 	for _, cred := range result.Credentials {
-		database.Exec(`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file) 
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, tcID, cred.Username, cred.Password, cred.Proto, cred.TargetHost, cred.EvidenceFile)
+		database.Exec(`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file)
+			VALUES (?, ?, ?, ?, ?, ?)`, tcID, cred.Username, cred.Password, cred.Proto, cred.TargetHost, cred.EvidenceFile)
 	}
 
 	if len(result.Vulnerabilities) > 0 || len(result.Credentials) > 0 {

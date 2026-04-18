@@ -56,6 +56,9 @@ const reportTemplate = `
         .badge { padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; }
         .badge-critical { background: #e74c3c; color: #fff; }
         .badge-high { background: #e67e22; color: #fff; }
+        .badge-medium { background: #f39c12; color: #fff; }
+        .badge-low { background: #95a5a6; color: #fff; }
+        .badge-info { background: #3498db; color: #fff; }
         .badge-done { background: #27ae60; color: #fff; }
     </style>
 </head>

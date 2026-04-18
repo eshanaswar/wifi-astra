@@ -32,12 +32,18 @@ func VerifyHandshake(database *sql.DB, tcID, filePath string) error {
 	if strings.Contains(outStr, "1 handshake") || strings.Contains(outStr, "handshake(s)") {
 		logging.Success("Valid WPA handshake detected in %s", filepath.Base(filePath))
 		
-		// Record as a high-severity vulnerability
-		database.Exec(`INSERT INTO vulnerability (tc_id, name, severity, description, evidence_file) 
-			VALUES (?, ?, ?, ?, ?)`, 
-			tcID, "WPA Handshake Captured", "CRITICAL", 
-			"A valid 4-way WPA handshake was captured, allowing for offline brute-force attacks.", 
-			filePath)
+		// Record as a high-severity vulnerability only if not already present.
+		// The D1 bash module records this finding via record-finding; skip if duplicate.
+		var existing int
+		database.QueryRow(`SELECT COUNT(*) FROM vulnerability WHERE tc_id = ? AND name = ?`,
+			tcID, "WPA Handshake Captured").Scan(&existing)
+		if existing == 0 {
+			database.Exec(`INSERT INTO vulnerability (tc_id, name, severity, description, evidence_file)
+				VALUES (?, ?, ?, ?, ?)`,
+				tcID, "WPA Handshake Captured", "CRITICAL",
+				"A valid 4-way WPA handshake was captured, allowing for offline brute-force attacks.",
+				filePath)
+		}
 	} else {
 		logging.Warn("No valid handshake found in %s", filepath.Base(filePath))
 	}
