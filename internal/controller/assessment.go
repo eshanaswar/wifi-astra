@@ -900,7 +900,7 @@ func (c *AssessmentController) HandleA1PostRun() {
 
 	fmt.Printf("\n%s📊 [Discovery Summary]%s\n", constants.ThemeHeader, constants.ColorReset)
 	fmt.Printf("   %-4s %-25s %-18s %-5s %-12s %s\n", "#", "SSID", "BSSID", "CH", "ENC", "Signal")
-	fmt.Printf("   %s\n", strings.Repeat("─", 72))
+	fmt.Printf("   %s%s%s\n", constants.ThemeHeader, strings.Repeat("─", 72), constants.ColorReset)
 	for i, n := range networks {
 		vendor := ingest.LookupVendor(n.BSSID)
 		vendorShort := vendor

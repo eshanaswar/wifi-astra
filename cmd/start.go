@@ -327,7 +327,7 @@ func launchMainMenu(s *session.Session) {
 			constants.ThemeHeader, constants.ColorReset, scopeStr,
 			constants.ThemeHeader, constants.ColorReset, iface,
 		)
-		fmt.Printf("%s\n", strings.Repeat("─", 70))
+		fmt.Printf("%s%s%s\n", constants.ThemeHeader, strings.Repeat("─", 70), constants.ColorReset)
 	}
 
 	mainMenu.AddDynamicOption(func() string {
