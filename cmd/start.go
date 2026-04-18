@@ -213,6 +213,14 @@ func sessionWizard() {
 				}
 			}
 			continue
+		} else {
+			validRange := "1"
+			if len(existing) > 0 {
+				validRange = "1, 2, or 3"
+			}
+			fmt.Printf("%s[!] Invalid option — enter %s.%s\n",
+				constants.ThemeHigh, validRange, constants.ColorReset)
+			ui.PromptString("Press Enter to continue", "")
 		}
 	}
 }
@@ -506,7 +514,7 @@ func launchMainMenu(s *session.Session) {
 			var cnt int
 			s.DB.QueryRow("SELECT COUNT(*) FROM vulnerability WHERE severity = ?", sev).Scan(&cnt)
 			if cnt > 0 {
-				color := constants.ColorWhite
+				color := constants.ThemeInfo
 				switch sev {
 				case "CRITICAL":
 					color = constants.ThemeCritical

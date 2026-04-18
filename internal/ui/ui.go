@@ -209,6 +209,9 @@ func PromptConfirm(prompt string, defaultValue bool) bool {
 	mgr.rl.SetPrompt(prompt + suffix)
 	line, err := mgr.rl.Readline()
 	if err != nil {
+		if err == readline.ErrInterrupt || err == io.EOF {
+			return false
+		}
 		return defaultValue
 	}
 
