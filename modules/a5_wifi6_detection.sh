@@ -48,6 +48,12 @@ echo -e "${C_PROMPT}[*]${C_RESET} Starting Wi-Fi 6 beacon scan on ${C_VAR}${INTE
 (
     ELAPSED=0
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 50 --status "Wi-Fi 6 detection active — ${ELAPSED}s elapsed (Ctrl+C to stop)"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+            continue
+        fi
         PERCENT=$(( ELAPSED * 100 / SCAN_TIME ))
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PERCENT" --status "Capturing Wi-Fi 6 beacons... ($(( SCAN_TIME - ELAPSED ))s left)"
         sleep 5
@@ -56,14 +62,26 @@ echo -e "${C_PROMPT}[*]${C_RESET} Starting Wi-Fi 6 beacon scan on ${C_VAR}${INTE
 ) &
 TELEMETRY_PID=$!
 
-# 1. Passive beacon capture with tshark - HE (802.11ax) fields
-# Use wlan.he.capabilities (present in ALL 802.11ax beacons as the HE Capabilities IE).
-# wlan.he.operation.bss_color is optional and may be absent even on Wi-Fi 6 APs.
+# 1. Capture all beacons — used for total count regardless of Wi-Fi 6 status
 timeout "${SCAN_TIME}" tshark -i "${INTERFACE}" -f "type mgt subtype beacon" \
     -T fields \
     -e wlan.ssid \
     -e wlan.bssid \
-    -e wlan.he.capabilities \
+    -E header=y \
+    -E separator=, \
+    -E quote=d \
+    -E occurrence=f \
+    2>/dev/null > "${EVIDENCE_DIR}/A5_all_beacons.csv" || true
+
+# 2. Capture only Wi-Fi 6 beacons using tshark display filter on HE MAC Capabilities IE.
+# wlan.he.mac_cap is a sub-tree only present in 802.11ax frames — every frame that passes
+# this filter IS confirmed Wi-Fi 6. This is more reliable than checking -e wlan.he.capabilities
+# (which is a tree node, not a leaf field, and produces empty values when used with -e).
+timeout "${SCAN_TIME}" tshark -i "${INTERFACE}" -f "type mgt subtype beacon" \
+    -Y "wlan.he.mac_cap" \
+    -T fields \
+    -e wlan.ssid \
+    -e wlan.bssid \
     -e wlan.he.mac_cap.ofdma_ra \
     -e wlan.he.mac_cap.twt_req \
     -e wlan.he.mac_cap.dl_mu_mimo \
@@ -75,24 +93,24 @@ timeout "${SCAN_TIME}" tshark -i "${INTERFACE}" -f "type mgt subtype beacon" \
 
 kill "${TELEMETRY_PID}" 2>/dev/null || true
 
-# 2. Count total beacons (subtract header line)
+# 3. Count totals
 TOTAL_LINES=0
-if [[ -f "${EVIDENCE_DIR}/A5_raw.csv" ]]; then
-    TOTAL_LINES=$(( $(wc -l < "${EVIDENCE_DIR}/A5_raw.csv") - 1 ))
+if [[ -f "${EVIDENCE_DIR}/A5_all_beacons.csv" ]]; then
+    TOTAL_LINES=$(( $(wc -l < "${EVIDENCE_DIR}/A5_all_beacons.csv") - 1 ))
     [[ "${TOTAL_LINES}" -lt 0 ]] && TOTAL_LINES=0
 fi
 
-# 3. Count Wi-Fi 6 beacons: lines where wlan.he.capabilities (col 3) is non-empty
-# The HE Capabilities IE is mandatory in 802.11ax beacons — its presence means Wi-Fi 6.
+# Every line in A5_raw.csv is a confirmed Wi-Fi 6 beacon (display filter guarantees it)
 WIFI6_COUNT=0
 if [[ -f "${EVIDENCE_DIR}/A5_raw.csv" ]]; then
-    WIFI6_COUNT=$(awk -F',' 'NR>1 && $3!="\"\"" && $3!="" {count++} END {print count+0}' "${EVIDENCE_DIR}/A5_raw.csv")
+    WIFI6_COUNT=$(( $(wc -l < "${EVIDENCE_DIR}/A5_raw.csv") - 1 ))
+    [[ "${WIFI6_COUNT}" -lt 0 ]] && WIFI6_COUNT=0
 fi
 
-# 3a. Per-BSSID Wi-Fi 6 summary (de-duplicate by BSSID, show SSID + capability presence)
+# 3a. Per-BSSID Wi-Fi 6 summary
 WIFI6_BSSIDS=""
 if [[ -f "${EVIDENCE_DIR}/A5_raw.csv" && "${WIFI6_COUNT}" -gt 0 ]]; then
-    WIFI6_BSSIDS=$(awk -F',' 'NR>1 && $3!="\"\"" && $3!="" {
+    WIFI6_BSSIDS=$(awk -F',' 'NR>1 {
         gsub(/"/, "", $1); gsub(/"/, "", $2);
         printf "  BSSID: %s  SSID: %s\n", $2, $1
     }' "${EVIDENCE_DIR}/A5_raw.csv" | sort -u)
@@ -128,6 +146,9 @@ printf '{
     "${WIFI6_COUNT}" \
     "${EVIDENCE_DIR}/A5_raw.csv" \
     > "${EVIDENCE_DIR}/A5_wifi6_environment.json"
+
+# Also record the total-beacon CSV for reference
+# (A5_raw.csv = Wi-Fi 6 only; A5_all_beacons.csv = all beacons)
 
 # 7. Write result JSON
 printf '{

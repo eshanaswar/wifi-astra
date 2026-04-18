@@ -45,7 +45,12 @@ echo "[*] Testing OWE downgrade / transition mode for ${SSID}..."
 # 1. Start Telemetry in Background (bounded)
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 50 --status "OWE downgrade active — ${ELAPSED}s elapsed (Ctrl+C to stop)"
+            sleep 5; ELAPSED=$((ELAPSED + 5))
+            continue
+        fi
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Scanning for OWE transition mode..."
         sleep 5; ELAPSED=$((ELAPSED + 5))

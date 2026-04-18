@@ -47,6 +47,12 @@ echo "[*] [$TC_ID] Identifying CDP/LLDP leaks on ${INTERFACE} for ${SCAN_TIME}s.
 (
     ELAPSED=0
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 50 --status "CDP/LLDP capture active — ${ELAPSED}s elapsed (Ctrl+C to stop)"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+            continue
+        fi
         PCT=$(( ELAPSED * 100 / SCAN_TIME ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Capturing CDP/LLDP frames..."

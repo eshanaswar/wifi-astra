@@ -45,6 +45,12 @@ echo "[*] [$TC_ID] Identifying SNMP exposure on ${GATEWAY}..."
 (
     ELAPSED=0
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 50 --status "SNMP scan active — ${ELAPSED}s elapsed (Ctrl+C to stop)"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+            continue
+        fi
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing scan..."
@@ -54,23 +60,43 @@ echo "[*] [$TC_ID] Identifying SNMP exposure on ${GATEWAY}..."
 ) &
 TELEMETRY_PID=$!
 
+# Locate SecLists SNMP wordlist — the correct filename on Kali is snmp-onesixtyone.txt.
+# Fall back to a hardcoded minimal list that covers the most commonly found community
+# strings in real-world pentest engagements if SecLists is not installed.
 COMMUNITY_LIST=""
-if [[ -f "/usr/share/seclists/Discovery/SNMP/snmp-subs.txt" ]]; then
-    COMMUNITY_LIST="/usr/share/seclists/Discovery/SNMP/snmp-subs.txt"
+SECLISTS_SNMP="/usr/share/seclists/Discovery/SNMP/snmp-onesixtyone.txt"
+FALLBACK_WORDLIST="${EVIDENCE_DIR}/${TC_ID}_communities.txt"
+
+if [[ -f "$SECLISTS_SNMP" ]]; then
+    COMMUNITY_LIST="$SECLISTS_SNMP"
+else
+    # Minimal high-yield list when SecLists is absent
+    cat > "$FALLBACK_WORDLIST" <<'EOF'
+public
+private
+community
+manager
+admin
+cisco
+snmp
+monitor
+agent
+write
+secret
+internal
+access
+default
+test
+1234
+EOF
+    COMMUNITY_LIST="$FALLBACK_WORDLIST"
+    echo "[*] SecLists not found — using built-in community string list (${FALLBACK_WORDLIST})"
 fi
 
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    if [[ -n "$COMMUNITY_LIST" ]]; then
-        timeout --foreground "$SCAN_TIME" onesixtyone -c "$COMMUNITY_LIST" "$GATEWAY" | tee "$BRUTE_FILE" || true
-    else
-        timeout --foreground "$SCAN_TIME" onesixtyone "$GATEWAY" | tee "$BRUTE_FILE" || true
-    fi
+    timeout --foreground "$SCAN_TIME" onesixtyone -c "$COMMUNITY_LIST" "$GATEWAY" | tee "$BRUTE_FILE" || true
 else
-    if [[ -n "$COMMUNITY_LIST" ]]; then
-        timeout "$SCAN_TIME" onesixtyone -c "$COMMUNITY_LIST" "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
-    else
-        timeout "$SCAN_TIME" onesixtyone "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
-    fi
+    timeout "$SCAN_TIME" onesixtyone -c "$COMMUNITY_LIST" "$GATEWAY" > "$BRUTE_FILE" 2>&1 || true
 fi
 
 kill "$TELEMETRY_PID" 2>/dev/null || true

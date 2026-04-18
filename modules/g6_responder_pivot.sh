@@ -67,6 +67,12 @@ fi
 (
     ELAPSED=0
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 50 --status "Responder active — ${ELAPSED}s elapsed (Ctrl+C to stop)"
+            sleep 5
+            ((ELAPSED+=5))
+            continue
+        fi
         PERCENT=$(( 20 + (ELAPSED * 70 / SCAN_TIME) ))
         [[ $PERCENT -gt 90 ]] && PERCENT=90
         STATUS="Responder active on ${INTERFACE}... ($(( SCAN_TIME - ELAPSED ))s left)"

@@ -42,6 +42,12 @@ echo "[*] [$TC_ID] Identifying IPv6 leaks on ${INTERFACE} for ${SCAN_TIME}s..."
 (
     ELAPSED=0
     while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 50 --status "IPv6 capture active — ${ELAPSED}s elapsed (Ctrl+C to stop)"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+            continue
+        fi
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         [[ $PCT -gt 90 ]] && PCT=90
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Capturing ICMPv6 RA frames..."

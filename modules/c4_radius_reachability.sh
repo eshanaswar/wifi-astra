@@ -55,7 +55,12 @@ echo "[*] Probing ${#RADIUS_CANDIDATES[@]} RADIUS candidates..."
 # 1. Start Telemetry in Background (bounded)
 (
     ELAPSED=0
-    while [[ $ELAPSED -lt $SCAN_TIME ]]; do
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
+            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 50 --status "RADIUS check active — ${ELAPSED}s elapsed (Ctrl+C to stop)"
+            sleep 5; ELAPSED=$((ELAPSED + 5))
+            continue
+        fi
         PCT=$(( 10 + (ELAPSED * 80 / SCAN_TIME) ))
         "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Probing RADIUS candidates (nmap)..."
         sleep 5; ELAPSED=$((ELAPSED + 5))
@@ -99,10 +104,12 @@ if [[ -n "$OPEN_CONFIRMED" ]]; then
 fi
 
 # Inconclusive: no response — could be listening but not responding to probes, or filtered
-OPEN_FILTERED=$(grep -E "state=\"open\|filtered\"" "$OUTPUT_XML" 2>/dev/null || true)
+# Use -F (fixed string) so the literal pipe in "open|filtered" is not treated as ERE alternation.
+# grep -E "open\|filtered" would match "open" OR "filtered" separately (wrong).
+OPEN_FILTERED=$(grep -F 'state="open|filtered"' "$OUTPUT_XML" 2>/dev/null || true)
 if [[ -n "$OPEN_FILTERED" ]]; then
     FOUND=1
-    FILTERED_HOSTS=$(grep -B5 "state=\"open|filtered\"" "$OUTPUT_XML" 2>/dev/null | grep "addr=" | awk -F'"' '{print $2}' | sort -u | xargs || true)
+    FILTERED_HOSTS=$(grep -B5 -F 'state="open|filtered"' "$OUTPUT_XML" 2>/dev/null | grep "addr=" | awk -F'"' '{print $2}' | sort -u | xargs || true)
     echo "[?] RADIUS port open|filtered on ${FILTERED_HOSTS} — may be reachable but not responding to probes."
     "$ASTRA_BIN" record-finding \
         --session-dir "$SESSION_DIR" \
