@@ -443,9 +443,11 @@ func launchMainMenu(s *session.Session) {
 		path, err := report.GenerateReport(s)
 		if err != nil {
 			fmt.Printf("%sFAILED%s\n", constants.ThemeHigh, constants.ColorReset)
+			ui.PromptString("Press Enter to continue", "")
 			return err
 		}
 		fmt.Printf("%s[✓]%s Report saved to: %s\n", constants.ThemeSuccess, constants.ColorReset, path)
+		ui.PromptString("Press Enter to return to menu", "")
 		return nil
 	})
 
@@ -454,9 +456,11 @@ func launchMainMenu(s *session.Session) {
 		path, err := report.GenerateMarkdownReport(s)
 		if err != nil {
 			fmt.Printf("%sFAILED%s\n", constants.ThemeHigh, constants.ColorReset)
+			ui.PromptString("Press Enter to continue", "")
 			return err
 		}
 		fmt.Printf("%s[✓]%s Saved to: %s\n", constants.ThemeSuccess, constants.ColorReset, path)
+		ui.PromptString("Press Enter to return to menu", "")
 		return nil
 	})
 
