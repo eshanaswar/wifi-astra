@@ -238,6 +238,7 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 			if err == nil {
 				for k, v := range intel {
 					os.Setenv("ASTRA_TARGET_"+k, v)
+					c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "ASTRA_TARGET_"+k, v)
 				}
 			}
 		}
