@@ -8,12 +8,10 @@ import (
 )
 
 type Config struct {
-	ModDir      string            `mapstructure:"mod_dir"`
-	SessionDir  string            `mapstructure:"session_dir"`
-	Verbose     bool              `mapstructure:"verbose"`
-	ToolPaths   map[string]string `mapstructure:"tool_paths"`
-	Headless    bool              `mapstructure:"headless"`
-	AuditPlan   string            `mapstructure:"audit_plan"`
+	ModDir    string            `mapstructure:"mod_dir"`
+	SessionDir string           `mapstructure:"session_dir"`
+	Verbose   bool              `mapstructure:"verbose"`
+	ToolPaths map[string]string `mapstructure:"tool_paths"`
 }
 
 var GlobalConfig *Config
@@ -67,10 +65,3 @@ func LoadConfig(configPath string) (*Config, error) {
 	return &c, nil
 }
 
-func GetString(key string) string {
-	return viper.GetString(key)
-}
-
-func GetBool(key string) bool {
-	return viper.GetBool(key)
-}

@@ -168,18 +168,6 @@ func Debug(msg string, args ...any) {
 	}
 }
 
-// SetConsoleLevel changes the minimum level written to stdout at runtime.
-// Useful for suppressing info noise during module execution.
-func SetConsoleLevel(level slog.Level) {
-	if h, ok := Logger.Handler().(*multiHandler); ok {
-		if ch, ok := h.console.(*cleanConsoleHandler); ok {
-			ch.mu.Lock()
-			ch.level = level
-			ch.mu.Unlock()
-		}
-	}
-}
-
 // Discard replaces the logger with a no-op so tests that don't call
 // InitLogger don't panic on nil Logger.
 func Discard() {
