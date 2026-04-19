@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"wifi-astra/internal/session"
+	"wifi-astra/pkg/constants"
 
 	"github.com/spf13/cobra"
 )
@@ -26,7 +27,7 @@ var recordCmd = &cobra.Command{
 		fType, _ := cmd.Flags().GetString("type")
 		tcID, _ := cmd.Flags().GetString("tc")
 
-		if fType == "vulnerability" {
+		if fType == constants.FindingVulnerability {
 			name, _ := cmd.Flags().GetString("name")
 			sev, _ := cmd.Flags().GetString("severity")
 			desc, _ := cmd.Flags().GetString("desc")
@@ -38,7 +39,7 @@ var recordCmd = &cobra.Command{
 
 			s.DB.Exec(`INSERT INTO vulnerability (tc_id, target_host, name, severity, description, remediation, evidence_file, client_mac, rationale) 
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, tcID, target, name, sev, desc, rem, evidence, clientMac, rationale)
-		} else if fType == "credential" {
+		} else if fType == constants.FindingCredential {
 			user, _ := cmd.Flags().GetString("user")
 			pass, _ := cmd.Flags().GetString("pass")
 			proto, _ := cmd.Flags().GetString("proto")
