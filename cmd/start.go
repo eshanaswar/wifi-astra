@@ -11,7 +11,6 @@ import (
 	"wifi-astra/internal/config"
 	"wifi-astra/internal/controller"
 	"wifi-astra/internal/headless"
-	"wifi-astra/internal/ingest"
 	"wifi-astra/internal/logging"
 	"wifi-astra/internal/module"
 	"wifi-astra/internal/report"
@@ -68,17 +67,6 @@ operations on session directories.`,
 			baseDir = config.GlobalConfig.SessionDir
 		}
 		
-		// 3b. Auto-Update OUI if missing or old
-		ouiPath := filepath.Join(baseDir, "data", "oui.json")
-		if info, err := os.Stat(ouiPath); os.IsNotExist(err) || (err == nil && time.Since(info.ModTime()) > 30*24*time.Hour) {
-			logging.Info("OUI database is missing or outdated. Refreshing in background...")
-			go func() {
-				dataDir := filepath.Dir(ouiPath)
-				os.MkdirAll(dataDir, 0755)
-				ingest.UpdateOUIDatabase(dataDir)
-			}()
-		}
-
 		// Ensure base directory exists and is accessible by the dropped user
 		os.MkdirAll(baseDir, 0755)
 		if user, err := prereq.GetSudoUser(); err == nil {

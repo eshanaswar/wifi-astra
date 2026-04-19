@@ -46,11 +46,21 @@ var (
 
 func loadOUIDB() {
 	ouiOnce.Do(func() {
-		data, err := dataFS.ReadFile("data/oui.json")
-		if err != nil {
-			logging.Error("Failed to read embedded OUI data: %v", err)
-			return
+		const diskPath = "./internal/ingest/data/oui.json"
+		var data []byte
+		var err error
+
+		if diskData, diskErr := os.ReadFile(diskPath); diskErr == nil {
+			data = diskData
+			logging.Info("OUI database loaded from disk (%s)", diskPath)
+		} else {
+			data, err = dataFS.ReadFile("data/oui.json")
+			if err != nil {
+				logging.Error("Failed to read embedded OUI data: %v", err)
+				return
+			}
 		}
+
 		if err := json.Unmarshal(data, &ouiDB); err != nil {
 			logging.Error("Failed to parse OUI data: %v", err)
 		}
