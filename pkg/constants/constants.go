@@ -4,9 +4,6 @@ package constants
 const (
 	ConfigWifiInterface   = "WIFI_INTERFACE"
 	ConfigMonitorIface    = "MONITOR_INTERFACE"
-	ConfigUplinkInterface = "UPLINK_INTERFACE"
-	ConfigInternalNet     = "INTERNAL_NET"
-	ConfigInternalIP      = "INTERNAL_IP"
 	ConfigGuestSSID       = "GUEST_SSID"
 	ConfigGuestBSSID      = "GUEST_BSSID"
 	ConfigGuestChannel    = "GUEST_CHANNEL"
@@ -20,7 +17,6 @@ const (
 const (
 	ReqMonitorIface = "monitor_iface"
 	ReqManagedIface = "managed_iface"
-	ReqNAT          = "nat"
 )
 
 // Statuses

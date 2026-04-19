@@ -245,9 +245,6 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		os.Setenv(constants.ConfigWifiInterface, iface)
 	}
 
-	// 4.5. Networking Setup (NAT/Routing) for MITM modules
-	// ... (NAT logic) ...
-
 	// 4.7. SMART TACTICAL PROMPTS (Go-Side Interactivity)
 	// Handle tactical choices here to prevent TTY contention in modules
 	
