@@ -281,17 +281,13 @@ func ListVulnerabilities(d *sql.DB) ([]Vulnerability, error) {
 }
 
 type TestResult struct {
-	TCID            string   `json:"tc_id"`
-	Status          string   `json:"status"`
-	ExitCode        int      `json:"exit_code"`
-	CommandRun      string   `json:"command_run"`
-	StartedAt       string   `json:"started_at"`
-	EndedAt         string   `json:"ended_at"`
-	DurationSec     int      `json:"duration_sec"`
-	Summary         string   `json:"summary"`
-	Details         string   `json:"details"`
-	Recommendations string   `json:"recommendations"`
-	EvidenceFiles   []string `json:"evidence_files"`
+	TCID        string `json:"tc_id"`
+	Status      string `json:"status"`
+	ExitCode    int    `json:"exit_code"`
+	CommandRun  string `json:"command_run"`
+	StartedAt   string `json:"started_at"`
+	EndedAt     string `json:"ended_at"`
+	DurationSec int    `json:"duration_sec"`
 }
 
 func GetTestResults(d *sql.DB) ([]TestResult, error) {
