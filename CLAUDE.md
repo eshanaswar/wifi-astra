@@ -75,6 +75,7 @@ shellcheck -S warning modules/*.sh
 {
   "session_name": "corp-wifi-2026",
   "monitor_interface": "wlan1",
+  "ap_interface": "wlan2",
   "modules": ["A1", "D1", "D3"],
   "capture_time": 60,
   "scan_time": 30
@@ -178,6 +179,7 @@ All modules receive these env vars from the Go controller at launch. All values 
 | Variable | Description |
 |----------|-------------|
 | MONITOR_INTERFACE | Monitor mode adapter name (e.g., `wlan1mon`) |
+| AP_INTERFACE | Managed-mode adapter for Evil Twin / hostapd modules (F1, F2, F3, D5). Empty in single-adapter setups — affected modules run in degraded mode. |
 | GUEST_BSSID | Target AP BSSID in `AA:BB:CC:DD:EE:FF` format |
 | GUEST_SSID | Target AP SSID (may be empty for hidden networks) |
 | GUEST_CHANNEL | Target AP channel number (1–196) |
@@ -269,7 +271,7 @@ The controller dispatches cracking automatically after successful captures:
 | report | `internal/report/` | GenerateReport: structured engagement report from session findings |
 | ui | `internal/ui/` | PromptString, PromptConfirm, Menu, GetManager |
 | executor | `pkg/executor/` | Manager: process lifecycle, `SanitizeEnv` (strips newlines/null bytes/shell metacharacters from all env vars before module launch), KillAll |
-| hw | `pkg/hw/` | ListInterfaces, Recover(bool), InterfaceRoleRegistry (RoleMonitor/RoleManagement), monitor mode control; all ops use CombinedOutput() for full error capture |
+| hw | `pkg/hw/` | ListInterfaces, Recover(bool), InterfaceRoleRegistry (RoleMonitor/RoleAP/RoleManagement), monitor mode control; all ops use CombinedOutput() for full error capture |
 | prereq | `pkg/prereq/` | VerifyEnvironment, PreflightModules, ModuleToolMap, GetSudoUser, HasRequiredCapabilities |
 | constants | `pkg/constants/` | StatusCompleted/Failed/Running, color codes, config key names |
 
