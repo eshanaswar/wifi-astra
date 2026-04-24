@@ -29,8 +29,12 @@ func TestAPAdapterGuardNonTargetModules(t *testing.T) {
 
 // Guard must return true without prompting when AP_INTERFACE is set in the DB.
 func TestAPAdapterGuardSkipsWhenAPSet(t *testing.T) {
+	os.Unsetenv("ASTRA_HEADLESS")
 	s := makePromptTestSession(t)
-	s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('AP_INTERFACE', 'wlan1')")
+	_, err := s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES ('AP_INTERFACE', 'wlan1')")
+	if err != nil {
+		t.Fatalf("failed to seed AP_INTERFACE: %v", err)
+	}
 
 	for _, id := range []string{"F1", "F2", "F3", "D5"} {
 		m := &Module{ID: id, Name: "Test Module"}

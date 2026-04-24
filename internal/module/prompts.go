@@ -3,6 +3,7 @@ package module
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strconv"
@@ -262,11 +263,15 @@ func PromptAPAdapterGuard(database *sql.DB, m *Module) bool {
 		return true
 	}
 
-	apIface, _ := db.GetConfig(database, "AP_INTERFACE")
+	apIface, err := db.GetConfig(database, "AP_INTERFACE")
+	if err != nil {
+		log.Printf("[debug] PromptAPAdapterGuard: failed to read AP_INTERFACE from DB: %v", err)
+	}
 	if apIface != "" {
 		return true
 	}
 
+	// whyLines must contain an entry for each module ID listed in the switch above.
 	whyLines := map[string]string{
 		"F1": "Evil Twin requires hostapd (managed mode) on one card and airodump-ng\n(monitor mode) on another to simultaneously broadcast the fake AP and capture\nvictim traffic and credentials.",
 		"F2": "KARMA/PineAP uses hostapd-mana (managed mode) to respond to client probes.\nA second card in monitor mode captures associations and traffic in real time.",
