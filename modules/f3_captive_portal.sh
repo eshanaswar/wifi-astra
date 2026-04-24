@@ -152,7 +152,7 @@ fi
 cat <<EOF > "$HOSTAPD_CONF"
 interface=$INTERFACE
 driver=nl80211
-ssid=$SSID
+ssid="$SSID"
 hw_mode=g
 channel=${GUEST_CHANNEL:-6}
 auth_algs=1
