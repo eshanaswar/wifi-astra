@@ -271,7 +271,7 @@ The controller dispatches cracking automatically after successful captures:
 | report | `internal/report/` | GenerateReport: structured engagement report from session findings |
 | ui | `internal/ui/` | PromptString, PromptConfirm, Menu, GetManager |
 | executor | `pkg/executor/` | Manager: process lifecycle, `SanitizeEnv` (strips newlines/null bytes/shell metacharacters from all env vars before module launch), KillAll |
-| hw | `pkg/hw/` | ListInterfaces, Recover(bool), InterfaceRoleRegistry (RoleMonitor/RoleAP/RoleManagement), monitor mode control; all ops use CombinedOutput() for full error capture |
+| hw | `pkg/hw/` | ListInterfaces, Recover(bool), InterfaceRoleRegistry (RoleMonitor/RoleAP), monitor mode control; all ops use CombinedOutput() for full error capture |
 | prereq | `pkg/prereq/` | VerifyEnvironment, PreflightModules, ModuleToolMap, GetSudoUser, HasRequiredCapabilities |
 | constants | `pkg/constants/` | StatusCompleted/Failed/Running, color codes, config key names |
 
@@ -303,7 +303,7 @@ All three must pass. No exceptions.
 
 - **SanitizeEnv is mandatory**: Applied to all env vars before module launch. Never bypass it.
 - **Scope enforcement is not optional**: Every module targeting a BSSID must have the controller validate it against the session scope list.
-- **Management interface is read-only**: Modules must never modify the interface assigned to RoleManagement.
+- **AP interface is managed-mode only**: Modules must never put the interface assigned to RoleAP into monitor mode.
 - **Heredocs**: Use `cat <<'EOF'` (no interpolation) in module scripts to prevent special characters in SSIDs/passwords from breaking execution.
 
 ### Code Generation
