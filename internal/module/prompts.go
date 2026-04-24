@@ -245,3 +245,49 @@ func promptActiveReveal(m *Module, _ *sql.DB) error {
 	}
 	return nil
 }
+
+// PromptAPAdapterGuard warns when a dual-adapter module is launched without an AP
+// adapter assigned. Returns true to proceed, false to abort.
+// Fires only for modules F1, F2, F3, D5. No-op for all others.
+// No-op in headless mode (ASTRA_HEADLESS=true) — runs degraded silently.
+func PromptAPAdapterGuard(database *sql.DB, m *Module) bool {
+	switch m.ID {
+	case "F1", "F2", "F3", "D5":
+		// continue
+	default:
+		return true
+	}
+
+	if os.Getenv("ASTRA_HEADLESS") == "true" {
+		return true
+	}
+
+	apIface, _ := db.GetConfig(database, "AP_INTERFACE")
+	if apIface != "" {
+		return true
+	}
+
+	whyLines := map[string]string{
+		"F1": "Evil Twin requires hostapd (managed mode) on one card and airodump-ng\n(monitor mode) on another to simultaneously broadcast the fake AP and capture\nvictim traffic and credentials.",
+		"F2": "KARMA/PineAP uses hostapd-mana (managed mode) to respond to client probes.\nA second card in monitor mode captures associations and traffic in real time.",
+		"F3": "Captive portal requires hostapd (managed mode) for client association while\nmonitor mode tracks which clients connect and what they submit to the phishing page.",
+		"D5": "PEAP capture deploys a rogue RADIUS AP (hostapd, managed mode). A second card\nin monitor mode captures the full EAP handshake needed for credential extraction.",
+	}
+
+	fmt.Printf("\n%s[!] DUAL-ADAPTER NOTICE — %s%s\n", constants.ThemeHigh, m.Name, constants.ColorReset)
+	fmt.Println()
+	fmt.Println("This module works best with two wireless adapters.")
+	fmt.Println()
+	fmt.Printf("WHY: %s\n", whyLines[m.ID])
+	fmt.Println()
+	fmt.Printf("%sWITH ONE ADAPTER (current setup):%s The monitor card will be temporarily\n", constants.ColorBold, constants.ColorReset)
+	fmt.Println("switched to managed mode to broadcast the AP. Packet capture and frame")
+	fmt.Println("injection are suspended during this window — you will not sniff client")
+	fmt.Println("associations or inject deauth frames while the rogue AP is running.")
+	fmt.Println()
+	fmt.Println("To enable full dual-adapter mode, connect a second adapter and restart")
+	fmt.Println("the tool to reassign roles.")
+	fmt.Println()
+
+	return ui.PromptConfirm("Continue in degraded single-adapter mode?", false)
+}

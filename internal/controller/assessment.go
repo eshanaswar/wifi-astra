@@ -246,6 +246,12 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		os.Setenv(constants.ConfigWifiInterface, iface)
 	}
 
+	// AP Adapter Guard — warns for F/D5 modules when no dedicated AP card is assigned.
+	// Returns false if the user chooses to abort; we treat that as a clean exit.
+	if !module.PromptAPAdapterGuard(c.Session.DB, m) {
+		return nil
+	}
+
 	// 4.7. SMART TACTICAL PROMPTS (Go-Side Interactivity)
 	// Handle tactical choices here to prevent TTY contention in modules
 	
