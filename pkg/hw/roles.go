@@ -72,7 +72,7 @@ func (r *RoleRegistry) Get(role InterfaceRole) (string, error) {
 }
 
 // AssertMonitor verifies that iface is the MONITOR interface.
-// Returns an error if iface is the management interface (protecting it from attacks)
+// Returns an error if iface is the AP interface (protecting it from monitor-mode misuse)
 // or if roles have not been assigned.
 func (r *RoleRegistry) AssertMonitor(iface string) error {
 	r.mu.RLock()
@@ -85,7 +85,7 @@ func (r *RoleRegistry) AssertMonitor(iface string) error {
 	mgmt, mgmtAssigned := r.roles[RoleAP]
 
 	if mgmtAssigned && iface == mgmt {
-		return fmt.Errorf("SAFETY: interface %s is the management interface and cannot be used for attack operations", iface)
+		return fmt.Errorf("SAFETY: interface %s is the AP interface and cannot be used for monitor-mode operations", iface)
 	}
 	if iface != mon {
 		return fmt.Errorf("interface %s is not the assigned monitor interface (%s)", iface, mon)
@@ -93,8 +93,8 @@ func (r *RoleRegistry) AssertMonitor(iface string) error {
 	return nil
 }
 
-// IsManagement returns true if iface is the assigned management interface.
-func (r *RoleRegistry) IsManagement(iface string) bool {
+// IsAP returns true if iface is the assigned AP interface.
+func (r *RoleRegistry) IsAP(iface string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	mgmt, ok := r.roles[RoleAP]

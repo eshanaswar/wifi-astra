@@ -50,16 +50,16 @@ func TestRoleRegistryAssertMonitor(t *testing.T) {
 	}
 }
 
-func TestRoleRegistryIsManagement(t *testing.T) {
+func TestRoleRegistryIsAP(t *testing.T) {
 	r := NewRoleRegistry()
 	r.Assign(RoleMonitor, "wlan0")
 	r.Assign(RoleAP, "wlan1")
 
-	if !r.IsManagement("wlan1") {
-		t.Error("expected wlan1 to be identified as management interface")
+	if !r.IsAP("wlan1") {
+		t.Error("expected wlan1 to be identified as AP interface")
 	}
-	if r.IsManagement("wlan0") {
-		t.Error("expected wlan0 to not be identified as management interface")
+	if r.IsAP("wlan0") {
+		t.Error("expected wlan0 to not be identified as AP interface")
 	}
 }
 

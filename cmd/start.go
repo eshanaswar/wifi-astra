@@ -29,7 +29,7 @@ var startCmd = &cobra.Command{
 	Long: `Launch an interactive wireless assessment session.
 
 On first run, the session wizard prompts for a session name and adapter role assignment
-(monitor interface and management interface). All subsequent module execution is scoped
+(monitor interface and AP interface). All subsequent module execution is scoped
 to BSSIDs discovered and authorized during the initial A1 discovery scan.
 
 Headless / unattended mode: supply a JSON audit plan via --config to drive the full
