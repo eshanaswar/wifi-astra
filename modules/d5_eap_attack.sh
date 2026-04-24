@@ -49,6 +49,10 @@ else
     ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
     iw dev "$_HOSTAPD_IFACE" set type managed 2>/dev/null || true
     ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true
+    # Restore interface to monitor mode on exit (degraded mode only)
+    trap 'ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
+          iw dev "$_HOSTAPD_IFACE" set type monitor 2>/dev/null || true
+          ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true' EXIT
 fi
 
 if [[ -z "$SSID" ]]; then
