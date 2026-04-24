@@ -19,7 +19,6 @@
 set -euo pipefail
 
 # Inputs from Environment
-INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
 SCAN_TIME="${SCAN_TIME:-60}"
 SESSION_DIR="${SESSION_DIR:-.}"
@@ -28,9 +27,28 @@ ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="D5"
 EAP_OUT="${EVIDENCE_DIR}/${TC_ID}_eaphammer_results.txt"
 
-if [[ -z "$INTERFACE" ]]; then
+if [[ -z "${MONITOR_INTERFACE:-}" ]]; then
     echo "[!] MONITOR_INTERFACE not set."
     exit 1
+fi
+
+# Determine interface for hostapd/eaphammer (must be managed mode)
+_AP_IFACE="${AP_INTERFACE:-}"
+if [[ -n "$_AP_IFACE" ]]; then
+    # Full dual-adapter mode — use dedicated managed-mode AP card
+    _HOSTAPD_IFACE="$_AP_IFACE"
+else
+    # Degraded single-adapter mode — derive physical interface from monitor card
+    _HOSTAPD_IFACE="${MONITOR_INTERFACE%mon}"
+    # If it still looks like a monitor interface (ends in mon), warn
+    if [[ "$_HOSTAPD_IFACE" == "$MONITOR_INTERFACE" ]]; then
+        echo "[!] WARNING: Could not derive physical interface from MONITOR_INTERFACE='$MONITOR_INTERFACE'"
+        echo "    Set AP_INTERFACE for proper dual-adapter mode."
+    fi
+    # Bring interface to managed mode for hostapd use
+    ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
+    iw dev "$_HOSTAPD_IFACE" set type managed 2>/dev/null || true
+    ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true
 fi
 
 if [[ -z "$SSID" ]]; then
@@ -62,11 +80,11 @@ RET=0
 if command -v eaphammer &>/dev/null; then
     if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
         # Foreground Execution: capture eaphammer exit code via PIPESTATUS, not tee's
-        timeout --foreground "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
+        timeout --foreground "$SCAN_TIME" eaphammer --interface "$_HOSTAPD_IFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
         RET=${PIPESTATUS[0]}
     else
         # Background Execution: wait captures the tool's actual exit code
-        timeout "$SCAN_TIME" eaphammer --interface "$INTERFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
+        timeout "$SCAN_TIME" eaphammer --interface "$_HOSTAPD_IFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
         TOOL_PID=$!
         wait $TOOL_PID; RET=$?
     fi
