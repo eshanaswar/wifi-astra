@@ -7,7 +7,7 @@ import (
 func TestRoleRegistryAssignAndGet(t *testing.T) {
 	r := NewRoleRegistry()
 	r.Assign(RoleMonitor, "wlan0")
-	r.Assign(RoleManagement, "wlan1")
+	r.Assign(RoleAP, "wlan1")
 
 	mon, err := r.Get(RoleMonitor)
 	if err != nil {
@@ -17,7 +17,7 @@ func TestRoleRegistryAssignAndGet(t *testing.T) {
 		t.Errorf("expected wlan0, got %s", mon)
 	}
 
-	mgmt, err := r.Get(RoleManagement)
+	mgmt, err := r.Get(RoleAP)
 	if err != nil {
 		t.Fatalf("expected management interface, got error: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestRoleRegistryGetUnassigned(t *testing.T) {
 func TestRoleRegistryAssertMonitor(t *testing.T) {
 	r := NewRoleRegistry()
 	r.Assign(RoleMonitor, "wlan0")
-	r.Assign(RoleManagement, "wlan1")
+	r.Assign(RoleAP, "wlan1")
 
 	// Monitor interface passes assertion
 	if err := r.AssertMonitor("wlan0"); err != nil {
@@ -53,7 +53,7 @@ func TestRoleRegistryAssertMonitor(t *testing.T) {
 func TestRoleRegistryIsManagement(t *testing.T) {
 	r := NewRoleRegistry()
 	r.Assign(RoleMonitor, "wlan0")
-	r.Assign(RoleManagement, "wlan1")
+	r.Assign(RoleAP, "wlan1")
 
 	if !r.IsManagement("wlan1") {
 		t.Error("expected wlan1 to be identified as management interface")
@@ -71,7 +71,7 @@ func TestRoleRegistryAssignRejectsDuplicateInterface(t *testing.T) {
 		t.Fatalf("first assign failed: %v", err)
 	}
 	// Attempting to assign the same interface to a different role must fail
-	err := r.Assign(RoleManagement, "wlan0")
+	err := r.Assign(RoleAP, "wlan0")
 	if err == nil {
 		t.Error("expected error when assigning same interface to a second role")
 	}
@@ -94,7 +94,7 @@ func TestRoleRegistryLocksPreventsReassign(t *testing.T) {
 	r.Lock()
 
 	// The registry is locked — this should return an error
-	err := r.Assign(RoleManagement, "wlan0")
+	err := r.Assign(RoleAP, "wlan0")
 	if err == nil {
 		t.Error("expected error when assigning after lock")
 	}

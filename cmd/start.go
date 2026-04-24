@@ -592,16 +592,16 @@ func launchMainMenu(s *session.Session) {
 func ensureAdapterSetup(s *session.Session) string {
 	var monIface, mgmtIface string
 	s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigWifiInterface).Scan(&monIface)
-	s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigManagementIface).Scan(&mgmtIface)
+	s.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigAPInterface).Scan(&mgmtIface)
 
 	if monIface != "" {
 		// Resumed session — restore registry from DB
 		hw.Roles.Assign(hw.RoleMonitor, monIface)
 		if mgmtIface != "" {
-			hw.Roles.Assign(hw.RoleManagement, mgmtIface)
+			hw.Roles.Assign(hw.RoleAP, mgmtIface)
 		}
 		hw.Roles.Lock()
-		logging.Info("Adapter setup restored: monitor=%s management=%s", monIface, mgmtIface)
+		logging.Info("Adapter setup restored: monitor=%s ap=%s", monIface, mgmtIface)
 		return monIface
 	}
 
@@ -640,12 +640,13 @@ func ensureAdapterSetup(s *session.Session) string {
 		}
 	}
 
-	// Pick management adapter (optional, only when >1 interface)
+	// Pick AP adapter (optional, only when >1 interface)
 	if len(ifaces) > 1 {
-		fmt.Printf("\n%s[✓] Attack adapter:%s %s\n", constants.ThemeSuccess, constants.ColorReset, monIface)
-		fmt.Printf("%s[?]%s Optionally select a management adapter for internet/C2 connectivity:\n",
+		fmt.Printf("\n%s[✓] Attack/Monitor adapter:%s %s\n", constants.ThemeSuccess, constants.ColorReset, monIface)
+		fmt.Printf("%s[?]%s Assign an AP adapter for Evil Twin / Rogue AP modules (F1, F2, F3, D5):\n",
 			constants.ThemeHeader, constants.ColorReset)
-		// Build a filtered list excluding the monitor adapter, with sequential numbering
+		fmt.Printf("    Enables simultaneous monitor-mode capture + rogue AP broadcasting.\n")
+		fmt.Printf("    Without this, those modules toggle the monitor card between modes (degraded).\n\n")
 		var mgmtCandidates []hw.Interface
 		for _, iface := range ifaces {
 			if iface.Name != monIface {
@@ -655,18 +656,18 @@ func ensureAdapterSetup(s *session.Session) string {
 		for i, iface := range mgmtCandidates {
 			fmt.Printf("   %d) %-12s %s (%s)\n", i+1, iface.Name, iface.Chipset, iface.Driver)
 		}
-		mgmtChoice := ui.PromptString(fmt.Sprintf("Management adapter [1-%d] (or Enter to skip)", len(mgmtCandidates)), "")
+		mgmtChoice := ui.PromptString(fmt.Sprintf("AP adapter [1-%d] (or Enter to skip)", len(mgmtCandidates)), "")
 		if mgmtChoice != "" {
 			mgmtIdx, _ := strconv.Atoi(mgmtChoice)
 			if mgmtIdx >= 1 && mgmtIdx <= len(mgmtCandidates) {
 				mgmtIface = mgmtCandidates[mgmtIdx-1].Name
-				fmt.Printf("%s[✓] Management adapter:%s %s\n", constants.ThemeSuccess, constants.ColorReset, mgmtIface)
+				fmt.Printf("%s[✓] AP adapter:%s %s\n", constants.ThemeSuccess, constants.ColorReset, mgmtIface)
 			} else {
-				fmt.Printf("%s[!] Invalid selection — no management adapter set.%s\n",
+				fmt.Printf("%s[!] Invalid selection — no AP adapter set.%s\n",
 					constants.ThemeHigh, constants.ColorReset)
 			}
 		} else {
-			fmt.Printf("%s[*] No management adapter selected.%s\n", constants.ColorGray, constants.ColorReset)
+			fmt.Printf("%s[*] No AP adapter selected — Evil Twin modules will run in degraded mode.%s\n", constants.ColorGray, constants.ColorReset)
 		}
 	}
 
@@ -676,8 +677,8 @@ func ensureAdapterSetup(s *session.Session) string {
 		return ""
 	}
 	if mgmtIface != "" {
-		if err := hw.Roles.Assign(hw.RoleManagement, mgmtIface); err != nil {
-			logging.Warn("Failed to assign management role: %v", err)
+		if err := hw.Roles.Assign(hw.RoleAP, mgmtIface); err != nil {
+			logging.Warn("Failed to assign AP role: %v", err)
 			mgmtIface = ""
 		}
 	}
@@ -686,9 +687,9 @@ func ensureAdapterSetup(s *session.Session) string {
 	// Persist to DB
 	s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigWifiInterface, monIface)
 	if mgmtIface != "" {
-		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigManagementIface, mgmtIface)
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigAPInterface, mgmtIface)
 	}
 
-	logging.Success("Adapter setup complete: monitor=%s management=%s", monIface, mgmtIface)
+	logging.Success("Adapter setup complete: monitor=%s ap=%s", monIface, mgmtIface)
 	return monIface
 }

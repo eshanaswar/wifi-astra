@@ -9,8 +9,8 @@ import (
 type InterfaceRole int
 
 const (
-	RoleMonitor    InterfaceRole = iota // Injection and capture — used by attack modules
-	RoleManagement                      // Internet/C2 — never touched by attack modules
+	RoleMonitor InterfaceRole = iota // Injection and capture — used by attack modules
+	RoleAP                           // AP adapter — managed-mode card for Evil Twin / hostapd operations
 )
 
 // RoleRegistry maps roles to interface names and enforces that the management
@@ -82,7 +82,7 @@ func (r *RoleRegistry) AssertMonitor(iface string) error {
 	if !ok {
 		return fmt.Errorf("monitor interface role not assigned")
 	}
-	mgmt, mgmtAssigned := r.roles[RoleManagement]
+	mgmt, mgmtAssigned := r.roles[RoleAP]
 
 	if mgmtAssigned && iface == mgmt {
 		return fmt.Errorf("SAFETY: interface %s is the management interface and cannot be used for attack operations", iface)
@@ -97,7 +97,7 @@ func (r *RoleRegistry) AssertMonitor(iface string) error {
 func (r *RoleRegistry) IsManagement(iface string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	mgmt, ok := r.roles[RoleManagement]
+	mgmt, ok := r.roles[RoleAP]
 	return ok && mgmt == iface
 }
 
