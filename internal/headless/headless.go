@@ -3,6 +3,7 @@ package headless
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"wifi-astra/internal/config"
 	"wifi-astra/internal/logging"
@@ -16,6 +17,7 @@ type AuditPlan struct {
 	SessionName      string   `json:"session_name"`
 	Interface        string   `json:"interface"`
 	MonitorInterface string   `json:"monitor_interface"`
+	APInterface      string   `json:"ap_interface"` // Optional — dedicated managed-mode adapter for F1/F2/F3/D5
 	TargetSSID       string   `json:"target_ssid"`
 	TargetBSSID      string   `json:"target_bssid"`
 	TargetChan       string   `json:"target_channel"`
@@ -64,6 +66,12 @@ func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*sess
 	}
 	if plan.MonitorInterface != "" {
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "MONITOR_INTERFACE", plan.MonitorInterface)
+	}
+	if plan.APInterface != "" {
+		os.Setenv("AP_INTERFACE", plan.APInterface)
+		if _, err := s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "AP_INTERFACE", plan.APInterface); err != nil {
+			log.Printf("[warn] headless: failed to persist AP_INTERFACE: %v", err)
+		}
 	}
 	if plan.TargetSSID != "" {
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "GUEST_SSID", plan.TargetSSID)

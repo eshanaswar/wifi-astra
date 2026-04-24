@@ -104,3 +104,68 @@ func TestAuditPlanTimingInjected(t *testing.T) {
 		t.Errorf("expected SCAN_TIME=45, got %q", scanTime)
 	}
 }
+
+func TestHeadlessAPInterfaceInjected(t *testing.T) {
+	// Verify that ap_interface from the plan is injected as AP_INTERFACE env var
+	// and persisted to the session DB config table.
+	os.Unsetenv("AP_INTERFACE")
+
+	tmpDir := "test_apif_sessions"
+	os.MkdirAll(tmpDir, 0755)
+	defer os.RemoveAll(tmpDir)
+
+	plan := AuditPlan{
+		SessionName: "apif_test",
+		APInterface: "wlan2",
+		Modules:     []string{"MOCK"},
+	}
+	planPath := "test_apif_plan.json"
+	data, _ := json.Marshal(plan)
+	os.WriteFile(planPath, data, 0644)
+	defer os.Remove(planPath)
+
+	modDir := "test_apif_mods"
+	os.MkdirAll(modDir, 0755)
+	defer os.RemoveAll(modDir)
+	modFile := filepath.Join(modDir, "mock_test.sh")
+	os.WriteFile(modFile, []byte("# MODULE_META\n# NAME=\"Mock\"\n# CATEGORY=\"M\"\n"), 0755)
+
+	var observedAPInterface string
+	var observedHeadless string
+	var observedDBVal string
+	var dbErr error
+	mockRunFunc := func(s *session.Session, m *module.Module) error {
+		observedAPInterface = os.Getenv("AP_INTERFACE")
+		observedHeadless = os.Getenv("ASTRA_HEADLESS")
+		// Query DB while the session is still open (defer s.Cleanup runs after RunAutonomousAudit returns)
+		row := s.DB.QueryRow("SELECT value FROM config WHERE key = ?", "AP_INTERFACE")
+		dbErr = row.Scan(&observedDBVal)
+		return nil
+	}
+
+	cwd, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(cwd)
+
+	if err := RunAutonomousAudit(filepath.Join("..", planPath), filepath.Join("..", modDir), mockRunFunc); err != nil {
+		t.Fatalf("RunAutonomousAudit failed: %v", err)
+	}
+
+	// Verify env var injection
+	if observedAPInterface != "wlan2" {
+		t.Errorf("expected AP_INTERFACE=wlan2, got %q", observedAPInterface)
+	}
+
+	// Verify ASTRA_HEADLESS is set during headless runs
+	if observedHeadless != "true" {
+		t.Errorf("expected ASTRA_HEADLESS=true, got %q", observedHeadless)
+	}
+
+	// Verify DB persistence
+	if dbErr != nil {
+		t.Fatalf("AP_INTERFACE not found in DB: %v", dbErr)
+	}
+	if observedDBVal != "wlan2" {
+		t.Errorf("expected DB AP_INTERFACE=wlan2, got %q", observedDBVal)
+	}
+}
