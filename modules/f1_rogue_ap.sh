@@ -67,13 +67,20 @@ else
         exit 1
     fi
 
-    # Restore interface to managed mode — hostapd cannot use a monitor-mode interface
+    # Restore interface to managed mode — hostapd cannot use a monitor-mode interface.
+    # airmon-ng stop must receive the monitor interface name (e.g. wlan0mon), not the
+    # physical name, otherwise it is a no-op and the card stays in monitor mode.
     echo "[*] Restoring ${_PHYS_IFACE} to managed mode for AP operation..."
-    airmon-ng stop "${_RAW_IFACE}" > /dev/null 2>&1 || true
+    airmon-ng stop "${MONITOR_INTERFACE}" > /dev/null 2>&1 || true
     ip link set "$_PHYS_IFACE" down 2>/dev/null || true
     iw dev "$_PHYS_IFACE" set type managed 2>/dev/null || true
     ip link set "$_PHYS_IFACE" up 2>/dev/null || true
     sleep 1
+
+    # Restore monitor mode on exit so subsequent modules can still inject/capture.
+    trap 'ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+          iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+          ip link set "$_PHYS_IFACE" up 2>/dev/null || true' EXIT
 
     _HOSTAPD_IFACE="$_PHYS_IFACE"
 fi
@@ -158,9 +165,16 @@ fi
 DNSMASQ_PID=$!
 
 # Roaming Catalyst Execution (Pre-launch for Window Mode)
-# Injection (deauth/CSA) requires the monitor-mode interface, not the managed AP interface.
+# Injection (deauth/CSA) requires a monitor-mode interface.
+# In degraded single-adapter mode the only card is now in managed mode — skip catalyst.
 MON_IFACE="${MONITOR_INTERFACE:-}"
-if [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]] && [[ -n "$MON_IFACE" ]]; then
+if [[ -z "$_AP_IFACE" ]]; then
+    # Single-adapter mode: monitor card is now the AP card — injection impossible.
+    if [[ "$CATALYST" != "0" ]]; then
+        echo "[!] Catalyst skipped — monitor interface is in managed mode (single-adapter degraded mode)."
+        echo "    Connect a second adapter and assign it as the AP adapter for simultaneous injection."
+    fi
+elif [[ "$CATALYST" == "1" ]] && [[ -n "$TARGET_BSSID" ]] && [[ -n "$MON_IFACE" ]]; then
     echo -e "[*] Starting ${C_BOLD}Surgical Deauth Catalyst${C_RESET} against $TARGET_BSSID on $MON_IFACE..."
     (
         while true; do
