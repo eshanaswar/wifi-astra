@@ -221,35 +221,35 @@ Most wireless pentests involve juggling a dozen separate tools, manually correla
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Go Core  (wifi-astra)                        │
 │                                                                     │
-│  ┌─────────────────┐  ┌──────────────────┐  ┌─────────────────┐    │
-│  │ Session Manager │  │  Hardware Layer  │  │ Scope Enforcer  │    │
-│  │   (SQLite)      │  │ (RoleRegistry)   │  │ (BSSID list)    │    │
-│  └────────┬────────┘  └────────┬─────────┘  └────────┬────────┘    │
-│           └───────────────────┴────────────────────┘              │
-│                               │                                     │
-│              ┌────────────────▼──────────────────┐                 │
-│              │        AssessmentController        │                 │
-│              │  • Scope validation                │                 │
-│              │  • Tactical prompts                │                 │
-│              │  • NAT setup / teardown            │                 │
-│              │  • Full env injection              │                 │
-│              │  • Post-run inline cracking        │                 │
-│              └────────────────┬──────────────────┘                 │
-└───────────────────────────────┼─────────────────────────────────────┘
-                                │  injects full environment
-               ┌────────────────▼──────────────────┐
-               │        Bash Module  (*.sh)         │
-               │   airodump-ng  hostapd  dnsmasq    │
-               │   hcxdumptool  eaphammer  asleap   │
-               │   bettercap    responder  hashcat   │
-               └────────────────┬──────────────────┘
-                                │  $ASTRA_BIN record-finding / record-progress
-                                ▼
-               ┌───────────────────────────────────┐
-               │          Evidence Store            │
-               │   sessions/<id>/evidence/          │
-               │   manifest.sha256  replay.log      │
-               └───────────────────────────────────┘
+│  ┌─────────────────┐  ┌──────────────────┐  ┌─────────────────┐     │
+│  │ Session Manager │  │  Hardware Layer  │  │ Scope Enforcer  │     │
+│  │   (SQLite)      │  │ (RoleRegistry)   │  │ (BSSID list)    │     │
+│  └────────┬────────┘  └─────────┬────────┘  └────────┬────────┘     │
+│           └─────────────────────┴────────────────────┘              │
+│                                 │                                   │
+│                ┌────────────────▼──────────────────┐                │
+│                │        AssessmentController       │                │
+│                │  • Scope validation               │                │
+│                │  • Tactical prompts               │                │
+│                │  • NAT setup / teardown           │                │
+│                │  • Full env injection             │                │
+│                │  • Post-run inline cracking       │                │
+│                └────────────────┬──────────────────┘                │
+└─────────────────────────────────┼───────────────────────────────────┘
+                                  │  injects full environment
+                 ┌────────────────▼───────────────────┐
+                 │        Bash Module  (*.sh)         │
+                 │   airodump-ng  hostapd  dnsmasq    │
+                 │   hcxdumptool  eaphammer  asleap   │
+                 │   bettercap    responder  hashcat  │
+                 └────────────────┬───────────────────┘
+                                  │  $ASTRA_BIN record-finding / record-progress
+                                  ▼
+                 ┌────────────────────────────────────┐
+                 │          Evidence Store            │
+                 │   sessions/<id>/evidence/          │
+                 │   manifest.sha256  replay.log      │
+                 └────────────────────────────────────┘
 ```
 
 > [!NOTE]
