@@ -302,12 +302,25 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 	// NAT setup — modules that need internet forwarding for connected clients (F1, F2, F3)
 	var natUplinkIface string
 	if strings.Contains(m.Reqs, constants.ReqNAT) {
-		var uplinkVal string
-		c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigUplinkIface).Scan(&uplinkVal)
+		// Re-detect the uplink live so session resume across locations stays correct.
+		// Fall back to the DB-stored value if detection fails (e.g. no default route yet).
+		uplinkVal, detectErr := hw.DetectUplinkInterface()
+		if detectErr != nil {
+			// Try cached value from DB
+			c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigUplinkIface).Scan(&uplinkVal)
+			if uplinkVal != "" {
+				logging.Info("Uplink re-detection failed (%v); using cached value: %s", detectErr, uplinkVal)
+			}
+		} else {
+			// Persist updated value in case it changed since session creation
+			c.Session.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+				constants.ConfigUplinkIface, uplinkVal)
+		}
+
 		if uplinkVal == "" {
-			fmt.Printf("%s[!] NAT: uplink interface not detected — clients on the rogue AP will have no internet access.%s\n",
+			fmt.Printf("%s[!] NAT: no uplink interface found — clients on the rogue AP will have no internet access.%s\n",
 				constants.ThemeHigh, constants.ColorReset)
-			fmt.Println("    Connect an ethernet or cellular uplink and restart the session to enable NAT.")
+			fmt.Println("    Connect an ethernet or cellular uplink before running this module.")
 		} else {
 			if err := hw.SetupNAT(uplinkVal); err != nil {
 				fmt.Printf("%s[!] NAT setup failed on %s: %v%s\n", constants.ThemeHigh, uplinkVal, err, constants.ColorReset)
@@ -652,17 +665,10 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 			// 1. Create a temporary wrapper script to ensure environment is 100% correct
 			wrapperPath := filepath.Join(c.Session.BaseDir, fmt.Sprintf(".astra_%s_wrapper.sh", strings.ToLower(tcID)))
 			
-			vars := []string{
-				"ASTRA_BIN", "SESSION_DIR", "SESSION_EVIDENCE_DIR", 
-				"MONITOR_INTERFACE", "WIFI_INTERFACE", 
-				"GUEST_SSID", "GUEST_BSSID", "GUEST_CHANNEL", 
-				"SCAN_TIME", "CAPTURE_TIME", "ASTRA_INDEFINITE",
-			}
-			
 			wrapperContent := "#!/usr/bin/env bash\n"
 			wrapperContent += "export ASTRA_IN_WINDOW=true\n"
 			wrapperContent += "export TERM=xterm-256color\n"
-			
+
 			// TTY and Environment setup
 			wrapperContent += "stty sane\n"
 			wrapperContent += "export USER=root\n"
@@ -673,14 +679,12 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 				wrapperContent += fmt.Sprintf("(sleep 0.5; xdotool getactivewindow windowsize %d %d windowmove %d %d) &\n", winW, winH, winX, winY)
 			}
 
-			if val := os.Getenv("DISPLAY"); val != "" { wrapperContent += fmt.Sprintf("export DISPLAY='%s'\n", val) }
-			if val := os.Getenv("XAUTHORITY"); val != "" { wrapperContent += fmt.Sprintf("export XAUTHORITY='%s'\n", val) }
-			if val := os.Getenv("PATH"); val != "" { wrapperContent += fmt.Sprintf("export PATH='%s'\n", val) }
-
-			for _, v := range vars {
-				if val, ok := envMap[v]; ok {
-					wrapperContent += fmt.Sprintf("export %s=%s\n", v, shellSingleQuote(val))
-				}
+			// Export the full environment — every var in envMap, not a curated subset.
+			// This guarantees AP_INTERFACE, tactical prompt results (AP_MODE, CATALYST,
+			// KARMA_MODE, PHISH_TEMPLATE, WPS_ATTACK, TARGET_CLIENT, ASTRA_TARGET_*…)
+			// and config keys reach the module running inside the separate terminal window.
+			for k, v := range envMap {
+				wrapperContent += fmt.Sprintf("export %s=%s\n", k, shellSingleQuote(v))
 			}
 			
 			absModulePath, _ := filepath.Abs(matches[0])
