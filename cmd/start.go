@@ -690,6 +690,14 @@ func ensureAdapterSetup(s *session.Session) string {
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigAPInterface, mgmtIface)
 	}
 
+	// Detect uplink interface for NAT masquerade (used by F1, F2, F3 rogue AP modules)
+	if uplinkIface, err := hw.DetectUplinkInterface(); err != nil {
+		logging.Warn("Could not detect uplink interface — rogue AP NAT will not be configured: %v", err)
+	} else {
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", constants.ConfigUplinkIface, uplinkIface)
+		logging.Info("Uplink interface for NAT: %s", uplinkIface)
+	}
+
 	logging.Success("Adapter setup complete: monitor=%s ap=%s", monIface, mgmtIface)
 	return monIface
 }

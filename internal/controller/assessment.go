@@ -299,6 +299,29 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		return nil
 	}
 
+	// NAT setup — modules that need internet forwarding for connected clients (F1, F2, F3)
+	var natUplinkIface string
+	if strings.Contains(m.Reqs, constants.ReqNAT) {
+		var uplinkVal string
+		c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigUplinkIface).Scan(&uplinkVal)
+		if uplinkVal == "" {
+			fmt.Printf("%s[!] NAT: uplink interface not detected — clients on the rogue AP will have no internet access.%s\n",
+				constants.ThemeHigh, constants.ColorReset)
+			fmt.Println("    Connect an ethernet or cellular uplink and restart the session to enable NAT.")
+		} else {
+			if err := hw.SetupNAT(uplinkVal); err != nil {
+				fmt.Printf("%s[!] NAT setup failed on %s: %v%s\n", constants.ThemeHigh, uplinkVal, err, constants.ColorReset)
+				fmt.Println("    Module will run but clients may not reach the internet.")
+			} else {
+				fmt.Printf("   %s[✓]%s NAT masquerade active on %s\n", constants.ThemeSuccess, constants.ColorReset, uplinkVal)
+				natUplinkIface = uplinkVal
+			}
+		}
+	}
+	if natUplinkIface != "" {
+		defer hw.TeardownNAT(natUplinkIface)
+	}
+
 	// 5. Run the Module
 	fmt.Printf("\n%s%s%s\n", constants.ThemeMission, strings.Repeat("┈", 80), constants.ColorReset)
 	fmt.Printf("%s🛰️  MISSION FEED:%s\n", constants.ThemeMission, constants.ColorReset)

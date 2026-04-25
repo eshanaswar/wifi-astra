@@ -10,6 +10,7 @@ const (
 	ConfigSessionID       = "SESSION_ID"
 	ConfigSessionName     = "SESSION_NAME"
 	ConfigAPInterface = "AP_INTERFACE"
+	ConfigUplinkIface     = "UPLINK_INTERFACE"
 	ConfigScopeBSSIDs     = "SCOPE_BSSIDS"
 )
 
@@ -17,6 +18,7 @@ const (
 const (
 	ReqMonitorIface = "monitor_iface"
 	ReqManagedIface = "managed_iface"
+	ReqNAT          = "nat"
 )
 
 // Statuses

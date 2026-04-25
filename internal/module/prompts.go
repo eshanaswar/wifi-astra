@@ -276,7 +276,7 @@ func PromptAPAdapterGuard(database *sql.DB, m *Module) bool {
 		"F1": "Evil Twin requires hostapd (managed mode) on one card and airodump-ng\n(monitor mode) on another to simultaneously broadcast the fake AP and capture\nvictim traffic and credentials.",
 		"F2": "KARMA/PineAP uses hostapd-mana (managed mode) to respond to client probes.\nA second card in monitor mode captures associations and traffic in real time.",
 		"F3": "Captive portal requires hostapd (managed mode) for client association while\nmonitor mode tracks which clients connect and what they submit to the phishing page.",
-		"D5": "PEAP capture deploys a rogue RADIUS AP (hostapd, managed mode). A second card\nin monitor mode captures the full EAP handshake needed for credential extraction.",
+		"D5": "PEAP credential capture (eaphammer) uses a dedicated managed-mode card so the\nmonitor card stays up and continues sniffing probe requests and associations without\ninterruption. With one adapter, eaphammer takes over the monitor card — all passive\ncapture stops for the duration of the rogue RADIUS AP.",
 	}
 
 	fmt.Printf("\n%s[!] DUAL-ADAPTER NOTICE — %s%s\n", constants.ThemeHigh, m.Name, constants.ColorReset)
