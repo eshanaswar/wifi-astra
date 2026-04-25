@@ -57,6 +57,11 @@ AP_MODE="${AP_MODE:-ssid}" # ssid or clone
 CATALYST="${CATALYST:-0}" # 0=None, 1=Deauth, 2=CSA
 LAUNCH_RESPONDER="${LAUNCH_RESPONDER:-no}"
 
+if [[ -z "${GUEST_CHANNEL:-}" ]]; then
+    echo "[!] WARNING: GUEST_CHANNEL not set — rogue AP will default to channel 6."
+    echo "    Clients on other channels will not associate. Run A1 and select a target first."
+fi
+
 if [[ -n "$_AP_IFACE" ]]; then
     # Full dual-adapter mode — use dedicated AP card (stays in managed mode)
     _HOSTAPD_IFACE="$_AP_IFACE"
@@ -132,9 +137,11 @@ cleanup() {
     # In degraded single-adapter mode the physical card was toggled to managed mode.
     # Restore it to monitor mode so subsequent modules can still inject/capture.
     if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
-        ip link set "$_PHYS_IFACE" down 2>/dev/null || true
-        iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
-        ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+        airmon-ng start "$_PHYS_IFACE" > /dev/null 2>&1 || {
+            ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+            iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+            ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+        }
     fi
 }
 trap cleanup EXIT
