@@ -33,9 +33,23 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 # Inputs from Environment
 _AP_IFACE="${AP_INTERFACE:-}"
 if [[ -n "$_AP_IFACE" ]]; then
+    # Full dual-adapter mode — AP card stays in managed mode throughout.
     INTERFACE="$_AP_IFACE"
 else
-    INTERFACE="${WIFI_INTERFACE:-}"
+    # Degraded single-adapter mode — derive physical interface from monitor card,
+    # toggle it to managed mode, and register a restore trap so subsequent
+    # monitor-mode modules still work after this one exits.
+    _PHYS_IFACE="${MONITOR_INTERFACE%mon}"
+    echo "[*] Restoring ${_PHYS_IFACE} to managed mode for AP operation..."
+    airmon-ng stop "${MONITOR_INTERFACE}" > /dev/null 2>&1 || true
+    ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+    iw dev "$_PHYS_IFACE" set type managed 2>/dev/null || true
+    ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+    sleep 1
+    trap 'ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+          iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+          ip link set "$_PHYS_IFACE" up 2>/dev/null || true' EXIT
+    INTERFACE="$_PHYS_IFACE"
 fi
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
@@ -49,7 +63,7 @@ INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
 KARMA_MODE="${KARMA_MODE:-mana}" # mana or loud
 
 if [[ -z "$INTERFACE" ]]; then
-    echo "[!] WIFI_INTERFACE not set."
+    echo "[!] No AP interface available (AP_INTERFACE and MONITOR_INTERFACE are both unset)."
     exit 1
 fi
 
