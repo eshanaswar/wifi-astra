@@ -46,9 +46,6 @@ else
     iw dev "$_PHYS_IFACE" set type managed 2>/dev/null || true
     ip link set "$_PHYS_IFACE" up 2>/dev/null || true
     sleep 1
-    trap 'ip link set "$_PHYS_IFACE" down 2>/dev/null || true
-          iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
-          ip link set "$_PHYS_IFACE" up 2>/dev/null || true' EXIT
     INTERFACE="$_PHYS_IFACE"
 fi
 SSID="${GUEST_SSID:-GuestWiFi}"
@@ -190,6 +187,11 @@ cleanup() {
     [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
     [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
+    if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
+        ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+        iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+        ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 

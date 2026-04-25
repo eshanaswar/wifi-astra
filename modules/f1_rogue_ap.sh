@@ -77,11 +77,6 @@ else
     ip link set "$_PHYS_IFACE" up 2>/dev/null || true
     sleep 1
 
-    # Restore monitor mode on exit so subsequent modules can still inject/capture.
-    trap 'ip link set "$_PHYS_IFACE" down 2>/dev/null || true
-          iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
-          ip link set "$_PHYS_IFACE" up 2>/dev/null || true' EXIT
-
     _HOSTAPD_IFACE="$_PHYS_IFACE"
 fi
 
@@ -134,6 +129,13 @@ cleanup() {
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
     [[ -n "${CAT_PID:-}" ]] && kill "$CAT_PID" 2>/dev/null || true
     [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
+    # In degraded single-adapter mode the physical card was toggled to managed mode.
+    # Restore it to monitor mode so subsequent modules can still inject/capture.
+    if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
+        ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+        iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+        ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
