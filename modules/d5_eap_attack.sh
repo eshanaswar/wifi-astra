@@ -39,20 +39,28 @@ if [[ -n "$_AP_IFACE" ]]; then
     _HOSTAPD_IFACE="$_AP_IFACE"
 else
     # Degraded single-adapter mode — derive physical interface from monitor card
-    _HOSTAPD_IFACE="${MONITOR_INTERFACE%mon}"
-    # If it still looks like a monitor interface (ends in mon), warn
-    if [[ "$_HOSTAPD_IFACE" == "$MONITOR_INTERFACE" ]]; then
-        echo "[!] WARNING: Could not derive physical interface from MONITOR_INTERFACE='$MONITOR_INTERFACE'"
-        echo "    Set AP_INTERFACE for proper dual-adapter mode."
+    _RAW_IFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
+    if [[ "$_RAW_IFACE" == *mon ]]; then
+        _HOSTAPD_IFACE="${_RAW_IFACE%mon}"
+    else
+        _HOSTAPD_IFACE="$_RAW_IFACE"
     fi
+    if [[ -z "$_HOSTAPD_IFACE" ]]; then
+        echo "[!] Cannot derive physical interface. Set AP_INTERFACE or ensure WIFI_INTERFACE is set."
+        exit 1
+    fi
+    # Tear down monitor virtual interface before toggling physical adapter
+    airmon-ng stop "${MONITOR_INTERFACE}" > /dev/null 2>&1 || true
     # Bring interface to managed mode for hostapd use
     ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
     iw dev "$_HOSTAPD_IFACE" set type managed 2>/dev/null || true
     ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true
     # Restore interface to monitor mode on exit (degraded mode only)
-    trap 'ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
-          iw dev "$_HOSTAPD_IFACE" set type monitor 2>/dev/null || true
-          ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true' EXIT
+    trap 'airmon-ng start "$_HOSTAPD_IFACE" > /dev/null 2>&1 || {
+              ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
+              iw dev "$_HOSTAPD_IFACE" set type monitor 2>/dev/null || true
+              ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true
+          }' EXIT
 fi
 
 if [[ -z "$SSID" ]]; then
