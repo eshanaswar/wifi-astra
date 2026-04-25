@@ -115,23 +115,40 @@ Cleanup Checklist ──── Verify interfaces restored, processes killed,
 
 WiFi-Astra enforces strict separation between two wireless roles:
 
-| Role | Interface | Purpose |
-|------|-----------|---------|
-| **MONITOR** | e.g., `wlan1mon` | Monitor mode; packet injection, sniffing, attack execution |
-| **MANAGEMENT** | e.g., `wlan0` | Managed mode; operator network connectivity |
+| Role | Constant | Env Var | Purpose |
+|------|----------|---------|---------|
+| **MONITOR** | `hw.RoleMonitor` | `MONITOR_INTERFACE` (e.g. `wlan0mon`) | Monitor mode — injection, sniffing, capture, active attacks |
+| **AP** | `hw.RoleAP` | `AP_INTERFACE` (e.g. `wlan1`) | Managed mode — hostapd for Evil Twin, KARMA, Captive Portal, rogue RADIUS |
 
-The `InterfaceRoleRegistry` in `pkg/hw` tracks this assignment. The management interface is explicitly excluded from the pool available to attack modules — no module can request it, preventing accidental operator disconnection mid-engagement.
+The `InterfaceRoleRegistry` (`pkg/hw/roles.go`) assigns and locks these roles at session start. No attack module can place the AP interface into monitor mode — `AssertMonitor()` enforces this at the Go layer before any script launches.
+
+When only one adapter is available, Evil Twin modules (F1, F2, F3, D5) temporarily toggle the monitor card to managed mode and restore it via `airmon-ng start` on cleanup. The operator is warned via `PromptAPAdapterGuard` before the module launches.
+
+### NAT Routing (F1, F2, F3)
+
+Modules with `REQS="nat"` in their `MODULE_META` receive automatic NAT management from the controller:
+
+1. `hw.DetectUplinkInterface()` — finds the default-route interface via `ip route get 8.8.8.8` (run live before each launch, not cached from session creation)
+2. `hw.SetupNAT(iface)` — enables `net.ipv4.ip_forward` and installs an idempotent `iptables MASQUERADE` rule
+3. Bash module assigns `192.168.44.1/24` to the AP interface so dnsmasq can bind
+4. `hw.TeardownNAT(iface)` — deferred; removes the masquerade rule when the module exits
 
 ---
 
 ## 5. Module Communication Contract
 
-The controller injects these environment variables before each module launch. All values are sanitized by `pkg/executor.SanitizeEnv` (strips newlines, null bytes, and shell metacharacters) before being set.
+The controller injects the **complete process environment** before each module launch — both DB-persisted config keys and all `os.Setenv` calls made by tactical prompts. All values pass through `pkg/executor.SanitizeEnv` (strips newlines, null bytes, and shell metacharacters) before being set.
+
+In tactical window mode (separate X11 terminal), the wrapper script explicitly exports the full `envMap` so every variable — including `AP_INTERFACE`, tactical prompt results, and scout intelligence — reaches the module regardless of how the terminal emulator handles environment inheritance.
+
+**Core variables injected by the controller:**
 
 | Variable | Description |
 |----------|-------------|
-| `MONITOR_INTERFACE` | Monitor mode adapter (e.g., `wlan1mon`) |
-| `WIFI_INTERFACE` | Managed mode adapter for modules that associate (F, G categories) |
+| `MONITOR_INTERFACE` | Monitor mode adapter name (e.g. `wlan0mon`) |
+| `WIFI_INTERFACE` | Physical interface name before monitor mode was enabled (e.g. `wlan0`) |
+| `AP_INTERFACE` | Dedicated AP adapter for Evil Twin modules (empty in single-adapter mode) |
+| `UPLINK_INTERFACE` | Internet-facing interface for NAT masquerade (F1, F2, F3) |
 | `GUEST_BSSID` | Target AP BSSID (`AA:BB:CC:DD:EE:FF`) |
 | `GUEST_SSID` | Target AP SSID |
 | `GUEST_CHANNEL` | Target AP channel |
@@ -139,9 +156,23 @@ The controller injects these environment variables before each module launch. Al
 | `SESSION_EVIDENCE_DIR` | Evidence subdirectory for this module |
 | `SCAN_TIME` | Scan duration in seconds |
 | `CAPTURE_TIME` | Capture duration in seconds |
-| `ASTRA_BIN` | Path to the wifi-astra binary (for callbacks) |
-| `ASTRA_IN_WINDOW` | `true` when running inside a tmux/terminal window |
-| `ASTRA_INDEFINITE` | `true` for indefinite-mode scans |
+| `ASTRA_BIN` | Path to the wifi-astra binary (for `record-finding` / `record-progress` callbacks) |
+| `ASTRA_IN_WINDOW` | `true` when module runs inside a separate X11 terminal window |
+| `ASTRA_INDEFINITE` | `true` when the operator selected indefinite (Ctrl+C to stop) mode |
+| `ASTRA_HEADLESS` | `true` when running from a JSON audit plan |
+| `ASTRA_TARGET_RSSI` | Signal strength to target AP (populated by `hw.ScoutTarget` if BSSID is known) |
+| `ASTRA_TARGET_PMF` | PMF enforcement status: `Required`, `Capable`, or `None` |
+
+**Tactical prompt results** (set before `runModuleWithCode` via `os.Setenv`):
+
+| Variable | Set by | Values |
+|----------|--------|--------|
+| `AP_MODE` | F1 rogue_ap_mode prompt | `ssid` / `clone` |
+| `CATALYST` | F1 roaming_catalyst prompt | `0` (none) / `1` (deauth) / `2` (CSA) |
+| `KARMA_MODE` | F2 karma_vector prompt | `mana` / `loud` |
+| `PHISH_TEMPLATE` | F3 phishing_template prompt | `generic` / `m365` / `cisco_ise` / `aruba` / `meraki` |
+| `WPS_ATTACK` | D3 wps_vector prompt | `pixie` / `online` |
+| `TARGET_CLIENT` | D1/A4 target_client prompt | MAC address or `FF:FF:FF:FF:FF:FF` (broadcast) |
 
 Modules report findings back to the core via the binary callback:
 
