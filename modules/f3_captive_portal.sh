@@ -39,7 +39,16 @@ else
     # Degraded single-adapter mode — derive physical interface from monitor card,
     # toggle it to managed mode, and register a restore trap so subsequent
     # monitor-mode modules still work after this one exits.
-    _PHYS_IFACE="${MONITOR_INTERFACE%mon}"
+    _RAW_IFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
+    if [[ "$_RAW_IFACE" == *mon ]]; then
+        _PHYS_IFACE="${_RAW_IFACE%mon}"
+    else
+        _PHYS_IFACE="$_RAW_IFACE"
+    fi
+    if [[ -z "$_PHYS_IFACE" ]]; then
+        echo "[!] Cannot derive physical interface. Set AP_INTERFACE or ensure WIFI_INTERFACE is set."
+        exit 1
+    fi
     echo "[*] Restoring ${_PHYS_IFACE} to managed mode for AP operation..."
     airmon-ng stop "${MONITOR_INTERFACE}" > /dev/null 2>&1 || true
     ip link set "$_PHYS_IFACE" down 2>/dev/null || true
@@ -59,6 +68,11 @@ INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
 
 # Tactical Selection from Go Brain
 PHISH_TEMPLATE="${PHISH_TEMPLATE:-generic}"
+
+if [[ -z "${GUEST_CHANNEL:-}" ]]; then
+    echo "[!] WARNING: GUEST_CHANNEL not set — captive portal AP will default to channel 6."
+    echo "    Clients on other channels may not associate. Run A1 and select a target first."
+fi
 
 if [[ -z "$INTERFACE" ]]; then
     echo "[!] No AP interface available (AP_INTERFACE and MONITOR_INTERFACE are both unset)."
@@ -188,9 +202,11 @@ cleanup() {
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
     [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
     if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
-        ip link set "$_PHYS_IFACE" down 2>/dev/null || true
-        iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
-        ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+        airmon-ng start "$_PHYS_IFACE" > /dev/null 2>&1 || {
+            ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+            iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+            ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+        }
     fi
 }
 trap cleanup EXIT
