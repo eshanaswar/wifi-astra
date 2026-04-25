@@ -120,6 +120,7 @@ cleanup() {
     echo -e "${C_PROMPT}[*]${C_RESET} Tearing down Karma environment..."
     [[ -n "${MANA_PID:-}" ]] && kill "$MANA_PID" 2>/dev/null || true
     [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
+    ip addr flush dev "${INTERFACE:-}" 2>/dev/null || true
     if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
         airmon-ng start "$_PHYS_IFACE" > /dev/null 2>&1 || {
             ip link set "$_PHYS_IFACE" down 2>/dev/null || true
@@ -151,6 +152,13 @@ trap cleanup EXIT
 TEL_PID=$!
 
 echo -e "[*] Starting DNS hijacker..."
+# Assign IP to AP interface so dnsmasq can bind and respond to DHCP discover packets.
+ip addr flush dev "$INTERFACE" 2>/dev/null || true
+if ip addr add "${INTERNAL_IP}/24" dev "$INTERFACE" 2>/dev/null; then
+    echo "[*] AP interface ${INTERFACE} → ${INTERNAL_IP}/24"
+else
+    echo "[!] Warning: could not assign ${INTERNAL_IP}/24 to ${INTERFACE} — DHCP will not work."
+fi
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     dnsmasq -C "$DNSMASQ_CONF" -k 2>&1 | tee "$DNSMASQ_LOG" &
 else
