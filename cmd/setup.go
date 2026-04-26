@@ -16,11 +16,18 @@ var setupCmd = &cobra.Command{
 	Short: "Install required system dependencies (requires root)",
 	Long: `Install all wireless auditing tools needed by WiFi-Astra via apt.
 
-Packages installed: aircrack-ng, nmap, tcpdump, tshark, hostapd, dnsmasq,
-yersinia, responder, bettercap, macchanger, curl, jq, fping, snmp, onesixtyone.
+Packages installed:
+  aircrack-ng, nmap, tcpdump, tshark, hostapd, dnsmasq, yersinia, responder,
+  bettercap, macchanger, curl, jq, fping, snmp, onesixtyone,
+  python3-pip, python3-dev, libssl-dev, libffi-dev, libpcap-dev,
+  asleap, hcxdumptool, hcxtools, mdk4, iodine.
 
 Must be run as root (sudo astra setup). Runs 'apt update' then 'apt install -y'
-for the full dependency list.`,
+for the full dependency list.
+
+Note: eaphammer (required for D5 EAP/PEAP attacks) is not available via apt and
+must be installed manually. Instructions are printed after setup completes.
+  git clone https://github.com/s0lst1c3/eaphammer /opt/eaphammer`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if os.Geteuid() != 0 {
 			fmt.Println("[✗] Setup requires root privileges (sudo).")
