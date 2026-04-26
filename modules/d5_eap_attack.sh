@@ -42,7 +42,7 @@ if [[ -z "$EAPHAMMER_BIN" ]]; then
     echo "[!] eaphammer not found. D5 requires eaphammer for rogue RADIUS deployment." >&2
     echo "    Install it:" >&2
     echo "      git clone https://github.com/s0lst1c3/eaphammer /opt/eaphammer" >&2
-    echo "      cd /opt/eaphammer && python3 -m pip install -r requirements.txt" >&2
+    echo "      cd /opt/eaphammer && python3 -m pip install -r requirements.txt && sudo ./setup" >&2
     echo "    Or run: sudo bin/wifi-astra setup  (installs build prerequisites)" >&2
     exit 1
 fi
