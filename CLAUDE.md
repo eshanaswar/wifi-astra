@@ -13,7 +13,7 @@ WiFi penetration testing framework for authorized engagements. Go CLI frontend +
 - Dual adapter design: The framework enforces a strict separation of concerns using two wireless interfaces:
   - MONITOR Role: This interface is placed into monitor mode and used for packet injection, sniffing, and all attack-related operations.
   - MANAGEMENT Role: This interface remains in managed mode, maintains a connection to the control network (if applicable), and is never touched by attack modules to ensure operator connectivity is not disrupted.
-- Coverage: Full support for 2.4GHz, 5GHz, and 6GHz (WiFi 6E) bands. Handles WPA2-PSK, WPA3-SAE, OWE, and WPA3-Enterprise (802.1X).
+- Coverage: 2.4GHz and 5GHz bands are fully supported on any monitor-mode adapter. 6GHz (WiFi 6E, 5925–7125 MHz) scanning is attempted when `iw phy` reports 6GHz frequencies — requires a Wi-Fi 6E capable adapter with Linux monitor mode support (e.g., Intel AX210, MediaTek MT7921AX). Encryption handled: WPA2-PSK, WPA3-SAE, OWE, and WPA3-Enterprise (802.1X).
 - Hardware Safety: The InterfaceRoleRegistry (pkg/hw) tracks and enforces interface roles. The management interface is explicitly excluded from available attack interfaces to prevent accidental disruption.
 - Key binary: `bin/wifi-astra`
 
