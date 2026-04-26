@@ -36,9 +36,12 @@ for the full dependency list.`,
 		}
 
 		dependencies := []string{
-			"aircrack-ng", "nmap", "tcpdump", "tshark", "hostapd", 
-			"dnsmasq", "yersinia", "responder", "bettercap", 
+			"aircrack-ng", "nmap", "tcpdump", "tshark", "hostapd",
+			"dnsmasq", "yersinia", "responder", "bettercap",
 			"macchanger", "curl", "jq", "fping", "snmp", "onesixtyone",
+			"python3-pip", "python3-dev", "libssl-dev", "libffi-dev",
+			"libpcap-dev", "asleap",
+			"hcxdumptool", "hcxtools", "mdk4", "iodine",
 		}
 
 		fmt.Printf("[*] Updating package lists...\n")
@@ -59,6 +62,11 @@ for the full dependency list.`,
 		}
 
 		logging.Success("System setup complete. All dependencies installed.")
+
+		fmt.Printf("\n\033[33m[!] eaphammer requires manual installation (not available via apt):\033[0m\n")
+		fmt.Println("    git clone https://github.com/s0lst1c3/eaphammer /opt/eaphammer")
+		fmt.Println("    cd /opt/eaphammer && python3 -m pip install -r requirements.txt")
+		fmt.Println("    (Required for D5 EAP/PEAP enterprise attacks)")
 	},
 }
 
