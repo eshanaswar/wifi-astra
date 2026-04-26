@@ -122,6 +122,12 @@ fi
 SUPPORTS_6GHZ=false
 if iw phy 2>/dev/null | grep -qE "6[0-9]{3} MHz"; then
     SUPPORTS_6GHZ=true
+    echo -e "${C_PROMPT}[*]${C_RESET} 6GHz adapter detected — 6GHz APs will appear in tshark capture if in range."
+else
+    echo "[!] 6GHz not supported by current adapter."
+    echo "    6GHz (5925-7125 MHz) requires a Wi-Fi 6E adapter with Linux monitor mode support."
+    echo "    Common adapters with 6GHz: Intel AX210 (iw phy), MediaTek MT7921AX."
+    echo "    This module will report 5GHz and 2.4GHz Wi-Fi 6 (802.11ax) APs only."
 fi
 
 # 5. Determine wifi6_present
