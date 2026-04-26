@@ -58,35 +58,39 @@ func CheckTools(requiredTools []string, criticalTools []string) *CheckResult {
 }
 
 func resolveToolPath(tool string) (string, error) {
-	// 1. Check system PATH
-	path, err := exec.LookPath(tool)
-	if err == nil {
+	// 1. System PATH (fast path for most tools)
+	if path, err := exec.LookPath(tool); err == nil {
 		return path, nil
 	}
 
-	// 2. Check for common research tool names in current directory or subdirectories
-	cwd, _ := os.Getwd()
-	searchPaths := []string{
-		cwd,
-		filepath.Join(cwd, "research"),
-		filepath.Join(cwd, "tools"),
+	// 2. Known absolute install locations (tools that install outside PATH)
+	absolutePaths := map[string][]string{
+		"eaphammer": {
+			"/opt/eaphammer/eaphammer",
+			"/usr/local/bin/eaphammer",
+		},
 	}
-
-	binaryMap := map[string]string{
-		"airsnitch":      "research/airsnitch.py",
-		"eaphammer":      "eaphammer",
-		"krack-test":     "krackattacks-scripts/krackattack/krackattack.py",
-		"fragattack":     "fragattacks/fragattack.py",
-		"dragonslayer":   "dragonblood/dragonslayer.py",
-		"dragondrain":    "dragonblood/dragondrain.py",
-	}
-
-	if binary, ok := binaryMap[tool]; ok {
-		for _, p := range searchPaths {
-			fullPath := filepath.Join(p, binary)
-			if info, err := os.Stat(fullPath); err == nil && !info.IsDir() && (info.Mode()&0111 != 0) {
-				return fullPath, nil
+	if candidates, ok := absolutePaths[tool]; ok {
+		for _, p := range candidates {
+			if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+				return p, nil
 			}
+		}
+	}
+
+	// 3. Relative paths from cwd (research scripts, third-party clones alongside binary)
+	cwd, _ := os.Getwd()
+	binaryMap := map[string]string{
+		"airsnitch":    "research/airsnitch.py",
+		"krack-test":   "krackattacks-scripts/krackattack/krackattack.py",
+		"fragattack":   "fragattacks/fragattack.py",
+		"dragonslayer": "dragonblood/dragonslayer.py",
+		"dragondrain":  "dragonblood/dragondrain.py",
+	}
+	if relPath, ok := binaryMap[tool]; ok {
+		fullPath := filepath.Join(cwd, relPath)
+		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return fullPath, nil
 		}
 	}
 
