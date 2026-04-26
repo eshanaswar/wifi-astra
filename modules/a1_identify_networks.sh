@@ -86,6 +86,7 @@ if command -v hcxdumptool >/dev/null 2>&1; then
         echo "[A1] 6GHz sweep complete: ${SIXGHZ_PCAP}"
     else
         echo "[A1] Adapter does not support 6GHz — skipping 6GHz sweep"
+        echo "     To scan 6GHz (WiFi 6E): use an AX210/MT7921AX adapter with Linux 6GHz monitor mode support."
     fi
 fi
 
