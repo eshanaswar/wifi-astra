@@ -27,6 +27,26 @@ ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="D5"
 EAP_OUT="${EVIDENCE_DIR}/${TC_ID}_eaphammer_results.txt"
 
+# ─── Eaphammer preflight ───────────────────────────────────────────────────────
+EAPHAMMER_BIN=""
+for _candidate in \
+    "$(command -v eaphammer 2>/dev/null)" \
+    "/opt/eaphammer/eaphammer" \
+    "/usr/local/bin/eaphammer"; do
+    if [[ -x "${_candidate:-}" ]]; then
+        EAPHAMMER_BIN="$_candidate"
+        break
+    fi
+done
+if [[ -z "$EAPHAMMER_BIN" ]]; then
+    echo "[!] eaphammer not found. D5 requires eaphammer for rogue RADIUS deployment." >&2
+    echo "    Install it:" >&2
+    echo "      git clone https://github.com/s0lst1c3/eaphammer /opt/eaphammer" >&2
+    echo "      cd /opt/eaphammer && python3 -m pip install -r requirements.txt" >&2
+    echo "    Or run: sudo bin/wifi-astra setup  (installs build prerequisites)" >&2
+    exit 1
+fi
+
 if [[ -z "${MONITOR_INTERFACE:-}" ]]; then
     echo "[!] MONITOR_INTERFACE not set."
     exit 1
@@ -89,20 +109,15 @@ TEL_PID=$!
 
 # 2. Run Primary Tool (eaphammer)
 RET=0
-if command -v eaphammer &>/dev/null; then
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        # Foreground Execution: capture eaphammer exit code via PIPESTATUS, not tee's
-        timeout --foreground "$SCAN_TIME" eaphammer --interface "$_HOSTAPD_IFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
-        RET=${PIPESTATUS[0]}
-    else
-        # Background Execution: wait captures the tool's actual exit code
-        timeout "$SCAN_TIME" eaphammer --interface "$_HOSTAPD_IFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
-        TOOL_PID=$!
-        wait $TOOL_PID; RET=$?
-    fi
+if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
+    # Foreground Execution: capture eaphammer exit code via PIPESTATUS, not tee's
+    timeout --foreground "$SCAN_TIME" "$EAPHAMMER_BIN" --interface "$_HOSTAPD_IFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes 2>&1 | tee "$EAP_OUT" || true
+    RET=${PIPESTATUS[0]}
 else
-    echo "[!] eaphammer tool not found."
-    RET=1
+    # Background Execution: wait captures the tool's actual exit code
+    timeout "$SCAN_TIME" "$EAPHAMMER_BIN" --interface "$_HOSTAPD_IFACE" --essid "$SSID" --negotiate gtc --auth wpa2-aes > "$EAP_OUT" 2>&1 &
+    TOOL_PID=$!
+    wait $TOOL_PID; RET=$?
 fi
 
 # 3. Cleanup and Final Signal
