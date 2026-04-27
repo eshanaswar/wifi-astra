@@ -109,8 +109,12 @@ func DetectConnectedClientIP(evidenceDir, module string) string {
 		}
 	}
 
-	// Fallback: scan dnsmasq log for DHCPACK lines
-	logFile := filepath.Join(evidenceDir, strings.ToUpper(module)+"_dnsmasq.log")
+	// Fallback: scan dnsmasq log for DHCPACK lines.
+	// Try lowercase first (matching the lease file convention), then uppercase.
+	logFile := filepath.Join(evidenceDir, strings.ToLower(module)+"_dnsmasq.log")
+	if _, statErr := os.Stat(logFile); statErr != nil {
+		logFile = filepath.Join(evidenceDir, strings.ToUpper(module)+"_dnsmasq.log")
+	}
 	logData, err := os.ReadFile(logFile)
 	if err != nil {
 		return ""
@@ -121,10 +125,11 @@ func DetectConnectedClientIP(evidenceDir, module string) string {
 			continue
 		}
 		parts := strings.Fields(line)
-		// DHCPACK line format: "... dnsmasq-dhcp[PID]: DHCPACK(iface) <IP> <MAC> <hostname>"
-		// IP is always the token immediately after the "(iface)" token
+		// Actual dnsmasq DHCPACK line format:
+		//   "Jan  1 12:00:00 host dnsmasq-dhcp[PID]: DHCPACK(wlan0) 192.168.44.100 mac hostname"
+		// "DHCPACK(iface)" is a single token; the IP is the immediately following token.
 		for i, p := range parts {
-			if strings.HasPrefix(p, "(") && strings.HasSuffix(p, ")") && i+1 < len(parts) {
+			if strings.HasPrefix(p, "DHCPACK(") && strings.HasSuffix(p, ")") && i+1 < len(parts) {
 				candidate := parts[i+1]
 				if isIPv4(candidate) && candidate != "192.168.44.1" {
 					lastIP = candidate
