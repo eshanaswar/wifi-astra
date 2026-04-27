@@ -16,6 +16,7 @@ import (
 	"wifi-astra/internal/ingest"
 	"wifi-astra/internal/logging"
 	"wifi-astra/internal/module"
+	"wifi-astra/internal/scopetoken"
 	"wifi-astra/internal/session"
 	"wifi-astra/internal/ui"
 	"wifi-astra/pkg/constants"
@@ -591,6 +592,18 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 		if len(parts) == 2 {
 			envMap[parts[0]] = parts[1]
 		}
+	}
+
+	// Generate HMAC scope launch token — operational guardrail against direct script invocation.
+	// Deters casual misuse; not tamper-proof against operators with SQLite access.
+	activeBSSID := envMap[constants.ConfigGuestBSSID]
+	if len(c.Session.ScopeSecret) > 0 && activeBSSID != "" {
+		tok := scopetoken.Generate(c.Session.ScopeSecret, tcID, activeBSSID)
+		env = append(env, fmt.Sprintf("ASTRA_SCOPE_TOKEN=%s", tok))
+		envMap["ASTRA_SCOPE_TOKEN"] = tok
+	} else {
+		env = append(env, "ASTRA_SCOPE_TOKEN=")
+		envMap["ASTRA_SCOPE_TOKEN"] = ""
 	}
 
 	// Inject Colors for Module Highlighting
