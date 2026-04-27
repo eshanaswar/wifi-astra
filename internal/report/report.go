@@ -313,7 +313,6 @@ func GenerateCSVReport(s *session.Session, modDir string) (string, error) {
 	defer f.Close()
 
 	w := csv.NewWriter(f)
-	defer w.Flush()
 
 	// Header row
 	header := []string{
@@ -366,6 +365,10 @@ func GenerateCSVReport(s *session.Session, modDir string) (string, error) {
 		}
 	}
 
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return "", fmt.Errorf("flush CSV: %w", err)
+	}
 	return outputPath, nil
 }
 
