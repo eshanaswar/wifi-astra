@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,13 @@ func (c *AssessmentController) HandlePostConnectScan(clientIP, module string) {
 	if clientIP == "" {
 		return
 	}
+
+	// Validate IP before passing to nmap
+	if net.ParseIP(clientIP) == nil || net.ParseIP(clientIP).To4() == nil {
+		fmt.Printf("%s[!] Invalid IPv4 address — aborting scan.%s\n", constants.ThemeHigh, constants.ColorReset)
+		return
+	}
+	clientIP = net.ParseIP(clientIP).String() // normalize representation
 
 	if !ui.PromptConfirm(fmt.Sprintf("    Run nmap service+OS scan against %s?", clientIP), false) {
 		return
@@ -113,12 +121,23 @@ func DetectConnectedClientIP(evidenceDir, module string) string {
 			continue
 		}
 		parts := strings.Fields(line)
-		for _, p := range parts {
-			if strings.Count(p, ".") == 3 && p != "192.168.44.1" {
-				lastIP = p
+		// DHCPACK line format: "... dnsmasq-dhcp[PID]: DHCPACK(iface) <IP> <MAC> <hostname>"
+		// IP is always the token immediately after the "(iface)" token
+		for i, p := range parts {
+			if strings.HasPrefix(p, "(") && strings.HasSuffix(p, ")") && i+1 < len(parts) {
+				candidate := parts[i+1]
+				if isIPv4(candidate) && candidate != "192.168.44.1" {
+					lastIP = candidate
+				}
 				break
 			}
 		}
 	}
 	return lastIP
+}
+
+// isIPv4 returns true if s is a valid IPv4 address.
+func isIPv4(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() != nil
 }
