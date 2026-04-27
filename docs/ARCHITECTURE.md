@@ -100,6 +100,10 @@ Scope Selection ───── Operator selects authorized BSSIDs
   ▼
 Module Execution ───── Controller validates every target against scope
   │                    SCOPE_VIOLATION events logged to session_replay.log
+  │                    HMAC scope token injected as ASTRA_SCOPE_TOKEN env var.
+  │                    Active attack modules verify token via 'verify-scope' callback.
+  │                    ⚠ Guardrail: deters direct script invocation; does not prevent
+  │                      bypass by operators with direct filesystem/SQLite access.
   │                    Post-run dispatcher: inline cracking for D1/D2/D3/D5
   ▼
 Report Generation ──── Structured report from all session findings
@@ -268,3 +272,27 @@ After successful captures, the controller dispatches cracking automatically:
 | D5 | MSCHAPv2 pairs | `asleap` auto-run; `hashcat -m 5500/-m 5600` offered as fallback |
 
 Recovered credentials are recorded as `CRITICAL` findings in the evidence store.
+
+---
+
+## 10. Scope Guardrail Mechanism
+
+WiFi-Astra includes an **operational scope guardrail** — not a cryptographic enforcement barrier. The distinction matters:
+
+**What it does:**
+- The AssessmentController generates a per-launch HMAC-SHA256 token encoding `moduleID|bssid|expiry`.
+- The token is signed with a 32-byte random secret generated fresh for each session and persisted in the session SQLite database.
+- Active attack modules (D1–D3, D5–D7, E3, F1, G5) call `$ASTRA_BIN verify-scope` before executing radio operations.
+- If the token is absent, wrong, or expired, the module prints an error and exits before touching the radio.
+
+**What it does NOT do:**
+- An operator with read access to the session SQLite database (`sessions/<id>/session.db`) can extract the scope secret and forge a valid token using standard HMAC tooling.
+- Removing the guard check from a script copy trivially bypasses it.
+- This mechanism targets: accidental invocation without authorization context, runbook copy-paste errors, and automated tooling invoking scripts without a proper session.
+
+**Token format:**
+```
+<moduleID>|<bssid>|<unix_expiry>|<hmac_sha256_hex>
+```
+
+Token TTL is 5 minutes. The controller regenerates it on every `ExecuteModule()` call.

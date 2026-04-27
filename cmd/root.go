@@ -31,8 +31,10 @@ var RootCmd = &cobra.Command{
 It covers the full 802.11 attack lifecycle — from passive discovery and client fingerprinting to
 encryption attacks, rogue AP deployment, MitM pivoting, and automated report generation.
 
-All operations require written authorization. The framework enforces scope boundaries at runtime:
-modules are blocked from targeting BSSIDs outside the operator-defined scope list.
+All operations require written authorization. The framework includes an operational scope
+guardrail: active attack modules validate a session-signed HMAC token before executing,
+deterring invocation outside the controller. Written authorization from the network owner
+is the primary enforcement mechanism — technical controls support but do not replace it.
 
 Run 'astra start' to launch an interactive session, or supply a JSON audit plan with --config
 for unattended headless execution.`,
