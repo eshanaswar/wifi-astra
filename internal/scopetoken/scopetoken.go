@@ -20,6 +20,9 @@ const tokenTTL = 5 * time.Minute
 // where expiry is a Unix timestamp (seconds) and secret is the 32-byte
 // per-session random key stored in SQLite.
 func Generate(secret []byte, moduleID, bssid string) string {
+	if len(secret) == 0 {
+		return ""
+	}
 	expiry := time.Now().Add(tokenTTL).Unix()
 	payload := fmt.Sprintf("%s|%s|%d", moduleID, bssid, expiry)
 	mac := hmac.New(sha256.New, secret)
@@ -32,6 +35,9 @@ func Generate(secret []byte, moduleID, bssid string) string {
 // Returns a non-nil error if the signature is wrong, the token is expired,
 // or the fields don't match.
 func Verify(secret []byte, token, moduleID, bssid string) error {
+	if len(secret) == 0 {
+		return fmt.Errorf("scopetoken: secret must not be empty")
+	}
 	parts := strings.Split(token, "|")
 	if len(parts) != 4 {
 		return fmt.Errorf("malformed scope token")
