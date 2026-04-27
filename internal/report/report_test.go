@@ -116,3 +116,30 @@ func TestGenerateMarkdownReport(t *testing.T) {
 	}
 }
 
+func TestGenerateCSVReport_EmptySession(t *testing.T) {
+	dir := t.TempDir()
+	s, err := session.NewSession("test-csv", dir)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer s.Cleanup()
+
+	path, err := GenerateCSVReport(s, "../../modules")
+	if err != nil {
+		t.Fatalf("GenerateCSVReport: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read CSV: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 1 {
+		t.Fatal("expected at least a header row")
+	}
+	if !strings.HasPrefix(lines[0], "Type,") {
+		t.Errorf("unexpected header: %s", lines[0])
+	}
+}
+
