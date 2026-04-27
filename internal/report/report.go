@@ -299,6 +299,15 @@ func GenerateMarkdownReport(s *session.Session, modDir string) (string, error) {
 	return outputPath, nil
 }
 
+// baseOrEmpty returns filepath.Base(p) when p is non-empty, or "" when p is empty.
+// filepath.Base("") returns "." which is misleading in CSV output.
+func baseOrEmpty(p string) string {
+	if p == "" {
+		return ""
+	}
+	return filepath.Base(p)
+}
+
 // GenerateCSVReport writes a flat CSV containing all vulnerabilities and credentials
 // from the session. Returns the path to the written file.
 // Columns: Type, Module, Severity, Name, Target, Description, Remediation, Evidence, DetectedAt
@@ -334,7 +343,7 @@ func GenerateCSVReport(s *session.Session, modDir string) (string, error) {
 			v.TargetHost,
 			v.Description,
 			v.Remediation,
-			filepath.Base(v.EvidenceFile),
+			baseOrEmpty(v.EvidenceFile),
 			v.DetectedAt,
 		}
 		if err := w.Write(row); err != nil {
@@ -357,7 +366,7 @@ func GenerateCSVReport(s *session.Session, modDir string) (string, error) {
 			c.TargetHost,
 			display,
 			"Rotate all credentials immediately.",
-			filepath.Base(c.EvidenceFile),
+			baseOrEmpty(c.EvidenceFile),
 			"",
 		}
 		if err := w.Write(row); err != nil {

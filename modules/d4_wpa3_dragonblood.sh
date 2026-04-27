@@ -87,7 +87,12 @@ SAEPK_ACTIVE="no"
 if echo "$AKM_SUITES" | grep -q "8"; then SAE_ACTIVE="yes"; fi
 if echo "$AKM_SUITES" | grep -q "25"; then SAEPK_ACTIVE="yes"; fi
 
-# RSN Capabilities: anti-clogging token required = bit 10 (0x0400)
+# RSN Capabilities: anti-clogging token required = bit 10 (0x0400).
+# NOTE: Bit 10 of RSN Capabilities is defined for FILS (Fast Initial Link Setup)
+# in 802.11-2020 §9.4.2.25.4, not formally for SAE anti-clogging. Its presence
+# alongside SAE-AKM is treated here as a heuristic indicator that the vendor has
+# enabled anti-clogging countermeasures — consistent with CVE-2019-9494 patch
+# guidance but not a normative guarantee from the spec alone.
 ANTICLOG="unknown"
 if [[ -n "$RSN_CAPS" ]]; then
     CAPS_INT=$(( 16#${RSN_CAPS//0x/} )) || CAPS_INT=0
