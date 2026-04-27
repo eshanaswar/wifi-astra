@@ -39,6 +39,27 @@ func shellSingleQuote(v string) string {
 	return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'"
 }
 
+// isValidEnvKey returns true if k is a legal shell identifier (letter/underscore
+// start, only alphanumeric and underscores). This guards wrapper-script generation
+// against keys that could inject shell commands via the `export k=v` line.
+func isValidEnvKey(k string) bool {
+	if len(k) == 0 {
+		return false
+	}
+	for i, c := range k {
+		if i == 0 {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_') {
+				return false
+			}
+		} else {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func NewAssessmentController(s *session.Session, mgr *executor.Manager, modDir string) *AssessmentController {
 	return &AssessmentController{
 		Session:      s,
@@ -697,6 +718,9 @@ func (c *AssessmentController) runModuleWithCode(tcID string) (int, error) {
 			// KARMA_MODE, PHISH_TEMPLATE, WPS_ATTACK, TARGET_CLIENT, ASTRA_TARGET_*…)
 			// and config keys reach the module running inside the separate terminal window.
 			for k, v := range envMap {
+				if !isValidEnvKey(k) {
+					continue // skip keys that aren't valid shell identifiers
+				}
 				wrapperContent += fmt.Sprintf("export %s=%s\n", k, shellSingleQuote(v))
 			}
 			
