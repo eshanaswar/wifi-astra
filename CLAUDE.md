@@ -49,6 +49,7 @@ shellcheck -S warning modules/*.sh
 | Command | Description |
 |---------|-------------|
 | `astra start` | Start or resume an interactive assessment session |
+| `astra run <MODULE_ID>` | Run a single module directly (no TUI wizard); useful for automation and CI |
 | `astra clean` | Remove stale session directories older than a threshold (default 30 days) |
 | `astra setup` | Install all required system dependencies via apt (requires root) |
 | `astra update-oui` | Force-refresh the local IEEE OUI database used for vendor lookups |
@@ -68,6 +69,19 @@ shellcheck -S warning modules/*.sh
 |------|-------------|
 | `-t, --older-than <N>` | Delete sessions whose last modification time exceeds N days (default 30) |
 | `--dry-run` | List sessions that would be removed without deleting them |
+
+**`astra run <MODULE_ID>` flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--iface <name>` | Monitor-mode interface (required) |
+| `--bssid <AA:BB:CC:DD:EE:FF>` | Target BSSID |
+| `--ssid <name>` | Target SSID |
+| `--channel <N>` | Target channel (1–196) |
+| `--session-dir <path>` | Session directory (auto-generated under `./sessions/` if omitted) |
+| `--capture-time <N>` | Capture duration in seconds (default: 60) |
+| `--scan-time <N>` | Scan duration in seconds (default: 30) |
+| `--ap-iface <name>` | AP interface for Evil Twin modules (F1, F2, F3, D5) |
 
 **Headless audit plan format** (`--config plan.json`):
 
