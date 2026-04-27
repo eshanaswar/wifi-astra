@@ -50,6 +50,24 @@ EVIDENCE_PREFIX="${EVIDENCE_DIR}/f1"
 SCAN_TIME="${SCAN_TIME:-120}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="F1"
+# --- Scope Guardrail ---
+# Verify this module was launched by the wifi-astra controller.
+# Prevents casual direct invocation against unauthorized targets.
+if [[ -n "${ASTRA_SCOPE_TOKEN:-}" && -n "${GUEST_BSSID:-}" ]]; then
+    if ! "$ASTRA_BIN" verify-scope \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --bssid "$GUEST_BSSID" \
+            --token "$ASTRA_SCOPE_TOKEN"; then
+        echo "[!] Scope guardrail failed — aborting." >&2
+        exit 1
+    fi
+fi
+# (Token absent = headless or legacy mode; guard is skipped but logged)
+if [[ -z "${ASTRA_SCOPE_TOKEN:-}" && "${ASTRA_HEADLESS:-}" != "true" ]]; then
+    echo "[!] WARNING: ASTRA_SCOPE_TOKEN not set. Run this module via wifi-astra start." >&2
+fi
+# --- End Scope Guardrail ---
 INTERNAL_IP="${INTERNAL_IP:-192.168.44.1}"
 
 # Tactical Selections from Go Brain

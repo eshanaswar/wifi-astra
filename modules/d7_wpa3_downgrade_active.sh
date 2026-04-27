@@ -36,6 +36,24 @@ SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="D7"
+# --- Scope Guardrail ---
+# Verify this module was launched by the wifi-astra controller.
+# Prevents casual direct invocation against unauthorized targets.
+if [[ -n "${ASTRA_SCOPE_TOKEN:-}" && -n "${GUEST_BSSID:-}" ]]; then
+    if ! "$ASTRA_BIN" verify-scope \
+            --session-dir "$SESSION_DIR" \
+            --tc "$TC_ID" \
+            --bssid "$GUEST_BSSID" \
+            --token "$ASTRA_SCOPE_TOKEN"; then
+        echo "[!] Scope guardrail failed — aborting." >&2
+        exit 1
+    fi
+fi
+# (Token absent = headless or legacy mode; guard is skipped but logged)
+if [[ -z "${ASTRA_SCOPE_TOKEN:-}" && "${ASTRA_HEADLESS:-}" != "true" ]]; then
+    echo "[!] WARNING: ASTRA_SCOPE_TOKEN not set. Run this module via wifi-astra start." >&2
+fi
+# --- End Scope Guardrail ---
 
 if [[ -z "$INTERFACE" || -z "$SSID" ]]; then
     echo "[!] MONITOR_INTERFACE or GUEST_SSID not set."
