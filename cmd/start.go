@@ -520,6 +520,21 @@ func launchMainMenu(s *session.Session) {
 		return nil
 	})
 
+	mainMenu.AddOptionWithHelp("Export CSV (Excel / Sheets)",
+		"Export all findings and credentials as a flat CSV file.",
+		func() error {
+		fmt.Printf("%s[*] Exporting CSV...%s ", constants.ThemeHeader, constants.ColorReset)
+		path, err := report.GenerateCSVReport(s, ModDir)
+		if err != nil {
+			fmt.Printf("%sFAILED%s\n", constants.ThemeHigh, constants.ColorReset)
+			ui.PromptString("Press Enter to continue", "")
+			return err
+		}
+		fmt.Printf("%s[✓]%s Saved to: %s\n", constants.ThemeSuccess, constants.ColorReset, path)
+		ui.PromptString("Press Enter to return to menu", "")
+		return nil
+	})
+
 	mainMenu.AddOptionWithHelp("Show Session Info & Coverage",
 		"Display session metadata, scope, module completion percentage, and findings by severity.",
 		func() error {
