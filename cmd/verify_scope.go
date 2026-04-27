@@ -20,8 +20,8 @@ var verifyScopeCmd = &cobra.Command{
 		bssid, _ := cmd.Flags().GetString("bssid")
 		token, _ := cmd.Flags().GetString("token")
 
-		if sessionDir == "" || tcID == "" || token == "" {
-			fmt.Fprintln(os.Stderr, "[!] verify-scope: missing required flags")
+		if sessionDir == "" || tcID == "" || bssid == "" || token == "" {
+			fmt.Fprintln(os.Stderr, "[!] verify-scope: --session-dir, --tc, --bssid, and --token are all required")
 			os.Exit(1)
 		}
 
