@@ -1,7 +1,9 @@
 package session
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +22,7 @@ type Session struct {
 	ResultsDir  string
 	DBPath      string
 	DB          *sql.DB
+	ScopeSecret []byte // 32-byte random key; generated once per session, persisted in SQLite
 }
 
 func NewSession(name string, baseDir string) (*Session, error) {
@@ -72,6 +75,15 @@ func NewSession(name string, baseDir string) (*Session, error) {
 		return nil, fmt.Errorf("failed to insert session record: %v", err)
 	}
 
+	// Generate and persist per-session HMAC scope secret
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return nil, fmt.Errorf("failed to generate scope secret: %w", err)
+	}
+	s.ScopeSecret = raw[:]
+	s.DB.Exec(`INSERT OR REPLACE INTO scope_secret (id, secret) VALUES (1, ?)`,
+		hex.EncodeToString(s.ScopeSecret))
+
 	return s, nil
 }
 
@@ -92,7 +104,7 @@ func LoadSession(sessionDir string) (*Session, error) {
 		return nil, fmt.Errorf("failed to read session info from database: %v", err)
 	}
 
-	return &Session{
+	s := &Session{
 		ID:          id,
 		Name:        name,
 		BaseDir:     sessionDir,
@@ -102,7 +114,25 @@ func LoadSession(sessionDir string) (*Session, error) {
 		ResultsDir:  filepath.Join(sessionDir, "results"),
 		DBPath:      dbPath,
 		DB:          database,
-	}, nil
+	}
+
+	// Load persisted scope secret
+	var secretHex string
+	if err := s.DB.QueryRow(`SELECT secret FROM scope_secret WHERE id = 1`).Scan(&secretHex); err == nil {
+		if raw, decErr := hex.DecodeString(secretHex); decErr == nil {
+			s.ScopeSecret = raw
+		}
+	}
+	// Legacy session or DB error: generate a fresh secret and persist it
+	if len(s.ScopeSecret) == 0 {
+		var raw [32]byte
+		rand.Read(raw[:])
+		s.ScopeSecret = raw[:]
+		s.DB.Exec(`INSERT OR REPLACE INTO scope_secret (id, secret) VALUES (1, ?)`,
+			hex.EncodeToString(s.ScopeSecret))
+	}
+
+	return s, nil
 }
 
 func (s *Session) Cleanup() {

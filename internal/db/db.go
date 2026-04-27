@@ -97,6 +97,10 @@ func InitDB(path string) (*sql.DB, error) {
 			status_text TEXT,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS scope_secret (
+			id     INTEGER PRIMARY KEY CHECK (id = 1),
+			secret TEXT NOT NULL
+		);`,
 	}
 
 	for _, schema := range schemas {
