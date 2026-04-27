@@ -1,6 +1,7 @@
 package report
 
 import (
+	"encoding/csv"
 	"fmt"
 	"html/template"
 	"os"
@@ -295,6 +296,76 @@ func GenerateMarkdownReport(s *session.Session, modDir string) (string, error) {
 	if err := os.WriteFile(outputPath, []byte(sb.String()), 0644); err != nil {
 		return "", err
 	}
+	return outputPath, nil
+}
+
+// GenerateCSVReport writes a flat CSV containing all vulnerabilities and credentials
+// from the session. Returns the path to the written file.
+// Columns: Type, Module, Severity, Name, Target, Description, Remediation, Evidence, DetectedAt
+func GenerateCSVReport(s *session.Session, modDir string) (string, error) {
+	data := buildReportData(s, modDir)
+
+	outputPath := filepath.Join(s.ReportDir, "assessment_findings.csv")
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return "", fmt.Errorf("create CSV: %w", err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	// Header row
+	header := []string{
+		"Type", "Module", "Severity", "Name",
+		"Target", "Description", "Remediation",
+		"Evidence", "DetectedAt",
+	}
+	if err := w.Write(header); err != nil {
+		return "", fmt.Errorf("write CSV header: %w", err)
+	}
+
+	// Vulnerability rows
+	for _, v := range data.Vulnerabilities {
+		row := []string{
+			"Vulnerability",
+			v.TCID,
+			v.Severity,
+			v.Name,
+			v.TargetHost,
+			v.Description,
+			v.Remediation,
+			filepath.Base(v.EvidenceFile),
+			v.DetectedAt,
+		}
+		if err := w.Write(row); err != nil {
+			return "", fmt.Errorf("write vulnerability row: %w", err)
+		}
+	}
+
+	// Credential rows
+	for _, c := range data.Credentials {
+		secret := c.Hash
+		if c.Password != "" {
+			secret = c.Password
+		}
+		display := fmt.Sprintf("%s / %s", c.Username, secret)
+		row := []string{
+			"Credential",
+			c.TCID,
+			"CRITICAL",
+			fmt.Sprintf("%s credential: %s", c.Proto, c.Username),
+			c.TargetHost,
+			display,
+			"Rotate all credentials immediately.",
+			filepath.Base(c.EvidenceFile),
+			"",
+		}
+		if err := w.Write(row); err != nil {
+			return "", fmt.Errorf("write credential row: %w", err)
+		}
+	}
+
 	return outputPath, nil
 }
 
