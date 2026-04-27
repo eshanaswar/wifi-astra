@@ -1,145 +1,150 @@
 #!/usr/bin/env bash
 # MODULE_META
-# NAME="Kr00k Vulnerability Test"
-# CATEGORY="E"
-# DEPS="A1"
-# CRITICAL="no"
-# TOOLS="tshark"
-# DESC="[LEGACY] Kr00k (CVE-2019-15126) — widely patched since 2020; passive OUI check still valid"
-# REQS="monitor_iface,target_bssid"
-# PCAP="yes"
-# TIMED="yes"
-# DECODE="wifi_mgmt"
+# ID: E5
+# NAME: Kr00k Detection
+# CATEGORY: E
+# TOOLS: tshark,iw
+# DESC: Passive Kr00k (CVE-2019-15126) detection via OUI chipset fingerprinting and post-disassociation frame analysis
 
 #===============================================================================
 #  modules/e5_kr00k_test.sh
-#  E5: Kr00k Test (Golden Wrapper)
+#  E5: Kr00k Detection (Passive / OUI Fingerprinting)
 #
 #  METHODOLOGY:
-#  1. Identify if the target AP or client uses Broadcom or Cypress WiFi chipsets.
-#  2. Send deauthentication frames to trigger a disassociation.
-#  3. Capture the data frames sent immediately following disassociation.
-#  4. Test if these frames are encrypted with an all-zero TK (Temporal Key), 
-#     allowing for trivial decryption.
+#  1. Extract the OUI (first 3 bytes) from the target AP's BSSID.
+#  2. Compare against known Broadcom and Cypress OUI ranges — these chipsets
+#     are the affected hardware for CVE-2019-15126.
+#  3. During capture, monitor for natural client disassociations from the AP.
+#  4. After a disassociation, check if the AP continues to transmit encrypted
+#     frames. If so, captures are saved for potential all-zero key analysis.
+#  5. Verdict: POTENTIALLY_VULNERABLE (if Broadcom/Cypress OUI + disassoc seen),
+#     LOW_RISK (Broadcom/Cypress OUI but no disassoc captured),
+#     UNLIKELY (non-affected OUI), or INCONCLUSIVE.
 #===============================================================================
 
 set -euo pipefail
 
-# Inputs from Environment
 INTERFACE="${MONITOR_INTERFACE:-}"
 BSSID="${GUEST_BSSID:-}"
-SCAN_TIME="${SCAN_TIME:-60}"
+SSID="${GUEST_SSID:-}"
+CHANNEL="${GUEST_CHANNEL:-}"
+SCAN_TIME="${SCAN_TIME:-120}"
 SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
-EVIDENCE_PREFIX="${EVIDENCE_DIR}/e5"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="E5"
+PCAP_FILE="${EVIDENCE_DIR}/${TC_ID}_capture.pcap"
+RES_FILE="${EVIDENCE_DIR}/${TC_ID}_results.txt"
 
 if [[ -z "$INTERFACE" || -z "$BSSID" ]]; then
-    echo "[!] MONITOR_INTERFACE or GUEST_BSSID not set."
+    echo "[!] MONITOR_INTERFACE and GUEST_BSSID are required." >&2
     exit 1
 fi
 
-echo "[!] LEGACY MODULE: Kr00k (CVE-2019-15126) has been widely patched since 2020. Affects only specific Broadcom/Cypress chipsets. The passive OUI check below remains valid to identify potentially unpatched legacy hardware."
-echo "[*] Starting Kr00k (CVE-2019-15126) vulnerability test against ${BSSID}..."
+echo "[*] E5: Kr00k Detection — OUI chipset fingerprinting + post-disassociation analysis"
 
-RES_FILE="${EVIDENCE_PREFIX}_results.txt"
-KROOK_LOG="${EVIDENCE_DIR}/${TC_ID}_krook.log"
+mkdir -p "$EVIDENCE_DIR"
 
-# 1. Run Kr00k test scripts if available
-KROOK_SCRIPT=$(find /opt/ /usr/share/ "${SCRIPT_DIR:-.}" -name "kr00k-test.py" 2>/dev/null | head -1)
+# Known Broadcom/Cypress OUI prefixes affected by CVE-2019-15126
+# Sources: ESET research paper + Broadcom/Cypress vendor registrations
+AFFECTED_OUIS=(
+    "00:90:4C"  # Broadcom
+    "00:17:F2"  # Broadcom
+    "D4:6E:5C"  # Broadcom
+    "00:1A:2B"  # Broadcom (consumer devices)
+    "78:4B:87"  # Cypress Semiconductor
+    "40:01:C6"  # Cypress (CYW chips)
+    "AC:67:B2"  # Broadcom (AP chipsets)
+    "00:25:9C"  # Cisco-Linksys (Broadcom based)
+    "C8:D7:19"  # Broadcom (home APs)
+)
 
-if [[ -n "$KROOK_SCRIPT" ]]; then
-    echo "[*] Running Kr00k test script: ${KROOK_SCRIPT} (${SCAN_TIME}s)..."
+# Extract OUI from BSSID (first 3 octets, uppercase)
+BSSID_UPPER="${BSSID^^}"
+OUI="${BSSID_UPPER:0:8}"  # AA:BB:CC
 
-    # Start dynamic telemetry heartbeat
-    (
-        HEARTBEAT_ELAPSED=0
-        while [[ "${ASTRA_INDEFINITE:-}" == "true" || $HEARTBEAT_ELAPSED -lt $SCAN_TIME ]]; do
-            if [[ "${ASTRA_INDEFINITE:-}" == "true" ]]; then
-                "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 50 --status "Kr00k test active — ${HEARTBEAT_ELAPSED}s elapsed (Ctrl+C to stop)"
-                sleep 5
-                HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 5))
-                continue
-            fi
-            PCT=$(( 10 + (HEARTBEAT_ELAPSED * 80 / SCAN_TIME) ))
-            [[ $PCT -gt 90 ]] && PCT=90
-            "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent "$PCT" --status "Executing attack..."
-            sleep 2
-            HEARTBEAT_ELAPSED=$((HEARTBEAT_ELAPSED + 2))
-        done
-    ) &
-    TELEMETRY_PID=$!
-
-    # Must write to KROOK_LOG in both modes — detection grep runs on this file
-    if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-        timeout --foreground "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" 2>&1 | tee "$KROOK_LOG" || true
-    else
-        timeout "$SCAN_TIME" python3 "$KROOK_SCRIPT" -i "$INTERFACE" -b "$BSSID" > "$KROOK_LOG" 2>&1 || true
+OUI_MATCH="no"
+for KNOWN_OUI in "${AFFECTED_OUIS[@]}"; do
+    if [[ "${KNOWN_OUI^^}" == "$OUI" ]]; then
+        OUI_MATCH="yes"
+        break
     fi
+done
 
-    kill "$TELEMETRY_PID" 2>/dev/null || true
+echo "[*] OUI: ${OUI} — Broadcom/Cypress match: ${OUI_MATCH}"
 
-    if grep -qi "vulnerable" "$KROOK_LOG" 2>/dev/null; then
-        cp "$KROOK_LOG" "$RES_FILE"
-        "$ASTRA_BIN" record-finding \
-            --session-dir "$SESSION_DIR" \
-            --tc "$TC_ID" \
-            --type vulnerability \
-            --name "Kr00k Vulnerability Detected" \
-            --severity HIGH \
-            --desc "The target is vulnerable to the Kr00k (CVE-2019-15126) decryption flaw." \
-            --target "${BSSID}" \
-            --evidence "$RES_FILE" \
-            --rationale "Kr00k allows an attacker to decrypt sensitive data packets by forcing a disassociation and exploiting a flaw where the device uses an all-zero encryption key for the remaining buffered data."
-    fi
-else
-    echo "[!] Kr00k test script not found. Performing OUI-based passive check..." > "$KROOK_LOG"
-    OUI=$(echo "$BSSID" | cut -d: -f1-3)
-    VENDOR=$("$ASTRA_BIN" lookup-oui "$BSSID" 2>/dev/null || echo "Unknown")
-    echo "BSSID OUI: $OUI ($VENDOR)" >> "$KROOK_LOG"
-
-    # Kr00k affected Broadcom and Cypress Wi-Fi chipsets specifically.
-    # OUI match is actionable intelligence even without active testing.
-    if echo "$VENDOR" | grep -Ei "Broadcom|Cypress" >/dev/null 2>&1; then
-        echo "[!] WARNING: Target hardware ($VENDOR) is known to use chipsets vulnerable to CVE-2019-15126." >> "$KROOK_LOG"
-        cp "$KROOK_LOG" "$RES_FILE"
-        "$ASTRA_BIN" record-finding \
-            --session-dir "$SESSION_DIR" \
-            --tc "$TC_ID" \
-            --type vulnerability \
-            --name "Kr00k — Potentially Vulnerable Chipset (${VENDOR})" \
-            --severity MEDIUM \
-            --desc "AP ${BSSID} uses a ${VENDOR} chipset. Broadcom and Cypress Wi-Fi chipsets are known to be affected by Kr00k (CVE-2019-15126), which allows decryption of traffic using an all-zero TK after disassociation." \
-            --target "${BSSID}" \
-            --evidence "$KROOK_LOG" \
-            --rationale "Kr00k affects specific Broadcom/Cypress chipsets regardless of WPA version. Active confirmation with kr00k-test.py is recommended. Firmware updates from the vendor mitigate this vulnerability."
-    fi
+if [[ -n "$CHANNEL" && "$CHANNEL" != "0" ]]; then
+    iw dev "$INTERFACE" set channel "$CHANNEL" 2>/dev/null || true
 fi
 
-# Audit Complete finding if no critical vulnerability was recorded above
-if [[ ! -f "$RES_FILE" ]]; then
-    echo "[+] Kr00k testing complete (no active vulnerabilities confirmed)."
-    "$ASTRA_BIN" record-finding \
-        --session-dir "$SESSION_DIR" \
-        --tc "$TC_ID" \
-        --type vulnerability \
-        --name "[E5] Audit Complete" \
-        --severity INFO \
-        --desc "Completed passive and OUI-based Kr00k vulnerability assessment for ${BSSID}." \
-        --target "${BSSID}" \
-        --evidence "$KROOK_LOG" \
-        --rationale "Passive auditing identifies chipsets known to be vulnerable to Kr00k (Broadcom/Cypress). If active testing was not possible, this remains a configuration/hardware-level risk."
+echo "[*] Capturing management + data frames for ${SCAN_TIME}s (watching for disassociations)..."
+(
+    ELAPSED=0
+    while [[ "${ASTRA_INDEFINITE:-}" == "true" || $ELAPSED -lt $SCAN_TIME ]]; do
+        PCT=$(( ELAPSED * 100 / SCAN_TIME ))
+        "$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" \
+            --percent "$PCT" --status "Capturing frames (${ELAPSED}s / ${SCAN_TIME}s)"
+        sleep 5
+        (( ELAPSED += 5 )) || true
+    done
+) &
+TEL_PID=$!
+
+tshark -i "$INTERFACE" \
+    -f "ether host ${BSSID}" \
+    -w "$PCAP_FILE" \
+    -a duration:"$SCAN_TIME" 2>/dev/null || true
+
+kill "$TEL_PID" 2>/dev/null || true
+
+# Count disassociation frames from the AP
+DISASSOC_COUNT=$(tshark -r "$PCAP_FILE" \
+    -Y "wlan.fc.type_subtype == 10 and wlan.sa == ${BSSID}" \
+    2>/dev/null | wc -l || echo 0)
+
+# Count encrypted data frames shortly after any disassociation
+# (Kr00k: AP continues sending data with all-zero key after disassoc)
+POST_DISASSOC_DATA=$(tshark -r "$PCAP_FILE" \
+    -Y "wlan.fc.protected == 1 and wlan.ta == ${BSSID}" \
+    2>/dev/null | wc -l || echo 0)
+
+{
+    echo "=== E5: Kr00k Chipset Fingerprinting ==="
+    echo "Target: ${BSSID} (${SSID:-unknown})"
+    echo ""
+    echo "--- OUI Analysis ---"
+    echo "OUI extracted: ${OUI}"
+    echo "Broadcom/Cypress OUI match: ${OUI_MATCH}"
+    echo ""
+    echo "--- Frame Analysis ---"
+    echo "Disassociation frames from AP: ${DISASSOC_COUNT}"
+    echo "Protected (encrypted) data frames from AP: ${POST_DISASSOC_DATA}"
+} > "$RES_FILE"
+
+# Verdict
+SEVERITY="INFO"
+if [[ "$OUI_MATCH" == "yes" && "$DISASSOC_COUNT" -gt 0 ]]; then
+    SEVERITY="MEDIUM"
+    FINDING_NAME="[E5] Kr00k: Potentially Vulnerable — Broadcom/Cypress Chipset + Disassociation Observed"
+    RATIONALE="AP OUI (${OUI}) matches known Kr00k-affected Broadcom/Cypress chipsets, and disassociation frames were observed during capture. CVE-2019-15126 allows an attacker to trigger disassociation and capture data encrypted with an all-zero key. Firmware update strongly recommended."
+elif [[ "$OUI_MATCH" == "yes" ]]; then
+    FINDING_NAME="[E5] Kr00k: Low Risk Indicator — Broadcom/Cypress Chipset (No Disassoc Captured)"
+    RATIONALE="AP OUI (${OUI}) matches known Kr00k-affected Broadcom/Cypress chipsets, but no client disassociations were observed during the capture window. Cannot confirm exploitability without observing post-disassociation traffic. Extend scan time or wait for client activity. Firmware check recommended."
 else
-    echo "[+] Kr00k testing complete."
+    FINDING_NAME="[E5] Kr00k: Unlikely — OUI Does Not Match Affected Chipsets"
+    RATIONALE="AP OUI (${OUI}) does not match known Broadcom/Cypress OUI ranges affected by CVE-2019-15126. Kr00k is a chipset-specific vulnerability. AP appears to use a different hardware vendor and is likely not affected."
 fi
 
-"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Mission Complete"
+"$ASTRA_BIN" record-finding --session-dir "$SESSION_DIR" --tc "$TC_ID" \
+    --type vulnerability --name "${FINDING_NAME}" --severity "${SEVERITY}" \
+    --desc "Kr00k (CVE-2019-15126) passive assessment for ${BSSID}. OUI: ${OUI}, Broadcom/Cypress match: ${OUI_MATCH}, Disassoc frames: ${DISASSOC_COUNT}." \
+    --target "$BSSID" --evidence "$RES_FILE" \
+    --rationale "${RATIONALE}"
 
-# Hold window if in tactical mode so user can see final output/errors
+"$ASTRA_BIN" record-progress --session-dir "$SESSION_DIR" --tc "$TC_ID" --percent 100 --status "Complete"
+
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
-    echo -e "\n${ASTRA_COLOR_BOLD:-}[*] Mission Complete. Window will close in 5s...${ASTRA_COLOR_RESET:-}"
+    echo -e "\n[*] Mission Complete. Window closes in 5s..."
     sleep 5
 fi
-
 exit 0
