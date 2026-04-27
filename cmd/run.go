@@ -87,7 +87,9 @@ Scope enforcement applies — the BSSID passed via --bssid becomes the sole auth
 			os.Exit(1)
 		}
 
-		// Create or use a session directory
+		// Create or use a session directory; always resolve to absolute path so
+		// SESSION_EVIDENCE_DIR injected into module env vars is correct regardless
+		// of any directory changes during module execution.
 		if sessionDir == "" {
 			ts := time.Now().Format("20060102-150405")
 			sessionDir = filepath.Join("sessions", fmt.Sprintf("run-%s-%s", strings.ToLower(moduleID), ts))
@@ -95,6 +97,9 @@ Scope enforcement applies — the BSSID passed via --bssid becomes the sole auth
 		if err := os.MkdirAll(sessionDir, 0750); err != nil {
 			fmt.Fprintf(os.Stderr, "[✗] cannot create session dir: %v\n", err)
 			os.Exit(1)
+		}
+		if abs, absErr := filepath.Abs(sessionDir); absErr == nil {
+			sessionDir = abs
 		}
 
 		// Load or create session
