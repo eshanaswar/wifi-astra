@@ -832,6 +832,9 @@ func (c *AssessmentController) HandlePostRun(m *module.Module) {
 		c.HandleD3PostRun()
 	case "D5":
 		c.HandleD5PostRun()
+	case "F1", "F2":
+		clientIP := DetectConnectedClientIP(c.Session.EvidenceDir, m.ID)
+		c.HandlePostConnectScan(clientIP, m.ID)
 	}
 }
 
