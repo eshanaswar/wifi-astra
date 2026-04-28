@@ -126,7 +126,9 @@ func LoadSession(sessionDir string) (*Session, error) {
 	// Legacy session or DB error: generate a fresh secret and persist it
 	if len(s.ScopeSecret) == 0 {
 		var raw [32]byte
-		rand.Read(raw[:])
+		if _, err := rand.Read(raw[:]); err != nil {
+			return nil, fmt.Errorf("failed to generate scope secret: %w", err)
+		}
 		s.ScopeSecret = raw[:]
 		s.DB.Exec(`INSERT OR REPLACE INTO scope_secret (id, secret) VALUES (1, ?)`,
 			hex.EncodeToString(s.ScopeSecret))

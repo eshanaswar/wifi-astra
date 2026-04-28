@@ -242,12 +242,12 @@ func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*sess
 
 	// Always write audit_summary.json to the report directory
 	summaryPath := filepath.Join(s.ReportDir, "audit_summary.json")
-	if summaryData, err := json.MarshalIndent(summary, "", "  "); err == nil {
-		if err := os.WriteFile(summaryPath, summaryData, 0644); err != nil {
-			logging.Warn("Failed to write audit summary: %v", err)
-		} else {
-			logging.Info("Audit summary: %s", summaryPath)
-		}
+	if summaryData, err := json.MarshalIndent(summary, "", "  "); err != nil {
+		logging.Warn("Failed to marshal audit summary: %v", err)
+	} else if err := os.WriteFile(summaryPath, summaryData, 0644); err != nil {
+		logging.Warn("Failed to write audit summary: %v", err)
+	} else {
+		logging.Info("Audit summary: %s", summaryPath)
 	}
 
 	return summary, nil

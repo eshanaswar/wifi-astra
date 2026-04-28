@@ -24,6 +24,7 @@ type Process struct {
 	ExitCode  int       `json:"exit_code"`
 	cmd       *exec.Cmd
 	cancel    context.CancelFunc
+	logFH     *os.File // closed after cmd.Wait() to avoid fd leak
 }
 
 type Manager struct {
@@ -138,6 +139,9 @@ func (m *Manager) RunWithEnv(ctx context.Context, id, command string, args []str
 	}
 
 	err = p.cmd.Wait()
+	if p.logFH != nil {
+		p.logFH.Close()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -173,6 +177,9 @@ func (m *Manager) SpawnWithEnv(ctx context.Context, id, command string, args []s
 
 	go func() {
 		err := p.cmd.Wait()
+		if p.logFH != nil {
+			p.logFH.Close()
+		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
 
@@ -211,9 +218,11 @@ func (m *Manager) start(ctx context.Context, id, command string, args []string, 
 	// Create a new process group so we can kill children properly
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	var logFH *os.File
 	if logFile != "" {
 		f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err == nil {
+			logFH = f
 			cmd.Stdout = io.MultiWriter(os.Stdout, f)
 			cmd.Stderr = io.MultiWriter(os.Stderr, f)
 		} else {
@@ -242,6 +251,7 @@ func (m *Manager) start(ctx context.Context, id, command string, args []string, 
 		LogFile:   logFile,
 		cmd:       cmd,
 		cancel:    cancel,
+		logFH:     logFH,
 	}
 
 	m.processes[id] = p
