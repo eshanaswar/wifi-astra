@@ -169,3 +169,24 @@ func TestHeadlessAPInterfaceInjected(t *testing.T) {
 		t.Errorf("expected DB AP_INTERFACE=wlan2, got %q", observedDBVal)
 	}
 }
+
+func TestComputeExitCode(t *testing.T) {
+	cases := []struct {
+		modulesFailed int
+		highCritical  int
+		expected      int
+	}{
+		{modulesFailed: 0, highCritical: 0, expected: 0},
+		{modulesFailed: 1, highCritical: 0, expected: 2},
+		{modulesFailed: 0, highCritical: 1, expected: 3},
+		{modulesFailed: 1, highCritical: 1, expected: 3},
+		{modulesFailed: 3, highCritical: 5, expected: 3},
+	}
+	for _, tc := range cases {
+		got := computeExitCode(tc.modulesFailed, tc.highCritical)
+		if got != tc.expected {
+			t.Errorf("computeExitCode(%d, %d) = %d, want %d",
+				tc.modulesFailed, tc.highCritical, got, tc.expected)
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+
 	"wifi-astra/internal/config"
 	"wifi-astra/internal/logging"
 	"wifi-astra/internal/module"
@@ -24,6 +25,90 @@ type AuditPlan struct {
 	Modules          []string `json:"modules"`
 	CaptureTime      int      `json:"capture_time"`
 	ScanTime         int      `json:"scan_time"`
+}
+
+// ModuleResult records whether a single module passed or failed.
+type ModuleResult struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"` // "passed" or "failed"
+}
+
+// FindingCounts holds per-severity vulnerability counts from the session DB.
+type FindingCounts struct {
+	Critical int `json:"critical"`
+	High     int `json:"high"`
+	Medium   int `json:"medium"`
+	Low      int `json:"low"`
+	Info     int `json:"info"`
+}
+
+// AuditSummary is the structured result of a headless audit run.
+// It is written to <session>/reports/audit_summary.json and optionally
+// printed to stdout via the --json flag.
+type AuditSummary struct {
+	Session       string         `json:"session"`
+	StartedAt     string         `json:"started_at"`
+	CompletedAt   string         `json:"completed_at"`
+	ModulesRun    int            `json:"modules_run"`
+	ModulesFailed int            `json:"modules_failed"`
+	Findings      FindingCounts  `json:"findings"`
+	ModuleResults []ModuleResult `json:"module_results"`
+	ExitCode      int            `json:"exit_code"`
+	ReportPath    string         `json:"report_path"`
+	CSVPath       string         `json:"csv_path"`
+	SessionDir    string         `json:"session_dir"`
+}
+
+// computeExitCode returns the process exit code for a headless audit:
+//
+//	0 — clean: no module failures, no CRITICAL/HIGH findings
+//	2 — module failure(s) occurred
+//	3 — CRITICAL or HIGH findings detected (takes priority over exit 2)
+func computeExitCode(modulesFailed, highCriticalCount int) int {
+	if highCriticalCount > 0 {
+		return 3
+	}
+	if modulesFailed > 0 {
+		return 2
+	}
+	return 0
+}
+
+// queryFindingCounts reads per-severity finding counts from the session DB.
+func queryFindingCounts(s *session.Session) FindingCounts {
+	var counts FindingCounts
+	rows, err := s.DB.Query(
+		`SELECT severity, COUNT(*) FROM vulnerability
+		 WHERE severity IN ('CRITICAL','HIGH','MEDIUM','LOW','INFO')
+		 GROUP BY severity`)
+	if err != nil {
+		return counts
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sev string
+		var n int
+		if err := rows.Scan(&sev, &n); err != nil {
+			continue
+		}
+		switch sev {
+		case "CRITICAL":
+			counts.Critical = n
+		case "HIGH":
+			counts.High = n
+		case "MEDIUM":
+			counts.Medium = n
+		case "LOW":
+			counts.Low = n
+		case "INFO":
+			counts.Info = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return FindingCounts{}
+	}
+	return counts
 }
 
 // RunAutonomousAudit executes an assessment without user interaction based on a plan file.
