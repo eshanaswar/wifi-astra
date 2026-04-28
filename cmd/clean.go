@@ -47,6 +47,11 @@ Example:
 			baseDir = config.GlobalConfig.SessionDir
 		}
 
+		if olderThan <= 0 {
+			logging.Error("--older-than must be a positive integer (got %d)", olderThan)
+			return
+		}
+
 		fmt.Printf("[*] Scanning sessions older than %d days in %s...\n", olderThan, baseDir)
 
 		entries, err := os.ReadDir(baseDir)
@@ -114,15 +119,17 @@ Example:
 		}
 
 		deleted := 0
+		var freedB int64
 		for _, c := range candidates {
 			fmt.Printf("[*] Deleting: %s\n", c.name)
 			if err := os.RemoveAll(c.path); err != nil {
 				logging.Error("Failed to delete %s: %v", c.name, err)
 			} else {
 				deleted++
+				freedB += c.sizeB
 			}
 		}
-		fmt.Printf("[✓] Removed %d session(s), freed %d MB.\n", deleted, totalMB)
+		fmt.Printf("[✓] Removed %d session(s), freed %d MB.\n", deleted, freedB/(1024*1024))
 	},
 }
 
@@ -144,5 +151,6 @@ func init() {
 	cleanCmd.Flags().IntVarP(&olderThan, "older-than", "t", 30, "Delete sessions whose last modification time exceeds N days")
 	cleanCmd.Flags().BoolVar(&dryRun, "dry-run", false, "List sessions that would be removed without deleting them")
 	cleanCmd.Flags().BoolVarP(&force, "force", "f", false, "Skip confirmation prompt and delete immediately")
+	cleanCmd.MarkFlagsMutuallyExclusive("dry-run", "force")
 	RootCmd.AddCommand(cleanCmd)
 }
