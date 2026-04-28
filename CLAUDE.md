@@ -69,6 +69,7 @@ shellcheck -S warning modules/*.sh
 |------|-------------|
 | `-t, --older-than <N>` | Delete sessions whose last modification time exceeds N days (default 30) |
 | `--dry-run` | List sessions that would be removed without deleting them |
+| `-f, --force` | Skip confirmation prompt and delete immediately (for scripts/cron) |
 
 **`astra run <MODULE_ID>` flags:**
 
