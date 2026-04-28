@@ -1097,6 +1097,24 @@ func (c *AssessmentController) HandleD2PostRun() {
 	)
 }
 
+// recordD1Credential records a cracked WPA2 PSK as a credential finding in the session DB.
+func (c *AssessmentController) recordD1Credential(psk, captureFile string) {
+	bssid := ""
+	c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
+	ssid := ""
+	c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+	if bssid == "" && ssid == "" {
+		logging.Warn("D1 post-run: BSSID and SSID not set in config — credential record will have empty target fields")
+	}
+	c.Session.DB.Exec(
+		`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"D1", ssid, psk, "WPA2-PSK", bssid, captureFile,
+		"PSK recovered via offline dictionary attack — network traffic can be decrypted.",
+	)
+	logging.Info("D1 inline crack: PSK recorded as credential finding")
+}
+
 // HandleD1PostRun fires after D1 (WPA Handshake & PMKID Capture) completes.
 // If capture files are present, it offers the operator an inline hashcat crack.
 // The operator can skip by pressing Enter without a wordlist path.
@@ -1136,48 +1154,98 @@ func (c *AssessmentController) HandleD1PostRun() {
 		return
 	}
 
-	fmt.Printf("%s[?] Run inline hashcat crack now?%s\n", constants.ThemeHeader, constants.ColorReset)
-	wordlist := ui.PromptString("    Wordlist path (or Enter to skip)", "")
-	if wordlist == "" {
-		fmt.Println("    Skipping inline crack — capture file saved for offline use.")
-		return
-	}
-
-	if _, err := os.Stat(wordlist); err != nil {
-		fmt.Printf("%s[!] Wordlist not found: %s%s\n", constants.ThemeHigh, wordlist, constants.ColorReset)
-		return
-	}
-
-	fmt.Printf("%s[*] Starting hashcat -m %s%s — stream output below:\n\n",
-		constants.ThemeHeader, mode, constants.ColorReset)
 	logFile := hashcatLogPath(evidenceDir, "D1")
-	result, err := RunHashcat(context.Background(), captureFile, wordlist, mode, logFile, nil, c.ExecMgr)
+
+	// ── Stage 1: SSID mutations (automatic, 30-second timeout) ───────────────
+	ssid := ""
+	c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
+
+	if ssid == "" {
+		fmt.Printf("%s[*] No SSID set — skipping SSID mutation stage.%s\n", constants.ColorGray, constants.ColorReset)
+	} else {
+		ssidWL := ssidWordlistPath(evidenceDir)
+		if err := GenerateSSIDWordlist(ssid, ssidWL); err != nil {
+			logging.Warn("D1: could not generate SSID wordlist: %v", err)
+		} else {
+			fmt.Printf("%s[*] Stage 1: SSID mutations (30s timeout)...%s\n", constants.ThemeHeader, constants.ColorReset)
+			ctx30, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			result, err := RunHashcat(ctx30, captureFile, ssidWL, mode, logFile, nil, c.ExecMgr)
+			if err != nil {
+				logging.Warn("D1 stage 1 hashcat error: %v", err)
+			} else if result.Found {
+				fmt.Printf("\n%s[!!!] PSK CRACKED (SSID mutation): %s%s\n", constants.ThemeSuccess, result.PSK, constants.ColorReset)
+				c.recordD1Credential(result.PSK, captureFile)
+				return
+			} else {
+				fmt.Printf("%s[*] Stage 1: no match (%ds). Trying rockyou...%s\n", constants.ColorGray, result.DurationSec, constants.ColorReset)
+			}
+		}
+	}
+
+	// ── Stage 2: rockyou + best64.rule ───────────────────────────────────────
+	rockyouPaths := CommonWordlistPaths()
+	var stage2Wordlist string
+
+	if len(rockyouPaths) > 0 {
+		rockyou := rockyouPaths[0]
+		fmt.Printf("%s[?] Stage 2: Run rockyou + best64.rule? (~minutes on CPU) [Y/n]%s ", constants.ThemeHeader, constants.ColorReset)
+		if ui.PromptConfirm("", true) {
+			stage2Wordlist = rockyou
+		}
+	} else {
+		fmt.Printf("%s[*] rockyou not found.%s\n", constants.ColorGray, constants.ColorReset)
+		stage2Wordlist = ui.PromptString("    Enter wordlist path (or Enter to skip)", "")
+	}
+
+	if stage2Wordlist != "" {
+		if _, err := os.Stat(stage2Wordlist); err != nil {
+			fmt.Printf("%s[!] Wordlist not found: %s%s\n", constants.ThemeHigh, stage2Wordlist, constants.ColorReset)
+		} else {
+			rules := commonRulesetForWordlist()
+			if len(rules) > 0 {
+				fmt.Printf("%s[*] Stage 2: %s + best64.rule...%s\n", constants.ThemeHeader, stage2Wordlist, constants.ColorReset)
+			} else {
+				fmt.Printf("%s[*] Stage 2: %s (best64.rule not found, running without rules)...%s\n", constants.ThemeHeader, stage2Wordlist, constants.ColorReset)
+			}
+			result, err := RunHashcat(context.Background(), captureFile, stage2Wordlist, mode, logFile, rules, c.ExecMgr)
+			if err != nil {
+				logging.Warn("D1 stage 2 hashcat error: %v", err)
+			} else if result.Found {
+				fmt.Printf("\n%s[!!!] PSK CRACKED (rockyou): %s%s\n", constants.ThemeSuccess, result.PSK, constants.ColorReset)
+				c.recordD1Credential(result.PSK, captureFile)
+				return
+			} else {
+				fmt.Printf("%s[*] Stage 2: no match (%ds).%s\n", constants.ColorGray, result.DurationSec, constants.ColorReset)
+			}
+		}
+	}
+
+	// ── Stage 3: custom wordlist ──────────────────────────────────────────────
+	customWL := ui.PromptString("\n[?] Stage 3: Enter custom wordlist path (or Enter to skip)", "")
+	if customWL == "" {
+		fmt.Printf("%s[*] Skipping — capture file saved for offline use: %s%s\n", constants.ColorGray, captureFile, constants.ColorReset)
+		return
+	}
+	if _, err := os.Stat(customWL); err != nil {
+		fmt.Printf("%s[!] Wordlist not found: %s%s\n", constants.ThemeHigh, customWL, constants.ColorReset)
+		return
+	}
+
+	fmt.Printf("%s[*] Stage 3: %s (no rules)...%s\n", constants.ThemeHeader, customWL, constants.ColorReset)
+	result, err := RunHashcat(context.Background(), captureFile, customWL, mode, logFile, nil, c.ExecMgr)
 	if err != nil {
-		logging.Warn("D1 inline crack failed: %v", err)
+		logging.Warn("D1 stage 3 hashcat error: %v", err)
 		fmt.Printf("%s[!] Hashcat error: %v%s\n", constants.ThemeHigh, err, constants.ColorReset)
 		return
 	}
-
 	if result.Found {
-		fmt.Printf("\n%s[!!!] PSK CRACKED: %s%s\n", constants.ThemeSuccess, result.PSK, constants.ColorReset)
-		bssid := ""
-		c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestBSSID).Scan(&bssid)
-		ssid := ""
-		c.Session.DB.QueryRow("SELECT value FROM config WHERE key = ?", constants.ConfigGuestSSID).Scan(&ssid)
-		if bssid == "" && ssid == "" {
-			logging.Warn("D1 post-run: BSSID and SSID not set in config — credential record will have empty target fields")
-		}
-		c.Session.DB.Exec(
-			`INSERT INTO credential (tc_id, username, password, proto, target_host, evidence_file, rationale)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			"D1", ssid, result.PSK, "WPA2-PSK", bssid, captureFile,
-			"PSK recovered via offline dictionary attack — network traffic can be decrypted.",
-		)
-		logging.Info("D1 inline crack: PSK recorded as credential finding")
+		fmt.Printf("\n%s[!!!] PSK CRACKED (custom wordlist): %s%s\n", constants.ThemeSuccess, result.PSK, constants.ColorReset)
+		c.recordD1Credential(result.PSK, captureFile)
 	} else {
-		fmt.Printf("\n%s[*] Wordlist exhausted — PSK not found (duration: %ds).%s\n",
-			constants.ColorGray, result.DurationSec, constants.ColorReset)
-		logging.Info("D1 inline crack: no PSK found, wordlist=%s, duration=%ds", wordlist, result.DurationSec)
+		fmt.Printf("\n%s[*] All stages exhausted — PSK not found. Capture saved for offline use: %s%s\n",
+			constants.ColorGray, captureFile, constants.ColorReset)
+		logging.Info("D1 inline crack: all stages exhausted, no PSK found")
 	}
 }
 
