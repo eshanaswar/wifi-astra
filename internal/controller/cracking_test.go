@@ -4,6 +4,7 @@ package controller
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -220,4 +221,69 @@ func TestParseWPSCreds_NoisyMultiline(t *testing.T) {
 	if pin != "12345670" {
 		t.Errorf("expected PIN '12345670', got '%s'", pin)
 	}
+}
+
+func TestGenerateSSIDWordlist_Normal(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "ssid_wordlist.txt")
+
+	if err := GenerateSSIDWordlist("CorpWifi", outPath); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("output file not created: %v", err)
+	}
+
+	content := string(data)
+	required := []string{
+		"CorpWifi",
+		"corpwifi",
+		"CORPWIFI",
+		"CorpWifi123",
+		"CorpWifi2025",
+		"CorpWifi!",
+	}
+	for _, want := range required {
+		if !strings.Contains(content, want+"\n") {
+			t.Errorf("expected candidate %q in wordlist, not found", want)
+		}
+	}
+
+	// No duplicate lines
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+		if seen[line] {
+			t.Errorf("duplicate candidate in wordlist: %q", line)
+		}
+		seen[line] = true
+	}
+}
+
+func TestGenerateSSIDWordlist_EmptySSID(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "ssid_wordlist.txt")
+
+	err := GenerateSSIDWordlist("", outPath)
+	if err == nil {
+		t.Fatal("expected error for empty SSID, got nil")
+	}
+	if _, statErr := os.Stat(outPath); statErr == nil {
+		t.Error("no file should be written for empty SSID")
+	}
+}
+
+func TestCommonWordlistPaths_ReturnSlice(t *testing.T) {
+	paths := CommonWordlistPaths()
+	if paths == nil {
+		t.Error("expected non-nil slice, got nil")
+	}
+	// Content is not asserted — test machines won't have rockyou installed.
+}
+
+func TestBestRulePath_ReturnString(t *testing.T) {
+	path := BestRulePath()
+	// Content is not asserted — test machines won't have hashcat rules installed.
+	_ = path // just confirm it doesn't panic
 }
