@@ -76,7 +76,7 @@ operations on session directories.`,
 		// 4. Check for Headless Plan
 		if isHeadless {
 			// In headless mode, the session is created inside RunAutonomousAudit
-			err := headless.RunAutonomousAudit(ConfigFile, ModDir, func(s *session.Session, m *module.Module) error {
+			_, err := headless.RunAutonomousAudit(ConfigFile, ModDir, func(s *session.Session, m *module.Module) error {
 				c := controller.NewAssessmentController(s, ExecMgr, ModDir)
 				return c.ExecuteModule(m)
 			})

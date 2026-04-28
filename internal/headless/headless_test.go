@@ -46,9 +46,15 @@ func TestRunAutonomousAudit(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(cwd)
 
-	err := RunAutonomousAudit(filepath.Join("..", planPath), filepath.Join("..", modDir), mockRunFunc)
+	summary, err := RunAutonomousAudit(filepath.Join("..", planPath), filepath.Join("..", modDir), mockRunFunc)
 	if err != nil {
 		t.Fatalf("RunAutonomousAudit failed: %v", err)
+	}
+	if summary == nil {
+		t.Fatal("expected non-nil summary")
+	}
+	if summary.ExitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", summary.ExitCode)
 	}
 
 	if runCount != 1 {
@@ -57,10 +63,8 @@ func TestRunAutonomousAudit(t *testing.T) {
 }
 
 func TestAuditPlanTimingInjected(t *testing.T) {
-	// Verify that capture_time and scan_time from the plan are injected as env vars.
-	os.Unsetenv("CAPTURE_TIME")
-	os.Unsetenv("SCAN_TIME")
-
+	// Verify that capture_time and scan_time from the plan are persisted to the session DB.
+	// The controller reads them from DB and injects as env vars for each module subprocess.
 	tmpDir := "test_timing_sessions"
 	os.MkdirAll(tmpDir, 0755)
 	defer os.RemoveAll(tmpDir)
@@ -84,8 +88,9 @@ func TestAuditPlanTimingInjected(t *testing.T) {
 
 	var captureTime, scanTime string
 	mockRunFunc := func(s *session.Session, m *module.Module) error {
-		captureTime = os.Getenv("CAPTURE_TIME")
-		scanTime = os.Getenv("SCAN_TIME")
+		// Timing values are written to DB, not os.Setenv
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", "CAPTURE_TIME").Scan(&captureTime)
+		s.DB.QueryRow("SELECT value FROM config WHERE key = ?", "SCAN_TIME").Scan(&scanTime)
 		return nil
 	}
 
@@ -93,15 +98,15 @@ func TestAuditPlanTimingInjected(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(cwd)
 
-	if err := RunAutonomousAudit(filepath.Join("..", planPath), filepath.Join("..", modDir), mockRunFunc); err != nil {
+	if _, err := RunAutonomousAudit(filepath.Join("..", planPath), filepath.Join("..", modDir), mockRunFunc); err != nil {
 		t.Fatalf("RunAutonomousAudit failed: %v", err)
 	}
 
 	if captureTime != "120" {
-		t.Errorf("expected CAPTURE_TIME=120, got %q", captureTime)
+		t.Errorf("expected CAPTURE_TIME=120 in DB, got %q", captureTime)
 	}
 	if scanTime != "45" {
-		t.Errorf("expected SCAN_TIME=45, got %q", scanTime)
+		t.Errorf("expected SCAN_TIME=45 in DB, got %q", scanTime)
 	}
 }
 
@@ -147,7 +152,7 @@ func TestHeadlessAPInterfaceInjected(t *testing.T) {
 	os.Chdir(tmpDir)
 	defer os.Chdir(cwd)
 
-	if err := RunAutonomousAudit(filepath.Join("..", planPath), filepath.Join("..", modDir), mockRunFunc); err != nil {
+	if _, err := RunAutonomousAudit(filepath.Join("..", planPath), filepath.Join("..", modDir), mockRunFunc); err != nil {
 		t.Fatalf("RunAutonomousAudit failed: %v", err)
 	}
 

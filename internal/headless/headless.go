@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strconv"
+	"time"
 
 	"wifi-astra/internal/config"
 	"wifi-astra/internal/logging"
@@ -112,40 +115,43 @@ func queryFindingCounts(s *session.Session) FindingCounts {
 }
 
 // RunAutonomousAudit executes an assessment without user interaction based on a plan file.
-func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*session.Session, *module.Module) error) error {
+// Fatal startup errors (bad plan, session failure) return (nil, err) — caller should exit 1.
+// Successful completion returns (*AuditSummary, nil) — caller uses summary.ExitCode.
+func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*session.Session, *module.Module) error) (*AuditSummary, error) {
 	os.Setenv("ASTRA_HEADLESS", "true")
+	startedAt := time.Now()
+
 	data, err := os.ReadFile(planPath)
 	if err != nil {
-		return fmt.Errorf("failed to read audit plan: %v", err)
+		return nil, fmt.Errorf("failed to read audit plan: %v", err)
 	}
 
 	var plan AuditPlan
 	if err := json.Unmarshal(data, &plan); err != nil {
-		return fmt.Errorf("failed to parse audit plan: %v", err)
+		return nil, fmt.Errorf("failed to parse audit plan: %v", err)
 	}
 
-	logging.Info("🚀 Starting Autonomous Audit: %s", plan.SessionName)
+	logging.Info("Starting Autonomous Audit: %s", plan.SessionName)
 
-	baseDir := "./sessions" // Fallback
+	baseDir := "./sessions"
 	if config.GlobalConfig != nil && config.GlobalConfig.SessionDir != "" {
 		baseDir = config.GlobalConfig.SessionDir
 	}
-	
-	// Pre-create and chown
+
 	os.MkdirAll(baseDir, 0755)
 	if user, err := prereq.GetSudoUser(); err == nil {
 		os.Chown(baseDir, user.UID, user.GID)
 	}
-	
+
 	s, err := session.NewSession(plan.SessionName, baseDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer s.Cleanup()
 
 	logging.InitLogger(s.LogDir, true)
 
-	// Persist plan configuration
+	// Persist plan configuration to DB
 	if plan.Interface != "" {
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "WIFI_INTERFACE", plan.Interface)
 	}
@@ -162,49 +168,87 @@ func RunAutonomousAudit(planPath string, modDir string, runModuleFunc func(*sess
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "GUEST_SSID", plan.TargetSSID)
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "GUEST_BSSID", plan.TargetBSSID)
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "GUEST_CHANNEL", plan.TargetChan)
-		// Seed SCOPE_BSSIDS so resumed interactive sessions have a consistent scope list.
 		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "SCOPE_BSSIDS", plan.TargetBSSID)
 	}
+	// Timing: write to DB so the controller injects as env vars for each module subprocess.
+	// This matches how astra run handles timing and ensures values persist in the session record.
+	if plan.CaptureTime > 0 {
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "CAPTURE_TIME", strconv.Itoa(plan.CaptureTime))
+	}
+	if plan.ScanTime > 0 {
+		s.DB.Exec("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", "SCAN_TIME", strconv.Itoa(plan.ScanTime))
+	}
 
-	// Discover all modules to get metadata
+	// Discover modules
 	modules, err := module.DiscoverModules(modDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	modMap := make(map[string]*module.Module)
 	for i := range modules {
 		modMap[modules[i].ID] = &modules[i]
 	}
 
-	// Inject timing env vars from plan (modules default gracefully if unset, but
-	// headless plans should be able to override them).
-	if plan.CaptureTime > 0 {
-		os.Setenv("CAPTURE_TIME", fmt.Sprintf("%d", plan.CaptureTime))
-	}
-	if plan.ScanTime > 0 {
-		os.Setenv("SCAN_TIME", fmt.Sprintf("%d", plan.ScanTime))
-	}
-
-	// Execute planned modules
+	// Execute modules, tracking per-module results
+	var moduleResults []ModuleResult
+	modulesFailed := 0
 	for _, modID := range plan.Modules {
 		m, exists := modMap[modID]
 		if !exists {
 			logging.Warn("Module %s not found, skipping.", modID)
 			continue
 		}
-
+		status := "passed"
 		if err := runModuleFunc(s, m); err != nil {
 			logging.Error("Module %s failed: %v", modID, err)
+			status = "failed"
+			modulesFailed++
+		}
+		moduleResults = append(moduleResults, ModuleResult{
+			ID:     m.ID,
+			Name:   m.Name,
+			Status: status,
+		})
+	}
+
+	// Generate reports
+	logging.Info("Autonomous Audit Complete. Generating report...")
+	reportPath, err := report.GenerateReport(s, modDir)
+	if err != nil {
+		logging.Warn("Report generation failed: %v", err)
+	}
+	csvPath, err := report.GenerateCSVReport(s, modDir)
+	if err != nil {
+		logging.Warn("CSV report generation failed: %v", err)
+	}
+
+	// Compute exit code from module results and finding counts
+	findings := queryFindingCounts(s)
+	exitCode := computeExitCode(modulesFailed, findings.Critical+findings.High)
+
+	summary := &AuditSummary{
+		Session:       plan.SessionName,
+		StartedAt:     startedAt.UTC().Format(time.RFC3339),
+		CompletedAt:   time.Now().UTC().Format(time.RFC3339),
+		ModulesRun:    len(moduleResults),
+		ModulesFailed: modulesFailed,
+		Findings:      findings,
+		ModuleResults: moduleResults,
+		ExitCode:      exitCode,
+		ReportPath:    reportPath,
+		CSVPath:       csvPath,
+		SessionDir:    s.BaseDir,
+	}
+
+	// Always write audit_summary.json to the report directory
+	summaryPath := filepath.Join(s.ReportDir, "audit_summary.json")
+	if summaryData, err := json.MarshalIndent(summary, "", "  "); err == nil {
+		if err := os.WriteFile(summaryPath, summaryData, 0644); err != nil {
+			logging.Warn("Failed to write audit summary: %v", err)
+		} else {
+			logging.Info("Audit summary: %s", summaryPath)
 		}
 	}
 
-	logging.Info("🏁 Autonomous Audit Complete. Generating report...")
-	reportPath, err := report.GenerateReport(s, modDir)
-	if err != nil {
-		logging.Error("Report generation failed: %v", err)
-	} else {
-		logging.Success("Final report saved to: %s", reportPath)
-	}
-
-	return nil
+	return summary, nil
 }
