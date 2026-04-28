@@ -57,8 +57,9 @@ func parseCrackOutput(outfilePath string) string {
 // captureFile: path to .hc22000 or .cap file.
 // wordlist: path to wordlist file.
 // logFile: path for hashcat stdout/stderr evidence.
+// rules: optional list of --rules-file paths (nil or empty = no rules).
 // Returns CrackResult. Exit code 1 means exhausted (not an error). Exit code 255 = error.
-func RunHashcat(ctx context.Context, captureFile, wordlist, mode, logFile string, execMgr *executor.Manager) (*CrackResult, error) {
+func RunHashcat(ctx context.Context, captureFile, wordlist, mode, logFile string, rules []string, execMgr *executor.Manager) (*CrackResult, error) {
 	outfile := captureFile + ".cracked"
 	args := []string{
 		"-m", mode,
@@ -69,9 +70,11 @@ func RunHashcat(ctx context.Context, captureFile, wordlist, mode, logFile string
 		"--status-timer=10",
 		"--force",
 		"--potfile-disable",
-		captureFile,
-		wordlist,
 	}
+	for _, r := range rules {
+		args = append(args, "--rules-file", r)
+	}
+	args = append(args, captureFile, wordlist)
 
 	start := time.Now()
 	exitCode, err := execMgr.Run(ctx, "hashcat-inline", "hashcat", args, logFile)

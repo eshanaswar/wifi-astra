@@ -1151,7 +1151,7 @@ func (c *AssessmentController) HandleD1PostRun() {
 	fmt.Printf("%s[*] Starting hashcat -m %s%s — stream output below:\n\n",
 		constants.ThemeHeader, mode, constants.ColorReset)
 	logFile := hashcatLogPath(evidenceDir, "D1")
-	result, err := RunHashcat(context.Background(), captureFile, wordlist, mode, logFile, c.ExecMgr)
+	result, err := RunHashcat(context.Background(), captureFile, wordlist, mode, logFile, nil, c.ExecMgr)
 	if err != nil {
 		logging.Warn("D1 inline crack failed: %v", err)
 		fmt.Printf("%s[!] Hashcat error: %v%s\n", constants.ThemeHigh, err, constants.ColorReset)
