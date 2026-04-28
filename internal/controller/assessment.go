@@ -144,13 +144,16 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 
 	// 1. Load Session Config
 	config := make(map[string]string)
-	rows, _ := c.Session.DB.Query("SELECT key, value FROM config")
-	for rows.Next() {
-		var k, v string
-		rows.Scan(&k, &v)
-		config[k] = v
+	if rows, err := c.Session.DB.Query("SELECT key, value FROM config"); err != nil {
+		logging.Warn("ExecuteModule: failed to load session config from DB: %v", err)
+	} else {
+		defer rows.Close()
+		for rows.Next() {
+			var k, v string
+			rows.Scan(&k, &v)
+			config[k] = v
+		}
 	}
-	rows.Close()
 
 	// Scope enforcement: fail gracefully if required target info is not set
 	if strings.Contains(m.Reqs, "target_bssid") && config[constants.ConfigGuestBSSID] == "" {

@@ -109,7 +109,7 @@ func queryFindingCounts(s *session.Session) FindingCounts {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return FindingCounts{}
+		logging.Warn("queryFindingCounts: DB iteration error (returning partial counts): %v", err)
 	}
 	return counts
 }
