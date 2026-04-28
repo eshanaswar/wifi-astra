@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,8 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+var jsonOutput bool
 
 var startCmd = &cobra.Command{
 	Use:   "start",
@@ -76,7 +79,7 @@ operations on session directories.`,
 		// 4. Check for Headless Plan
 		if isHeadless {
 			// In headless mode, the session is created inside RunAutonomousAudit
-			_, err := headless.RunAutonomousAudit(ConfigFile, ModDir, func(s *session.Session, m *module.Module) error {
+			summary, err := headless.RunAutonomousAudit(ConfigFile, ModDir, func(s *session.Session, m *module.Module) error {
 				c := controller.NewAssessmentController(s, ExecMgr, ModDir)
 				return c.ExecuteModule(m)
 			})
@@ -84,7 +87,15 @@ operations on session directories.`,
 				logging.Error("Autonomous audit failed: %v", err)
 				os.Exit(1)
 			}
-			return
+			if jsonOutput {
+				data, err := json.MarshalIndent(summary, "", "  ")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "ERROR: failed to marshal audit summary: %v\n", err)
+					os.Exit(2)
+				}
+				fmt.Println(string(data))
+			}
+			os.Exit(summary.ExitCode)
 		}
 
 		sessionWizard()
@@ -92,6 +103,7 @@ operations on session directories.`,
 }
 
 func init() {
+	startCmd.Flags().BoolVar(&jsonOutput, "json", false, "Print audit summary JSON to stdout after headless run (headless mode only)")
 	RootCmd.AddCommand(startCmd)
 }
 

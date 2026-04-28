@@ -60,7 +60,7 @@ type AuditSummary struct {
 	ExitCode      int            `json:"exit_code"`
 	ReportPath    string         `json:"report_path"`
 	CSVPath       string         `json:"csv_path"`
-	SessionDir    string         `json:"session_dir"`
+	SessionDir    string         `json:"session_dir"` // absolute path to this session's root directory (contains evidence/, logs/, reports/)
 }
 
 // computeExitCode returns the process exit code for a headless audit:
