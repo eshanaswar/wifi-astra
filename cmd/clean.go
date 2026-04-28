@@ -56,6 +56,10 @@ Example:
 
 		entries, err := os.ReadDir(baseDir)
 		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Printf("[*] Sessions directory %s does not exist — nothing to clean.\n", baseDir)
+				return
+			}
 			logging.Error("Failed to read sessions directory: %v", err)
 			return
 		}
@@ -93,25 +97,24 @@ Example:
 		for _, c := range candidates {
 			totalSize += c.sizeB
 		}
-		totalMB := totalSize / (1024 * 1024)
 		n := len(candidates)
 
 		w := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "  SESSION\tAGE\tSIZE")
-		fmt.Fprintln(w, "  ──────────────────────────────────\t─────────\t──────")
+		fmt.Fprintln(w, "  ----------------------------------\t---------\t--------")
 		for _, c := range candidates {
-			fmt.Fprintf(w, "  %s\t%d days\t%d MB\n", c.name, c.ageDays, c.sizeB/(1024*1024))
+			fmt.Fprintf(w, "  %s\t%d %s\t%s\n", c.name, c.ageDays, pluralDay(c.ageDays), fmtSize(c.sizeB))
 		}
 		w.Flush()
 		fmt.Println()
 
 		if dryRun {
-			fmt.Printf("[*] %d session(s) would be deleted (%d MB). Run without --dry-run to remove.\n", n, totalMB)
+			fmt.Printf("[*] %d session(s) would be deleted (%s). Run without --dry-run to remove.\n", n, fmtSize(totalSize))
 			return
 		}
 
 		if !force {
-			prompt := fmt.Sprintf("Delete %d session(s) (%d MB)?", n, totalMB)
+			prompt := fmt.Sprintf("Delete %d session(s) (%s)?", n, fmtSize(totalSize))
 			if !ui.PromptConfirm(prompt, false) {
 				fmt.Println("[*] Aborted. No sessions deleted.")
 				return
@@ -129,8 +132,25 @@ Example:
 				freedB += c.sizeB
 			}
 		}
-		fmt.Printf("[✓] Removed %d session(s), freed %d MB.\n", deleted, freedB/(1024*1024))
+		fmt.Printf("[✓] Removed %d session(s), freed %s.\n", deleted, fmtSize(freedB))
 	},
+}
+
+// fmtSize returns a human-readable size string. Values below 1 MB are shown in
+// KB so that small sessions never misleadingly display as "0 MB".
+func fmtSize(b int64) string {
+	if b < 1024*1024 {
+		return fmt.Sprintf("%d KB", b/1024)
+	}
+	return fmt.Sprintf("%d MB", b/(1024*1024))
+}
+
+// pluralDay returns "day" or "days" depending on n.
+func pluralDay(n int) string {
+	if n == 1 {
+		return "day"
+	}
+	return "days"
 }
 
 func getDirSize(path string) int64 {
