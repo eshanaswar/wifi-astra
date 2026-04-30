@@ -27,7 +27,7 @@
 
 <br>
 
-A compiled **Go orchestrator** manages session state, dual-adapter hardware roles, scope enforcement, NAT routing, and evidence collection — while **50 modular Bash scripts** execute 802.11 attack techniques across the full engagement lifecycle.
+A compiled **Go orchestrator** manages session state, dual-adapter hardware roles, scope enforcement, NAT routing, and evidence collection — while **46 modular Bash scripts** execute 802.11 attack techniques across the full engagement lifecycle.
 
 </div>
 
