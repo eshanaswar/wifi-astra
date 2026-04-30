@@ -20,6 +20,7 @@
 
 <br>
 
+[![CI](https://github.com/eshanaswar/wifi-astra/actions/workflows/ci.yml/badge.svg)](https://github.com/eshanaswar/wifi-astra/actions/workflows/ci.yml)
 [![Modules](https://img.shields.io/badge/Modules-46-blueviolet?style=flat-square)](modules/)
 [![Categories](https://img.shields.io/badge/Categories-8-blue?style=flat-square)](#assessment-categories)
 [![Bands](https://img.shields.io/badge/Bands-2.4%20%7C%205%20%7C%206%20GHz-orange?style=flat-square)](#)
