@@ -89,7 +89,7 @@ Session Manager ──── Create / Resume / Delete
   │
   ▼
 Adapter Wizard ───── Assign MONITOR role (monitor mode, injection)
-  │                  Assign MANAGEMENT role (managed, operator connectivity)
+  │                  Assign AP role (managed mode, hostapd / Evil Twin)
   │                  Roles locked via InterfaceRoleRegistry for session duration
   ▼
 A1 Discovery ──────── Mandatory; populates network table

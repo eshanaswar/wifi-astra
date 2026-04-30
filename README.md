@@ -97,8 +97,9 @@ A compiled **Go orchestrator** manages session state, dual-adapter hardware role
   [*] Sending deauth to accelerate 4-way handshake...
   [+] Handshake captured for CorpGuest
 
-  [?] Run inline hashcat cracking? [Y/n]: Y
-  [*] hashcat -m 22000 capture.hc22000 /usr/share/wordlists/rockyou.txt
+  [?] Run inline cracking? [Y/n]: Y
+  [*] Stage 1: SSID mutations (30s)...
+  [*] Stage 2: rockyou.txt + best64 rule...
   [+] ✓ PSK CRACKED: P@ssw0rd2024
 
   ✅ MISSION COMPLETE
@@ -172,7 +173,7 @@ JSON audit plans drive the full assessment lifecycle without interactive prompts
 <td>
 
 **🔍 Full 802.11 Coverage**
-50 modules across 8 categories. 2.4 GHz, 5 GHz, and 6 GHz (Wi-Fi 6E). WPA2-PSK, WPA3-SAE, OWE, WPA-Enterprise. Discovery through exploitation through reporting.
+46 modules across 8 categories. 2.4 GHz, 5 GHz, and 6 GHz (Wi-Fi 6E). WPA2-PSK, WPA3-SAE, OWE, WPA-Enterprise. Discovery through exploitation through reporting.
 
 </td>
 </tr>
@@ -301,7 +302,7 @@ When launching F1, F2, or F3 (modules with `REQS="nat"`), the controller automat
 | **H** | Policy & WIDS | H1–H2 | WIDS/WIPS detection & evasion, 802.11w PMF enforcement |
 
 <details>
-<summary><strong>Full Module List (50 modules)</strong></summary>
+<summary><strong>Full Module List (46 modules)</strong></summary>
 
 <br>
 

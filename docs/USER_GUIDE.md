@@ -19,10 +19,8 @@ Before starting any session, verify:
 go build -o bin/wifi-astra ./cmd/astra/
 sudo ./bin/wifi-astra --version
 
-# Install core dependencies (Kali/Debian)
-sudo apt-get install -y aircrack-ng tshark tcpdump iw hcxdumptool \
-    nmap mdk4 hostapd dnsmasq macchanger iodine hashcat \
-    bettercap responder
+# Install all dependencies in one step (requires root)
+sudo ./bin/wifi-astra setup
 ```
 
 ---
@@ -83,9 +81,9 @@ Sessions are stored in `sessions/<id>/` and tracked in a local SQLite database.
 
 The wizard lists all detected wireless interfaces with their current mode, driver, and chipset. Assign:
 1. **MONITOR role** — the adapter to be placed in monitor mode
-2. **MANAGEMENT role** — the adapter to keep in managed mode (or skip if only one adapter)
+2. **AP role** — the adapter kept in managed mode for hostapd/Evil Twin modules (or skip if only one adapter)
 
-Roles are locked for the entire session. The management interface cannot be requested by any attack module.
+Roles are locked for the entire session. The AP interface cannot be requested by any attack module.
 
 ### A1 — Network Discovery (Mandatory)
 
@@ -179,7 +177,7 @@ Tests for specific CVEs in wireless implementations.
 
 ### Category F — Rogue AP & Evil Twin
 
-These modules require the **managed interface** (`WIFI_INTERFACE`) for AP operation, and the monitor interface for deauth catalysts.
+These modules require the **AP role interface** (`AP_INTERFACE`) for hostapd operation, and the monitor interface for deauth catalysts.
 
 | Module | Description |
 |--------|-------------|
@@ -231,16 +229,32 @@ sudo ./bin/wifi-astra start --config plan.json
 ```json
 {
   "session_name": "Q2_Guest_Audit",
-  "interface": "wlan1",
-  "target_ssid": "Corp-Guest",
-  "target_bssid": "AA:BB:CC:DD:EE:FF",
-  "target_channel": 11,
-  "scan_time": 120,
-  "modules": ["A1", "A2", "A3", "B1", "B2", "D1", "D3", "H1", "H2"]
+  "monitor_interface": "wlan1",
+  "ap_interface": "wlan2",
+  "modules": ["A1", "A2", "A3", "B1", "B2", "D1", "D3", "H1", "H2"],
+  "capture_time": 60,
+  "scan_time": 30
 }
 ```
 
+| Field | Required | Description |
+|-------|:--------:|-------------|
+| `session_name` | No | Human-readable label for the session |
+| `monitor_interface` | Yes | Physical interface to place in monitor mode |
+| `ap_interface` | No | Dedicated AP adapter for Evil Twin modules |
+| `modules` | Yes | Module IDs to run in order |
+| `capture_time` | No | Capture duration per module in seconds (default: 60) |
+| `scan_time` | No | Scan duration per module in seconds (default: 30) |
+
 Modules run sequentially in the specified order. `ASTRA_HEADLESS=true` is injected into each module environment.
+
+**Exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | All modules passed, no HIGH/CRITICAL findings |
+| `2` | One or more modules failed to execute |
+| `3` | Execution succeeded but HIGH or CRITICAL findings were recorded |
 
 ---
 
