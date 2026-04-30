@@ -20,7 +20,7 @@
 
 <br>
 
-[![Modules](https://img.shields.io/badge/Modules-50-blueviolet?style=flat-square)](modules/)
+[![Modules](https://img.shields.io/badge/Modules-46-blueviolet?style=flat-square)](modules/)
 [![Categories](https://img.shields.io/badge/Categories-8-blue?style=flat-square)](#assessment-categories)
 [![Bands](https://img.shields.io/badge/Bands-2.4%20%7C%205%20%7C%206%20GHz-orange?style=flat-square)](#)
 [![Shell](https://img.shields.io/badge/Modules-Bash-4EAA25?style=flat-square&logo=gnubash&logoColor=white)](modules/)
@@ -481,11 +481,14 @@ Cleanup Checklist ─────── Interfaces restored · processes killed 
 |---------|-------------|
 | `astra start` | Start or resume an interactive assessment session |
 | `astra start --config plan.json` | Run a headless audit from a JSON plan |
+| `astra start --config plan.json --json` | Headless audit — print `AuditSummary` JSON to stdout on completion |
 | `astra start -v` | Start with verbose debug logging |
+| `astra run <MODULE_ID>` | Run a single module directly without the TUI wizard (automation/CI) |
 | `astra setup` | Install all required system dependencies via apt |
-| `astra clean` | Remove session directories older than 30 days |
-| `astra clean -t 7` | Remove sessions older than 7 days |
-| `astra clean --dry-run` | List sessions that would be removed without deleting |
+| `astra clean` | Show sessions older than 30 days, prompt before deleting |
+| `astra clean -t 7` | Sessions older than 7 days |
+| `astra clean --dry-run` | Preview sessions that would be removed without deleting |
+| `astra clean --force` | Delete without interactive confirmation (for scripts/cron) |
 | `astra update-oui` | Force-refresh the local IEEE OUI vendor database |
 | `astra lookup-oui <MAC>` | Look up hardware vendor for a MAC address or OUI prefix |
 
@@ -496,6 +499,14 @@ Cleanup Checklist ─────── Interfaces restored · processes killed 
 | `--config <path>` | YAML config file or JSON audit plan (JSON triggers headless mode) |
 | `--mod-dir <path>` | Path to module scripts directory (default: `./modules`) |
 | `-v, --verbose` | Debug-level logging to console and session log file |
+
+**Headless exit codes:**
+
+| Code | Meaning |
+|------|---------|
+| `0` | All modules passed, no HIGH/CRITICAL findings |
+| `2` | One or more modules failed |
+| `3` | HIGH or CRITICAL findings recorded (takes priority over code 2) |
 
 ---
 
