@@ -266,6 +266,8 @@ The report is written to `sessions/<id>/reports/` and includes:
 
 **PMF awareness**: If H2 reports `PMF Required`, deauthentication-based attacks (A3, D1 handshake path, F1 catalyst) will be blocked by the AP. Use PMKID capture (D1 clientless path) and passive association monitoring instead.
 
+**D1 inline cracking (staged)**: After a successful capture, the controller runs cracking in three stages without leaving the tool. Stage 1 (30 s): SSID-derived mutations — lowercase/uppercase/title-case variants with common numeric and symbol suffixes. Stage 2 (prompted): rockyou.txt with the best64 rule — covers the long tail of predictable PSKs. Stage 3 (prompted): custom wordlist supplied by the operator. You can stop after any stage if the PSK is recovered, or let all three run. The recovered PSK is automatically recorded as a CRITICAL credential finding.
+
 **WPA3 downgrade (D7)**: Only effective against Transition Mode deployments where the AP advertises both WPA3 and WPA2. Pure WPA3-SAE APs cannot be downgraded.
 
 **Evil twin ordering (F1)**: The deauth catalyst only forces clients if PMF is not required. Always run H2 before F1 to confirm PMF status.

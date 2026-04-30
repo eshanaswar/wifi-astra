@@ -171,7 +171,17 @@ var ModuleToolMap = map[string][]string{
 }
 ```
 
-### 5. Run the pre-commit checks
+### 5. Register post-run cracking (D-category only)
+
+If your module captures credentials or cryptographic material that the controller should crack inline, wire it into `internal/controller/assessment.go`. The pattern used by D1, D2, D3, and D5 is:
+
+- `HandlePostRun` dispatches `HandleD1PostRun` (or equivalent) after the module exits with code 0.
+- The cracking helper calls `RunHashcat` (or `aircrack-ng` / `asleap`) and records recovered credentials via `c.Session.DB.Exec(INSERT INTO credential ...)`.
+- For staged cracking (like D1), `cracking_intel.go` provides `GenerateSSIDWordlist`, `CommonWordlistPaths`, and `BestRulePath` to locate wordlists and generate SSID-derived mutations.
+
+If your module doesn't produce crackable material, skip this step.
+
+### 6. Run the pre-commit checks
 
 ```bash
 shellcheck -S warning modules/x1_my_attack.sh

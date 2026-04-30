@@ -166,6 +166,7 @@ In tactical window mode (separate X11 terminal), the wrapper script explicitly e
 | `ASTRA_HEADLESS` | `true` when running from a JSON audit plan |
 | `ASTRA_TARGET_RSSI` | Signal strength to target AP (populated by `hw.ScoutTarget` if BSSID is known) |
 | `ASTRA_TARGET_PMF` | PMF enforcement status: `Required`, `Capable`, or `None` |
+| `ASTRA_SCOPE_TOKEN` | HMAC-SHA256 scope token encoding `moduleID\|bssid\|expiry`, verified by modules before executing against a target |
 
 **Tactical prompt results** (set before `runModuleWithCode` via `os.Setenv`):
 
@@ -266,7 +267,7 @@ After successful captures, the controller dispatches cracking automatically:
 
 | Module | Capture | Cracking Path |
 |--------|---------|---------------|
-| D1 | WPA2 PMKID / 4-way handshake | `hashcat -m 22000` (PMKID) or `-m 2500` (EAPOL) |
+| D1 | WPA2 PMKID / 4-way handshake | Three-stage: (1) SSID mutations, 30 s timeout; (2) rockyou.txt + best64.rule (prompted); (3) custom wordlist (prompted). `hashcat -m 22000` (PMKID) or `-m 2500` (EAPOL). PSK recorded as CRITICAL credential on success. |
 | D2 | WEP IVs | `aircrack-ng` inline key recovery |
 | D3 | WPS | `oneshot`/`bully --pixie` (Pixie Dust primary), PIN brute-force fallback |
 | D5 | MSCHAPv2 pairs | `asleap` auto-run; `hashcat -m 5500/-m 5600` offered as fallback |
