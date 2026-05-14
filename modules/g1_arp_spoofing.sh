@@ -63,9 +63,10 @@ trap cleanup EXIT
 if command -v bettercap &>/dev/null; then
     echo "[*] Starting bettercap ARP spoofing..."
     
-    # Create caplet
-    cat <<EOF > "$CAPLET_FILE"
-set arp.spoof.targets ${GATEWAY:-}
+    # Create caplet — omit targets line when GATEWAY is empty (bettercap defaults to all subnet hosts)
+    true > "$CAPLET_FILE"
+    [[ -n "$GATEWAY" ]] && echo "set arp.spoof.targets $GATEWAY" >> "$CAPLET_FILE"
+    cat <<EOF >> "$CAPLET_FILE"
 set arp.spoof.internal true
 set arp.spoof.fullduplex true
 set events.stream.output $JSON_LOG

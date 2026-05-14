@@ -248,11 +248,14 @@ func (c *AssessmentController) ExecuteModule(m *module.Module) error {
 		}
 		fmt.Printf("%sSUCCESS%s (%s)\n", constants.ThemeSuccess, constants.ColorReset, monIface)
 		
-		// Lock the newly created monitor interface as well
-		if err := hw.LockInterface(monIface, m.ID); err != nil {
-			logging.Warn("failed to lock monitor interface %s: %v", monIface, err)
+		// Lock the newly created monitor interface as well.
+		// Skip if monIface == iface (adapter kept same name; already locked above).
+		if monIface != iface {
+			if err := hw.LockInterface(monIface, m.ID); err != nil {
+				logging.Warn("failed to lock monitor interface %s: %v", monIface, err)
+			}
+			defer hw.UnlockInterface(monIface)
 		}
-		defer hw.UnlockInterface(monIface)
 		defer hw.DisableMonitorMode(monIface)
 		os.Setenv(constants.ConfigMonitorIface, monIface)
 
