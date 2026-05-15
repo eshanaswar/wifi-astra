@@ -49,7 +49,8 @@ PCAP_FILE="${EVIDENCE_PREFIX}_beacon.pcap"
 
 # Cleanup function
 cleanup() {
-    echo "[*] Cleaning up processes..."
+    [[ -n "${TCPDUMP_PID:-}" ]] && kill "$TCPDUMP_PID" 2>/dev/null || true
+    wait "${TCPDUMP_PID:-}" 2>/dev/null || true
 }
 trap cleanup EXIT
 

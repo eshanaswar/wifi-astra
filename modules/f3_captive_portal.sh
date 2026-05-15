@@ -32,19 +32,39 @@ C_RESET="${ASTRA_COLOR_RESET:-}"
 
 # Inputs from Environment
 _AP_IFACE="${AP_INTERFACE:-}"
+
+# Derive physical interface name upfront so cleanup can reference it before the toggle.
+_RAW_IFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
+if [[ "$_RAW_IFACE" == *mon ]]; then
+    _PHYS_IFACE="${_RAW_IFACE%mon}"
+else
+    _PHYS_IFACE="$_RAW_IFACE"
+fi
+
+# Register cleanup trap BEFORE any adapter manipulation so the interface is
+# always restored to monitor mode even if the script exits early via set -e.
+cleanup() {
+    echo -e "${C_PROMPT}[*]${C_RESET} Tearing down Phishing environment..."
+    [[ -n "${HTTP_PID:-}" ]] && kill "$HTTP_PID" 2>/dev/null || true
+    [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
+    [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
+    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
+    ip addr flush dev "${INTERFACE:-}" 2>/dev/null || true
+    if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
+        airmon-ng start "$_PHYS_IFACE" > /dev/null 2>&1 || {
+            ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+            iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+            ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+        }
+    fi
+}
+trap cleanup EXIT
+
 if [[ -n "$_AP_IFACE" ]]; then
     # Full dual-adapter mode — AP card stays in managed mode throughout.
     INTERFACE="$_AP_IFACE"
 else
-    # Degraded single-adapter mode — derive physical interface from monitor card,
-    # toggle it to managed mode, and register a restore trap so subsequent
-    # monitor-mode modules still work after this one exits.
-    _RAW_IFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
-    if [[ "$_RAW_IFACE" == *mon ]]; then
-        _PHYS_IFACE="${_RAW_IFACE%mon}"
-    else
-        _PHYS_IFACE="$_RAW_IFACE"
-    fi
+    # Degraded single-adapter mode — toggle physical card to managed mode.
     if [[ -z "$_PHYS_IFACE" ]]; then
         echo "[!] Cannot derive physical interface. Set AP_INTERFACE or ensure WIFI_INTERFACE is set."
         exit 1
@@ -195,22 +215,6 @@ log-dhcp
 EOF
 
 # 2. Execution
-cleanup() {
-    echo -e "${C_PROMPT}[*]${C_RESET} Tearing down Phishing environment..."
-    [[ -n "${HTTP_PID:-}" ]] && kill "$HTTP_PID" 2>/dev/null || true
-    [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
-    [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
-    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
-    ip addr flush dev "${INTERFACE:-}" 2>/dev/null || true
-    if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
-        airmon-ng start "$_PHYS_IFACE" > /dev/null 2>&1 || {
-            ip link set "$_PHYS_IFACE" down 2>/dev/null || true
-            iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
-            ip link set "$_PHYS_IFACE" up 2>/dev/null || true
-        }
-    fi
-}
-trap cleanup EXIT
 
 # Start dynamic telemetry heartbeat
 (

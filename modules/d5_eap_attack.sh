@@ -87,18 +87,18 @@ else
         echo "[!] Cannot derive physical interface. Set AP_INTERFACE or ensure WIFI_INTERFACE is set."
         exit 1
     fi
+    # Register restore trap BEFORE toggling so any failure during the toggle is recovered.
+    trap 'airmon-ng start "$_HOSTAPD_IFACE" > /dev/null 2>&1 || {
+              ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
+              iw dev "$_HOSTAPD_IFACE" set type monitor 2>/dev/null || true
+              ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true
+          }' EXIT
     # Tear down monitor virtual interface before toggling physical adapter
     airmon-ng stop "${MONITOR_INTERFACE}" > /dev/null 2>&1 || true
     # Bring interface to managed mode for hostapd use
     ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
     iw dev "$_HOSTAPD_IFACE" set type managed 2>/dev/null || true
     ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true
-    # Restore interface to monitor mode on exit (degraded mode only)
-    trap 'airmon-ng start "$_HOSTAPD_IFACE" > /dev/null 2>&1 || {
-              ip link set "$_HOSTAPD_IFACE" down 2>/dev/null || true
-              iw dev "$_HOSTAPD_IFACE" set type monitor 2>/dev/null || true
-              ip link set "$_HOSTAPD_IFACE" up 2>/dev/null || true
-          }' EXIT
 fi
 
 if [[ -z "$SSID" ]]; then

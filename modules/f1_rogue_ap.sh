@@ -80,6 +80,27 @@ if [[ -z "${GUEST_CHANNEL:-}" ]]; then
     echo "    Clients on other channels will not associate. Run A1 and select a target first."
 fi
 
+# Register cleanup trap BEFORE any adapter manipulation so the interface is
+# always restored to monitor mode even if the script exits early via set -e.
+cleanup() {
+    echo -e "${C_PROMPT}[*]${C_RESET} Tearing down Rogue AP environment..."
+    [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
+    [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
+    [[ -n "${CAT_PID:-}" ]] && kill "$CAT_PID" 2>/dev/null || true
+    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
+    ip addr flush dev "${INTERFACE:-}" 2>/dev/null || true
+    # In degraded single-adapter mode the physical card was toggled to managed mode.
+    # Restore it to monitor mode so subsequent modules can still inject/capture.
+    if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
+        airmon-ng start "$_PHYS_IFACE" > /dev/null 2>&1 || {
+            ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+            iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+            ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+        }
+    fi
+}
+trap cleanup EXIT
+
 if [[ -n "$_AP_IFACE" ]]; then
     # Full dual-adapter mode — use dedicated AP card (stays in managed mode)
     _HOSTAPD_IFACE="$_AP_IFACE"
@@ -146,24 +167,6 @@ log-dhcp
 EOF
 
 # 2. Execution
-cleanup() {
-    echo -e "${C_PROMPT}[*]${C_RESET} Tearing down Rogue AP environment..."
-    [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
-    [[ -n "${DNSMASQ_PID:-}" ]] && kill "$DNSMASQ_PID" 2>/dev/null || true
-    [[ -n "${CAT_PID:-}" ]] && kill "$CAT_PID" 2>/dev/null || true
-    [[ -n "${TEL_PID:-}" ]] && kill "$TEL_PID" 2>/dev/null || true
-    ip addr flush dev "${INTERFACE:-}" 2>/dev/null || true
-    # In degraded single-adapter mode the physical card was toggled to managed mode.
-    # Restore it to monitor mode so subsequent modules can still inject/capture.
-    if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
-        airmon-ng start "$_PHYS_IFACE" > /dev/null 2>&1 || {
-            ip link set "$_PHYS_IFACE" down 2>/dev/null || true
-            iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
-            ip link set "$_PHYS_IFACE" up 2>/dev/null || true
-        }
-    fi
-}
-trap cleanup EXIT
 
 # Start dynamic telemetry heartbeat
 (

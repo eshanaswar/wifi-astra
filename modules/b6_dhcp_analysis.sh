@@ -57,6 +57,15 @@ echo "[*] [$TC_ID] Identifying DHCP architecture on ${INTERFACE}..."
 ) &
 TELEMETRY_PID=$!
 
+# Register cleanup trap before launching tcpdump so the capture is always stopped
+# even if a bare "$ASTRA_BIN" call later in the script exits non-zero via set -e.
+cleanup() {
+    [[ -n "${TCPDUMP_PID:-}" ]] && kill "$TCPDUMP_PID" 2>/dev/null || true
+    wait "${TCPDUMP_PID:-}" 2>/dev/null || true
+    [[ -n "${TELEMETRY_PID:-}" ]] && kill "$TELEMETRY_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 # Start passive capture in background — use SCAN_TIME not a hardcoded value
 timeout "$SCAN_TIME" tcpdump -i "$INTERFACE" -w "$PCAP_FILE" "udp port 67 or udp port 68" > "$LOG_FILE" 2>&1 &
 TCPDUMP_PID=$!
